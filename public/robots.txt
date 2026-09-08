@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /apply
+Disallow: /resume
+Disallow: /admin
+
+Sitemap: https://velofinance.co/sitemap.xml
