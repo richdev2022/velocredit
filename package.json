@@ -6,8 +6,9 @@
   "description": "Velo Finance LTD — Loan Application Web Application",
   "packageManager": "pnpm@9.15.5",
   "scripts": {
-    "dev": "vite",
-    "dev:api": "tsx watch server/index.ts",
+    "dev": "tsx scripts/dev.ts",
+    "dev:web": "vite",
+    "dev:api": "tsx watch backend/server/index.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",

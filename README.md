@@ -54,11 +54,13 @@ npm install
 cp .env.example .env
 # (edit .env — see section 2)
 
-# 4. Run the dev server
+# 4. Run the web and API dev servers
 npm run dev
 ```
 
 Open <http://localhost:5173/> in your browser.
+
+The development command starts Vite on port 5173 and the Express API on port 4000. The API creates any missing PostgreSQL tables from `backend/database/001_initial_schema.sql` before it begins listening. To run either process separately, use `npm run dev:web` or `npm run dev:api`.
 
 To build for production:
 
@@ -117,7 +119,7 @@ The application validates the configuration at startup. If anything is invalid (
 
 ## 3. Backend Deployment — Google Apps Script
 
-The backend is the combined Apps Script project made from [`Code.gs`](./Code.gs), [`SecurityOverrides.gs`](./SecurityOverrides.gs), and [`ZSecurityNotifications.gs`](./ZSecurityNotifications.gs). Copy all three files into the same Apps Script project. The overlay files provide OTP admin login, secure resume, manager accounts, Brevo notifications, and the final `doPost` dispatcher.
+The backend is the combined Apps Script project made from [`Code.gs`](./backend/google-apps-script/Code.gs), [`SecurityOverrides.gs`](./backend/google-apps-script/SecurityOverrides.gs), and [`ZSecurityNotifications.gs`](./backend/google-apps-script/ZSecurityNotifications.gs). Copy all three files into the same Apps Script project. The overlay files provide OTP admin login, secure resume, manager accounts, Brevo notifications, and the final `doPost` dispatcher.
 
 ### 3.1 Create the Apps Script project
 
@@ -521,11 +523,15 @@ VEL-LN-2026-000124-Loan-Agreement.pdf
 
 ```
 .
-├── Code.gs                            # Google Apps Script backend (user + admin)
-├── public/
+├── backend/
+│   ├── database/                       # PostgreSQL schema and seed migration
+│   ├── google-apps-script/             # Optional Google Apps Script backend
+│   └── server/                         # Express API, providers, routes, and stores
+├── frontend/
+│   ├── public/
 │   ├── favicon.svg
 │   └── logo.svg                       # Velo Finance logo
-├── src/
+│   └── src/
 │   ├── components/
 │   │   ├── admin/
 │   │   │   ├── AdminDetail.tsx
