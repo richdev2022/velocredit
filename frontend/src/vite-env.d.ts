@@ -22,6 +22,8 @@ interface ImportMetaEnv {
   readonly VITE_INCLUDE_LATE_FEE_UPFRONT: string;
   readonly VITE_COMPANY_NAME: string;
   readonly VITE_COMPANY_WEBSITE: string;
+  readonly VITE_PREMBLY_WIDGET_ID?: string;
+  readonly VITE_PREMBLY_WIDGET_KEY?: string;
 }
 
 interface ImportMeta {

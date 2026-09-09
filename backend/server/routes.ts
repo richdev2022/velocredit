@@ -62,7 +62,7 @@ import {
   initializeWalletFunding,
   verifyTransaction,
 } from "./providers/flutterwave.js";
-import { verifyBvn, verifyNin, verifyLiveness, requestCreditReport } from "./providers/prembly.js";
+import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
 
 const router = Router();
 const normalizePhone = (value: unknown): unknown => {
@@ -296,7 +296,7 @@ router.post("/auth/admin/login", async (req, res) => {
     fullName: persistedAdmin?.fullName ?? "Velo Administrator",
     passwordHash: persistedAdmin?.passwordHash ?? configuredAdminPasswordHash ?? "",
     roles: persistedAdmin?.roles ?? ["ADMIN"] as Role[],
-    adminPermissions: persistedAdmin?.adminPermissions ?? [...ADMIN_PERMISSIONS],
+    adminPermissions: persistedAdmin?.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : persistedAdmin?.adminPermissions,
     kycStatus: "VERIFIED" as KycStatus,
     createdAt: new Date().toISOString(),
   };
@@ -357,7 +357,8 @@ router.post("/auth/admin/login/verify-otp", async (req, res) => {
   const configuredAdminPasswordHash = getAdminPasswordHashOverride() ?? env.ADMIN_PASSWORD_HASH;
   const admin = persistedAdmin ?? { id: "env-admin", email: env.ADMIN_EMAIL!, phone: "", fullName: "Velo Administrator", passwordHash: configuredAdminPasswordHash ?? "", roles: ["ADMIN"] as Role[], adminPermissions: [...ADMIN_PERMISSIONS], kycStatus: "VERIFIED" as KycStatus, createdAt: new Date().toISOString() };
   auditLogs.push({ id: randomUUID(), userId: admin.id, action: "ADMIN_LOGIN_VERIFIED", resourceType: "AUTH", resourceId: admin.email, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
-  res.json({ ok: true, verified: true, accessToken: issueToken(admin), user: { id: admin.id, email: admin.email, fullName: admin.fullName, roles: admin.roles, adminPermissions: admin.adminPermissions } });
+  const adminPermissions = admin.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : admin.adminPermissions;
+  res.json({ ok: true, verified: true, accessToken: issueToken({ ...admin, adminPermissions }), user: { id: admin.id, email: admin.email, fullName: admin.fullName, roles: admin.roles, adminPermissions } });
 });
 
 router.post("/auth/admin/logout", requireAuth, (req: AuthRequest, res) => {
@@ -765,10 +766,45 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
 router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image"), async (req: AuthRequest, res) => {
   if (!req.file) { res.status(400).json({ ok: false, error: "A supported selfie image is required" }); return; }
   const kyc = findOrCreateKycCase(req.user!.id);
-  const result = await verifyLiveness(req.file.buffer, req.file.mimetype);
-  identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: "LIVENESS", providerReference: result.providerReference, status: result.status, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
+  const type = req.body.idType === "NIN" ? "NIN" : req.body.idType === "BVN" ? "BVN" : undefined;
+  const number = typeof req.body.idNumber === "string" ? req.body.idNumber : "";
+  if (!type || !/^\d{11}$/.test(number)) {
+    res.status(400).json({ ok: false, error: "Verify your BVN or NIN before starting face verification." });
+    return;
+  }
+  const result = await verifyIdentityWithFace({ type, number, image: req.file.buffer.toString("base64"), dateOfBirth: typeof req.body.dateOfBirth === "string" ? req.body.dateOfBirth : undefined });
+  identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: type ?? "LIVENESS", providerReference: result.providerReference, status: result.status, matchScore: result.matchScore, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
   if (result.status === "SUCCESS") { kyc.checklist.liveness = true; kyc.updatedAt = new Date().toISOString(); }
   res.json({ ok: true, verificationStatus: result.status, providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist });
+});
+
+router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequest, res) => {
+  const parsed = z.object({
+    status: z.enum(["SUCCESS", "FAILED"]),
+    providerReference: z.string().optional(),
+    rawResponse: z.record(z.unknown()).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const kyc = findOrCreateKycCase(req.user!.id);
+  identityVerificationEvents.push({
+    id: randomUUID(),
+    kycCaseId: kyc.id,
+    provider: "prembly",
+    verificationType: "LIVENESS",
+    providerReference: parsed.data.providerReference,
+    status: parsed.data.status,
+    rawResponse: parsed.data.rawResponse ?? {},
+    createdAt: new Date().toISOString(),
+  });
+  if (parsed.data.status === "SUCCESS") {
+    kyc.checklist.liveness = true;
+    kyc.updatedAt = new Date().toISOString();
+    markKycChecklistComplete(req.user!.id);
+  }
+  res.json({ ok: true, verificationStatus: parsed.data.status, providerConfigured: true, checklist: kyc.checklist });
 });
 
 router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => {
@@ -1493,6 +1529,7 @@ router.post("/borrower/credit-report/request", requireAuth, requireRole("BORROWE
     nin: findOrCreateKycCase(req.user!.id).nin,
     phone: user?.phone,
     fullName: user?.fullName,
+    dateOfBirth: user?.dateOfBirth,
   });
   const report = {
     id: randomUUID(),

@@ -28,7 +28,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   const isFormData = options.body instanceof FormData;
   if (!isFormData && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const token = getAccessToken() || sessionStorage.getItem("velo:admin-token");
+  const adminToken = sessionStorage.getItem("velo:admin-token");
+  const token = path.startsWith("/api/v1/admin/") ? adminToken || getAccessToken() : getAccessToken() || adminToken;
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
@@ -142,10 +143,16 @@ export async function verifyMyBvn(bvn: string, firstName?: string, lastName?: st
 export async function verifyMyNin(nin: string, firstName?: string, lastName?: string, dateOfBirth?: string): Promise<KycResponse> {
   return request("/api/v1/me/kyc/nin/verify", { method: "POST", body: JSON.stringify({ nin, firstName, lastName, dateOfBirth }) });
 }
-export async function verifyMyLiveness(file: File): Promise<KycResponse> {
+export async function verifyMyLiveness(file: File, input?: { idType?: "BVN" | "NIN"; idNumber?: string; dateOfBirth?: string }): Promise<KycResponse> {
   const form = new FormData();
   form.append("image", file);
+  if (input?.idType) form.append("idType", input.idType);
+  if (input?.idNumber) form.append("idNumber", input.idNumber);
+  if (input?.dateOfBirth) form.append("dateOfBirth", input.dateOfBirth);
   return request("/api/v1/me/kyc/liveness/verify", { method: "POST", body: form });
+}
+export async function completePremblyWidgetVerification(input: { status: "SUCCESS" | "FAILED"; providerReference?: string; rawResponse?: Record<string, unknown> }): Promise<KycResponse> {
+  return request("/api/v1/me/kyc/prembly-widget/complete", { method: "POST", body: JSON.stringify(input) });
 }
 
 export interface DocumentUploadResponse { ok: true; document: { id: string; documentType: string; fileName: string; status: string; uploadedAt: string; }; checklist: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean } }

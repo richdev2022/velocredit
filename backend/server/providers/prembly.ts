@@ -62,7 +62,7 @@ function redactSensitive(value: unknown): Record<string, unknown> {
 
 function safeIdentityFields(response: Record<string, unknown>): Record<string, unknown> {
   const data = responseRecord(response);
-  const keys = ["full_name", "fullName", "first_name", "last_name", "phone_number", "phone", "mobile", "date_of_birth", "dateOfBirth", "dob", "address", "state", "lga"];
+  const keys = ["full_name", "fullName", "name", "first_name", "firstName", "firstname", "last_name", "lastName", "surname", "phone_number", "phoneNumber", "phone", "mobile", "telephoneno", "date_of_birth", "dateOfBirth", "birthdate", "dob", "address", "residence_address", "state", "lga"];
   const fields = Object.fromEntries(keys.filter((key) => typeof data[key] === "string" && String(data[key]).trim()).map((key) => [key, data[key]]));
   if (!fields.full_name && !fields.fullName && (fields.first_name || fields.last_name)) {
     fields.full_name = [fields.first_name, fields.last_name].filter(Boolean).join(" ");
@@ -87,20 +87,30 @@ export interface VerificationResult {
   errorMessage?: string;
 }
 
+async function runIdScan(type: "BVN" | "NIN", number: string): Promise<Record<string, unknown>> {
+  return premblyRequest<Record<string, unknown>>(env.PREMBLY_ID_SCAN_PATH, {
+    id_type: type.toLowerCase(),
+    id_number: number,
+    search_mode: "exact",
+  });
+}
+
 export async function verifyBvn(input: BvnVerificationInput): Promise<VerificationResult> {
   try {
     const response = await premblyRequest<Record<string, unknown>>(
-      "/identitypass/data-verification/bvn/verification",
-      { number: input.bvn, first_name: input.firstName, last_name: input.lastName, dob: input.dateOfBirth }
+      env.PREMBLY_BVN_PATH,
+      { number: input.bvn }
     );
+    const idScan = await runIdScan("BVN", input.bvn);
     const status = providerStatus(response);
+    const scanStatus = providerStatus(idScan);
     return {
-      status,
+      status: status === "SUCCESS" && scanStatus === "SUCCESS" ? "SUCCESS" : status === "PENDING" || scanStatus === "PENDING" ? "PENDING" : "FAILED",
       providerReference: providerReference(response) ?? `${Date.now()}`,
       matchScore: numericField(response, ["match_score", "matchScore", "confidence"]),
       matchedFields: {},
       normalizedFields: safeIdentityFields(response),
-      rawResponse: response,
+      rawResponse: { identity: response, idScan },
     };
   } catch (error) {
     return {
@@ -121,17 +131,19 @@ export interface NinVerificationInput {
 export async function verifyNin(input: NinVerificationInput): Promise<VerificationResult> {
   try {
     const response = await premblyRequest<Record<string, unknown>>(
-      "/identitypass/data-verification/nin/verification",
-      { number: input.nin, first_name: input.firstName, last_name: input.lastName, dob: input.dateOfBirth }
+      env.PREMBLY_NIN_PATH,
+      { number: input.nin }
     );
+    const idScan = await runIdScan("NIN", input.nin);
     const status = providerStatus(response);
+    const scanStatus = providerStatus(idScan);
     return {
-      status,
+      status: status === "SUCCESS" && scanStatus === "SUCCESS" ? "SUCCESS" : status === "PENDING" || scanStatus === "PENDING" ? "PENDING" : "FAILED",
       providerReference: providerReference(response) ?? `${Date.now()}`,
       matchScore: numericField(response, ["match_score", "matchScore", "confidence"]),
       matchedFields: {},
       normalizedFields: safeIdentityFields(response),
-      rawResponse: response,
+      rawResponse: { identity: response, idScan },
     };
   } catch (error) {
     return {
@@ -142,12 +154,33 @@ export async function verifyNin(input: NinVerificationInput): Promise<Verificati
   }
 }
 
+export async function verifyIdentityWithFace(input: { type: "BVN" | "NIN"; number: string; image: string; dateOfBirth?: string }): Promise<VerificationResult> {
+  try {
+    const response = await premblyRequest<Record<string, unknown>>(
+      input.type === "BVN" ? env.PREMBLY_BVN_FACE_PATH : env.PREMBLY_NIN_FACE_PATH,
+      input.type === "BVN"
+        ? { number: input.number, image: input.image }
+        : { number_nin: Number(input.number), image: input.image, date_of_birth: input.dateOfBirth }
+    );
+    const data = responseRecord(response);
+    const faceData = data.face_data && typeof data.face_data === "object" ? data.face_data as Record<string, unknown> : undefined;
+    const matched = response.status === true && (faceData?.status === undefined || faceData.status === true);
+    return {
+      status: matched ? "SUCCESS" : "FAILED",
+      providerReference: providerReference(response) ?? `${Date.now()}`,
+      matchScore: numericField(response, ["confidence_in_percentage", "confidence"]) ?? numericField(faceData ?? {}, ["confidence"]),
+      normalizedFields: safeIdentityFields(response),
+      rawResponse: redactSensitive(response),
+      errorMessage: matched ? undefined : String(response.detail ?? response.message ?? "Prembly face verification failed"),
+    };
+  } catch (error) {
+    return { status: "FAILED", errorMessage: error instanceof Error ? error.message : "Face verification failed", rawResponse: { error: error instanceof Error ? error.message : String(error) } };
+  }
+}
+
 export async function verifyLiveness(image: Buffer, mimeType: string): Promise<VerificationResult> {
   try {
-    const response = await premblyRequest<Record<string, unknown>>(env.PREMBLY_LIVENESS_PATH, {
-      image: image.toString("base64"),
-      image_type: mimeType,
-    });
+    const response = await premblyRequest<Record<string, unknown>>(env.PREMBLY_FACE_LIVENESS_PATH, { image: image.toString("base64") });
     const status = providerStatus(response);
     return {
       status,
@@ -163,7 +196,7 @@ export async function verifyLiveness(image: Buffer, mimeType: string): Promise<V
   }
 }
 
-export async function requestCreditReport(input: { userId: string; bvn?: string; nin?: string; phone?: string; fullName?: string }): Promise<{ status: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED"; providerReference?: string; score?: number; normalizedFields?: Record<string, unknown>; redactedRaw?: Record<string, unknown>; errorMessage?: string }> {
+export async function requestCreditReport(input: { userId: string; bvn?: string; nin?: string; phone?: string; fullName?: string; dateOfBirth?: string }): Promise<{ status: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED"; providerReference?: string; score?: number; normalizedFields?: Record<string, unknown>; redactedRaw?: Record<string, unknown>; errorMessage?: string }> {
   if (!env.PREMBLY_API_KEY || !env.PREMBLY_APP_ID) {
     return { status: "NOT_REQUESTED", errorMessage: "Prembly credit bureau product is not configured" };
   }
@@ -172,14 +205,17 @@ export async function requestCreditReport(input: { userId: string; bvn?: string;
   }
   try {
     const response = await premblyRequest<Record<string, unknown>>(env.PREMBLY_CREDIT_REPORT_PATH, {
-      user_id: input.userId,
-      bvn: input.bvn,
-      nin: input.nin,
-      phone: input.phone,
-      full_name: input.fullName,
+      mode: input.bvn ? "ID" : "BIO",
+      number: input.bvn,
+      customer_name: input.fullName,
+      customer_reference: input.userId,
+      dob: input.dateOfBirth,
+      crb_provider: "crc",
     });
     const status = providerStatus(response);
-    const score = numericField(response, ["credit_score", "creditScore", "score", "bureau_score", "bureauScore"]);
+    const data = responseRecord(response);
+    const scoreData = data.score && typeof data.score === "object" ? data.score as Record<string, unknown> : {};
+    const score = numericField(response, ["credit_score", "creditScore", "score", "bureau_score", "bureauScore"]) ?? numericField(scoreData, ["totalConsumerScore", "credit_score", "score"]);
     return {
       status: status === "SUCCESS" && score !== undefined ? "RECEIVED" : status === "PENDING" ? "PENDING" : status === "FAILED" ? "FAILED" : "NOT_REQUESTED",
       providerReference: providerReference(response),

@@ -14,6 +14,7 @@ import { useApplication } from "../context/ApplicationContext";
 import { kycSchema, type KycForm } from "../utils/validation";
 import type { UploadedDocument, DocumentSlot } from "../types/documents";
 import { verifyMyBvn, verifyMyNin, verifyMyLiveness } from "../services/apiClient";
+import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
 
 const ID_TYPES = [
   { value: "National ID Card",       label: "National ID Card" },
@@ -87,7 +88,9 @@ export default function PersonalKycSection() {
   async function verifyLiveness(file: File) {
     setLivenessBusy(true); setVerificationError("");
     try {
-      const response = await verifyMyLiveness(file);
+      const idType = currentApplication.kyc?.bvnVerified ? "BVN" : currentApplication.kyc?.ninVerified ? "NIN" : undefined;
+      if (!idType) { setVerificationError("Verify your BVN or NIN before starting face verification."); return; }
+      const response = await verifyMyLiveness(file, { idType, idNumber: idType === "BVN" ? currentApplication.kyc?.bvn : currentApplication.kyc?.nin, dateOfBirth: currentApplication.personalInfo?.dateOfBirth });
       patchKyc({ livenessVerified: response.verificationStatus === "SUCCESS", livenessStatus: response.verificationStatus });
       setVerification((current) => ({ ...current, liveness: response.verificationStatus === "SUCCESS" ? "Verified" : response.error || "Verification failed" }));
     } catch (error) { setVerificationError(error instanceof Error ? error.message : "Unable to complete liveness verification"); }
@@ -160,6 +163,19 @@ export default function PersonalKycSection() {
             <input className="velo-input mt-1" type="file" accept="image/jpeg,image/png,image/webp" disabled={livenessBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void verifyLiveness(file); }} />
           </label>
           <p className="mt-1 text-xs text-amber-800">Upload a clear live selfie. This is checked by Prembly and cannot be skipped.</p>
+          <div className="mt-3">
+            <PremblyKycWidgetButton
+              fullName={currentApplication.personalInfo?.fullName}
+              email={currentApplication.personalInfo?.email}
+              phone={currentApplication.personalInfo?.phone}
+              idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
+              idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
+              onResult={(result) => {
+                setVerification((current) => ({ ...current, liveness: result.message }));
+                if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS" });
+              }}
+            />
+          </div>
           {verification.liveness && <p className={`mt-2 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
         </div>
 

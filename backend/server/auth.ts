@@ -45,7 +45,7 @@ export function issueToken(user: User): string {
       email: user.email,
       fullName: user.fullName,
       roles: user.roles,
-      adminPermissions: user.adminPermissions ?? (user.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : undefined),
+      adminPermissions: user.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : user.adminPermissions,
       kycStatus: user.kycStatus,
     },
     secret,
@@ -80,7 +80,7 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       email: payload.email,
       fullName: payload.fullName,
       roles: payload.roles,
-      adminPermissions: payload.adminPermissions ?? (payload.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : undefined),
+      adminPermissions: payload.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : payload.adminPermissions,
       kycStatus: (payload.kycStatus ?? "NOT_STARTED") as User["kycStatus"],
     };
     if (req.originalUrl.includes("/api/v1/admin/")) {
