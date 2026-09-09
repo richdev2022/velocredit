@@ -207,7 +207,7 @@ export default function AccountAccess() {
                 ) : mode === "register" && role === "BORROWER" ? (
                   <>
                     <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gradient-to-r from-velo-400/20 to-velo-300/20 border border-velo-300/30 text-velo-200 text-xs font-semibold w-fit animate-pulse-glow">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       BORROWER ONBOARDING
                     </div>
                     <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold leading-tight">
@@ -351,7 +351,7 @@ export default function AccountAccess() {
                       </div>
                       <div className="rounded-2xl bg-gradient-to-br from-emerald-500/20 to-emerald-400/10 backdrop-blur-sm border border-emerald-400/20 p-4 hover:scale-[1.02] transition-transform animate-float-slow">
                         <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/30 text-emerald-200 mb-2">
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                         </div>
                         <div className="text-sm font-bold text-white mb-0.5">Borrower</div>
                         <div className="text-[11px] text-white/60">Loans & repayments</div>
@@ -390,7 +390,7 @@ export default function AccountAccess() {
                 </div>
                 <span className="hidden sm:inline h-1 w-1 rounded-full bg-white/20" />
                 <div className="flex items-center gap-1.5">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   CBN Regulated
                 </div>
                 <span className="hidden sm:inline h-1 w-1 rounded-full bg-white/20" />
@@ -474,7 +474,7 @@ export default function AccountAccess() {
                             </div>
                           )}
                           <div className={`inline-flex h-8 w-8 items-center justify-center rounded-lg mb-2 ${role === "BORROWER" ? "bg-velo-500 text-white" : "bg-slate-100 dark:bg-slate-700 text-slate-500"}`}>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                           </div>
                           <div className={`text-sm font-bold ${role === "BORROWER" ? "text-velo-800 dark:text-velo-200" : "text-slate-700 dark:text-slate-300"}`}>Borrow</div>
                           <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Personal & business loans</div>

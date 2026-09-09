@@ -44,6 +44,7 @@ export default function PersonalInfoSection() {
 
   const stateValue = watch("state");
   const lgaOptions = stateValue ? lgasForState(stateValue) : ["Other"];
+  const identityVerified = application.kyc.bvnVerified === true || application.kyc.ninVerified === true;
 
   // Sync every change back to the global application state (autosave source)
   function sync<K extends keyof PersonalInfoForm>(key: K, value: PersonalInfoForm[K]) {
@@ -73,6 +74,7 @@ export default function PersonalInfoSection() {
             required
             placeholder="e.g. John Doe"
             error={errors.fullName?.message}
+            readOnly={identityVerified}
             {...register("fullName")}
             onChange={(e) => { register("fullName").onChange(e); sync("fullName", e.target.value); }}
           />
@@ -82,6 +84,7 @@ export default function PersonalInfoSection() {
             type="tel"
             placeholder="e.g. 0801 234 5678"
             error={errors.phone?.message}
+            readOnly={identityVerified}
             {...register("phone")}
             onChange={(e) => { register("phone").onChange(e); sync("phone", e.target.value); }}
           />
@@ -102,6 +105,7 @@ export default function PersonalInfoSection() {
             required
             type="date"
             error={errors.dateOfBirth?.message}
+            readOnly={identityVerified}
             {...register("dateOfBirth")}
             onChange={(e) => { register("dateOfBirth").onChange(e); sync("dateOfBirth", e.target.value); }}
           />

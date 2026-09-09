@@ -58,8 +58,8 @@ interface SectionMeta {
 
 const PERSONAL_SECTIONS: SectionMeta[] = [
   { key: "applicantType", label: "Applicant Type",          required: true,  skippable: false },
-  { key: "info",          label: "Personal Information",    required: true,  skippable: false },
   { key: "kyc",           label: "Identification & KYC",     required: true,  skippable: false },
+  { key: "info",          label: "Personal Information",    required: true,  skippable: false },
   { key: "financial",     label: "Financial Information",   required: true,  skippable: false },
   { key: "loanRequest",   label: "Loan Request",            required: true,  skippable: false },
   { key: "collateral",    label: "Collateral",              required: true,  skippable: false },
@@ -70,8 +70,8 @@ const PERSONAL_SECTIONS: SectionMeta[] = [
 const BUSINESS_SECTIONS: SectionMeta[] = [
   { key: "applicantType", label: "Applicant Type",          required: true,  skippable: false },
   { key: "info",          label: "Business Information",    required: true,  skippable: false },
-  { key: "businessRep",   label: "Business Representative", required: true,  skippable: false },
   { key: "kyc",           label: "Representative KYC",       required: true,  skippable: false },
+  { key: "businessRep",   label: "Business Representative", required: true,  skippable: false },
   { key: "financial",     label: "Business Financial",      required: true,  skippable: false },
   { key: "loanRequest",   label: "Loan Request",            required: true,  skippable: false },
   { key: "collateral",    label: "Collateral",              required: true,  skippable: false },

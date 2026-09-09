@@ -46,6 +46,7 @@ export default function BusinessRepSection() {
     mode: "onChange",
     defaultValues: application.disbursementAccount,
   });
+  const identityVerified = application.kyc.bvnVerified === true || application.kyc.ninVerified === true;
 
   function sync<K extends keyof BusinessRepForm>(key: K, value: BusinessRepForm[K]) {
     patchBusinessRep({ [key]: value } as any);
@@ -74,6 +75,7 @@ export default function BusinessRepSection() {
             required
             placeholder="e.g. Jane Doe"
             error={errors.fullName?.message}
+            readOnly={identityVerified}
             {...register("fullName")}
             onChange={(e) => { register("fullName").onChange(e); sync("fullName", e.target.value); }}
           />
@@ -82,6 +84,7 @@ export default function BusinessRepSection() {
             required
             type="date"
             error={errors.dateOfBirth?.message}
+            readOnly={identityVerified}
             {...register("dateOfBirth")}
             onChange={(e) => { register("dateOfBirth").onChange(e); sync("dateOfBirth", e.target.value); }}
           />
@@ -103,6 +106,7 @@ export default function BusinessRepSection() {
             type="tel"
             placeholder="e.g. 0801 234 5678"
             error={errors.phone?.message}
+            readOnly={identityVerified}
             {...register("phone")}
             onChange={(e) => { register("phone").onChange(e); sync("phone", e.target.value); }}
           />

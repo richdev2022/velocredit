@@ -3,6 +3,7 @@
 // Section 3 for Business Loan applicants — Representative's BVN/NIN + ID + proof.
 // ============================================================================
 
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import FormInput from "../components/FormInput";
@@ -12,6 +13,7 @@ import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
 import { kycSchema, type KycForm } from "../utils/validation";
 import type { UploadedDocument, DocumentSlot } from "../types/documents";
+import { verifyMyBvn, verifyMyNin, verifyMyLiveness } from "../services/apiClient";
 
 const ID_TYPES = [
   { value: "National ID Card",       label: "National ID Card" },
@@ -21,8 +23,12 @@ const ID_TYPES = [
 ];
 
 export default function BusinessKycSection() {
-  const { application, patchKyc, patchDocuments, markSectionStatus, next } = useApplication();
+  const { application, patchKyc, patchBusinessRep, patchDocuments, markSectionStatus, next } = useApplication();
+  const [verification, setVerification] = useState<{ bvn?: string; nin?: string; liveness?: string }>({});
+  const [verificationError, setVerificationError] = useState("");
+  const [livenessBusy, setLivenessBusy] = useState(false);
   if (!application) return null;
+  const currentApplication = application;
 
   const {
     register,
@@ -51,9 +57,46 @@ export default function BusinessKycSection() {
     patchDocuments({ [slot]: undefined } as any);
   }
 
+  async function verifyIdentity(type: "bvn" | "nin", value: string) {
+    if (!/^\d{11}$/.test(value)) {
+      setVerificationError(`${type.toUpperCase()} must be exactly 11 digits.`);
+      return;
+    }
+    setVerificationError("");
+    setVerification((current) => ({ ...current, [type]: "Checking with Prembly…" }));
+    try {
+      const names = currentApplication.businessRep?.fullName?.trim().split(/\s+/) ?? [];
+      const response = type === "bvn"
+        ? await verifyMyBvn(value, names[0], names.slice(1).join(" "))
+        : await verifyMyNin(value, names[0], names.slice(1).join(" "));
+      const status = response.verificationStatus === "SUCCESS" ? "Verified" : response.error || "Verification failed";
+      setVerification((current) => ({ ...current, [type]: status }));
+      if (response.verificationStatus === "SUCCESS") {
+        patchKyc({ [type === "bvn" ? "bvnVerified" : "ninVerified"]: true, verifiedDetails: response.verifiedDetails });
+        const details = response.verifiedDetails ?? {};
+        const value = (keys: string[]) => keys.map((key) => details[key]).find((item) => typeof item === "string" && item.trim()) as string | undefined;
+        const autofill = Object.fromEntries(Object.entries({ fullName: value(["full_name", "fullName", "name"]), phone: value(["phone_number", "phone", "mobile"]), dateOfBirth: value(["date_of_birth", "dateOfBirth", "dob"]) }).filter(([, item]) => item));
+        if (Object.keys(autofill).length) patchBusinessRep(autofill);
+      }
+    } catch (error) {
+      setVerification((current) => ({ ...current, [type]: "Verification failed" }));
+      setVerificationError(error instanceof Error ? error.message : `Unable to verify ${type.toUpperCase()}`);
+    }
+  }
+
+  async function verifyLiveness(file: File) {
+    setLivenessBusy(true); setVerificationError("");
+    try {
+      const response = await verifyMyLiveness(file);
+      patchKyc({ livenessVerified: response.verificationStatus === "SUCCESS", livenessStatus: response.verificationStatus });
+      setVerification((current) => ({ ...current, liveness: response.verificationStatus === "SUCCESS" ? "Verified" : response.error || "Verification failed" }));
+    } catch (error) { setVerificationError(error instanceof Error ? error.message : "Unable to complete liveness verification"); }
+    finally { setLivenessBusy(false); }
+  }
+
   const hasIdDoc = Boolean(application.documents?.identificationDocument);
   const hasProof = Boolean(application.documents?.proofOfAddress);
-  const canContinue = isValid && hasIdDoc && hasProof;
+  const canContinue = isValid && hasIdDoc && hasProof && application.kyc.bvnVerified === true && application.kyc.ninVerified === true && application.kyc.livenessVerified === true;
 
   function onSubmit(data: KycForm) {
     patchKyc(data);
@@ -98,6 +141,23 @@ export default function BusinessKycSection() {
             {...register("nin")}
             onChange={(e) => { register("nin").onChange(e); sync("nin", e.target.value); }}
           />
+          <div className="-mt-3 sm:col-start-1">
+            <button type="button" className="btn-secondary text-xs" onClick={() => void verifyIdentity("bvn", application.kyc?.bvn || "")}>Verify BVN instantly</button>
+            {verification.bvn && <span className={`ml-2 text-xs ${verification.bvn === "Verified" ? "text-emerald-600" : "text-slate-500"}`}>{verification.bvn}</span>}
+          </div>
+          <div className="-mt-3 sm:col-start-2">
+            <button type="button" className="btn-secondary text-xs" onClick={() => void verifyIdentity("nin", application.kyc?.nin || "")}>Verify NIN instantly</button>
+            {verification.nin && <span className={`ml-2 text-xs ${verification.nin === "Verified" ? "text-emerald-600" : "text-slate-500"}`}>{verification.nin}</span>}
+          </div>
+        </div>
+        {verificationError && <p className="text-sm text-red-600">{verificationError}</p>}
+
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <label className="velo-label">Liveness verification <span className="text-red-500">*</span>
+            <input className="velo-input mt-1" type="file" accept="image/jpeg,image/png,image/webp" disabled={livenessBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void verifyLiveness(file); }} />
+          </label>
+          <p className="mt-1 text-xs text-amber-800">Upload a clear live selfie. This is checked by Prembly and cannot be skipped.</p>
+          {verification.liveness && <p className={`mt-2 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">

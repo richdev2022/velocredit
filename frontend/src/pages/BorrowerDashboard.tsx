@@ -50,7 +50,6 @@ export default function BorrowerDashboard() {
   ) ?? false;
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
-  const isKycVerified = user?.kycStatus === "VERIFIED";
   const repayments = data?.repayments ?? data?.payments ?? [];
   const paidRepayments = repayments.filter((payment) => ["SUCCESSFUL", "COMPLETED"].includes(String(payment.status))).reduce((sum, payment) => sum + Number(payment.amountNaira ?? 0), 0);
   const scheduledRepayments = repayments.reduce((sum, payment) => sum + Number(payment.amountNaira ?? 0), 0);
@@ -113,9 +112,7 @@ export default function BorrowerDashboard() {
                   </div>
                 ) : (
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    {isKycVerified
-                      ? "Great news — you're verified! Enable investor access to start earning up to 18% p.a."
-                      : "Complete your KYC to unlock both borrower and investor features with one verification."}
+                    "Enable investor access anytime. You can complete or continue KYC from the dashboard you choose."
                   </div>
                 )}
               </div>
@@ -151,9 +148,9 @@ export default function BorrowerDashboard() {
                 <button
                   type="button"
                   onClick={handleEnableInvestor}
-                  disabled={switchingBusy || !isKycVerified}
+                  disabled={switchingBusy}
                   className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-semibold shadow-md shadow-emerald-500/20 hover:shadow-lg hover:shadow-emerald-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-                  title={!isKycVerified ? "Complete KYC first to enable investor access" : ""}
+                  title="Enable investor access"
                 >
                   {switchingBusy ? (
                     <>

@@ -1,3 +1,5 @@
+import { config } from "../utils/config";
+
 export type Role = "INVESTOR" | "BORROWER" | "ADMIN";
 export type KycStatus = "NOT_STARTED" | "IN_PROGRESS" | "PENDING_VERIFICATION" | "ACTION_REQUIRED" | "PARTIALLY_VERIFIED" | "VERIFIED" | "REJECTED" | "EXPIRED" | "SUSPENDED";
 export type LoanStatus = "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "KYC_PENDING" | "UNDER_REVIEW" | "MORE_INFORMATION_REQUIRED" | "APPROVED" | "REJECTED" | "DISBURSEMENT_PENDING" | "DISBURSED" | "ACTIVE" | "PAST_DUE" | "DEFAULTED" | "REPAID" | "CANCELLED" | "WRITTEN_OFF";
@@ -16,7 +18,7 @@ export interface RegistrationResponse { ok: true; user: SessionUser; verificatio
 export interface PaginationMeta { total: number; limit: number; offset: number; }
 
 const TOKEN_KEY = "velo:access-token";
-const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") || "http://localhost:4000";
+const API_URL = config.apiUrl;
 
 export function getAccessToken(): string | null { return sessionStorage.getItem(TOKEN_KEY); }
 export function clearAccessToken(): void { sessionStorage.removeItem(TOKEN_KEY); }
@@ -121,7 +123,7 @@ export async function addUserRole(role: Exclude<Role, "ADMIN">): Promise<{ ok: t
 }
 
 export interface KycChecklist { personalInfoCompleted: boolean; phoneVerified: boolean; bvnVerified: boolean; ninVerified: boolean; proofOfIdentityUploaded: boolean; proofOfAddressUploaded: boolean; selfieUploaded: boolean; }
-export interface KycResponse { ok: true; status: KycStatus; checklist: KycChecklist; bvnLast4?: string; ninLast4?: string; submittedAt?: string; verifiedAt?: string; rejectedReason?: string; documents: unknown[]; verificationEvents: unknown[]; }
+export interface KycResponse { ok: true; status: KycStatus; checklist: KycChecklist; verificationStatus?: "PENDING" | "SUCCESS" | "FAILED" | "MANUAL_REVIEW"; providerConfigured?: boolean; error?: string; verifiedDetails?: Record<string, unknown>; bvnLast4?: string; ninLast4?: string; submittedAt?: string; verifiedAt?: string; rejectedReason?: string; documents: unknown[]; verificationEvents: unknown[]; }
 export async function getMyKyc(): Promise<KycResponse> { return request("/api/v1/me/kyc"); }
 
 export interface KycUpdateInput { statusOverride?: Extract<KycStatus, "IN_PROGRESS" | "PENDING_VERIFICATION">; checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean }; bvn?: string; nin?: string; }
@@ -140,12 +142,17 @@ export async function verifyMyBvn(bvn: string, firstName?: string, lastName?: st
 export async function verifyMyNin(nin: string, firstName?: string, lastName?: string, dateOfBirth?: string): Promise<KycResponse> {
   return request("/api/v1/me/kyc/nin/verify", { method: "POST", body: JSON.stringify({ nin, firstName, lastName, dateOfBirth }) });
 }
+export async function verifyMyLiveness(file: File): Promise<KycResponse> {
+  const form = new FormData();
+  form.append("image", file);
+  return request("/api/v1/me/kyc/liveness/verify", { method: "POST", body: form });
+}
 
-export interface DocumentUploadResponse { ok: true; document: { id: string; documentType: string; fileName: string; status: string; uploadedAt: string; } }
+export interface DocumentUploadResponse { ok: true; document: { id: string; documentType: string; fileName: string; status: string; uploadedAt: string; }; checklist: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean } }
 export async function uploadKycDocument(documentType: string, file: File, note?: string): Promise<DocumentUploadResponse> {
   const form = new FormData();
   form.append("documentType", documentType);
-  form.append("file", file);
+  form.append("document", file);
   if (note) form.append("note", note);
   return request("/api/v1/me/kyc/documents", { method: "POST", body: form });
 }

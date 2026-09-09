@@ -35,7 +35,20 @@ assertProductionSecrets();
 const app = express();
 app.disable("x-powered-by");
 app.use(helmet());
-app.use(cors({ origin: env.API_ORIGIN, credentials: true }));
+const allowedOrigins = env.API_ORIGIN
+  .split(",")
+  .map((origin) => origin.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+app.use(cors({
+  credentials: true,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  },
+}));
 app.use((req, res, next) => {
   const requestId = randomUUID();
   const startedAt = Date.now();

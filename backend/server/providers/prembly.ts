@@ -60,6 +60,16 @@ function redactSensitive(value: unknown): Record<string, unknown> {
   return result;
 }
 
+function safeIdentityFields(response: Record<string, unknown>): Record<string, unknown> {
+  const data = responseRecord(response);
+  const keys = ["full_name", "fullName", "first_name", "last_name", "phone_number", "phone", "mobile", "date_of_birth", "dateOfBirth", "dob", "address", "state", "lga"];
+  const fields = Object.fromEntries(keys.filter((key) => typeof data[key] === "string" && String(data[key]).trim()).map((key) => [key, data[key]]));
+  if (!fields.full_name && !fields.fullName && (fields.first_name || fields.last_name)) {
+    fields.full_name = [fields.first_name, fields.last_name].filter(Boolean).join(" ");
+  }
+  return fields;
+}
+
 export interface BvnVerificationInput {
   bvn: string;
   firstName?: string;
@@ -89,7 +99,7 @@ export async function verifyBvn(input: BvnVerificationInput): Promise<Verificati
       providerReference: providerReference(response) ?? `${Date.now()}`,
       matchScore: numericField(response, ["match_score", "matchScore", "confidence"]),
       matchedFields: {},
-      normalizedFields: response,
+      normalizedFields: safeIdentityFields(response),
       rawResponse: response,
     };
   } catch (error) {
@@ -120,13 +130,34 @@ export async function verifyNin(input: NinVerificationInput): Promise<Verificati
       providerReference: providerReference(response) ?? `${Date.now()}`,
       matchScore: numericField(response, ["match_score", "matchScore", "confidence"]),
       matchedFields: {},
-      normalizedFields: response,
+      normalizedFields: safeIdentityFields(response),
       rawResponse: response,
     };
   } catch (error) {
     return {
       status: "FAILED",
       errorMessage: error instanceof Error ? error.message : "NIN verification failed",
+      rawResponse: { error: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+export async function verifyLiveness(image: Buffer, mimeType: string): Promise<VerificationResult> {
+  try {
+    const response = await premblyRequest<Record<string, unknown>>(env.PREMBLY_LIVENESS_PATH, {
+      image: image.toString("base64"),
+      image_type: mimeType,
+    });
+    const status = providerStatus(response);
+    return {
+      status,
+      providerReference: providerReference(response) ?? `${Date.now()}`,
+      rawResponse: redactSensitive(response),
+    };
+  } catch (error) {
+    return {
+      status: "FAILED",
+      errorMessage: error instanceof Error ? error.message : "Liveness verification failed",
       rawResponse: { error: error instanceof Error ? error.message : String(error) },
     };
   }

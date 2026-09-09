@@ -2,6 +2,8 @@ import { randomUUID, createHash } from "node:crypto";
 import { sql } from "./db.js";
 
 export type Role = "INVESTOR" | "BORROWER" | "ADMIN" | "LOAN_MANAGER";
+export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loans", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
+export type AdminPermission = typeof ADMIN_PERMISSIONS[number];
 export type KycStatus = "NOT_STARTED" | "IN_PROGRESS" | "PENDING_VERIFICATION" | "ACTION_REQUIRED" | "VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED" | "EXPIRED" | "SUSPENDED";
 export type LoanStatus = "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "KYC_PENDING" | "UNDER_REVIEW" | "MORE_INFORMATION_REQUIRED" | "APPROVED" | "REJECTED" | "DISBURSEMENT_PENDING" | "DISBURSED" | "ACTIVE" | "PAST_DUE" | "DEFAULTED" | "REPAID" | "CANCELLED" | "WRITTEN_OFF";
 export type InvestmentStatus = "PENDING" | "ACTIVE" | "LIQUIDITY_REQUESTED" | "LIQUIDITY_APPROVED" | "MATURITY_PENDING" | "MATURED" | "PAYOUT_PENDING" | "PAID_OUT" | "CANCELLED" | "REJECTED" | "PAYOUT_FAILED" | "PAYOUT_ACCOUNT_REQUIRED";
@@ -18,6 +20,7 @@ export interface User {
   fullName: string;
   passwordHash: string;
   roles: Role[];
+    adminPermissions?: AdminPermission[];
   kycStatus: KycStatus;
   createdAt: string;
   updatedAt?: string;
@@ -107,6 +110,7 @@ export interface KycCase {
     proofOfAddress: boolean;
     passport: boolean;
     signature: boolean;
+    liveness: boolean;
   };
   createdAt: string;
   updatedAt?: string;
@@ -116,7 +120,7 @@ export interface IdentityVerificationEvent {
   id: string;
   kycCaseId: string;
   provider: "prembly" | "manual";
-  verificationType: "BVN" | "NIN" | "PASSPORT" | "ADDRESS" | "SIGNATURE";
+  verificationType: "BVN" | "NIN" | "LIVENESS" | "PASSPORT" | "ADDRESS" | "SIGNATURE";
   providerReference?: string;
   status: "PENDING" | "SUCCESS" | "FAILED" | "MANUAL_REVIEW";
   matchScore?: number;
@@ -593,7 +597,7 @@ export function findOrCreateKycCase(userId: string): KycCase {
       id: randomUUID(),
       userId,
       status: "NOT_STARTED",
-      checklist: { bvn: false, nin: false, proofOfAddress: false, passport: false, signature: false },
+      checklist: { bvn: false, nin: false, proofOfAddress: false, passport: false, signature: false, liveness: false },
       createdAt: new Date().toISOString(),
     };
     kycCases.push(kyc);

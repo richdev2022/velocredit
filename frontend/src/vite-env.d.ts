@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_API_URL?: string;
+  readonly VITE_BRAND_LOGO_URL?: string;
   readonly VITE_LOAN_MIN_AMOUNT: string;
   readonly VITE_LOAN_MAX_AMOUNT: string;
   readonly VITE_LOAN_DEFAULT_AMOUNT: string;

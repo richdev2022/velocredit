@@ -45,6 +45,8 @@ export default function AdminSettings() {
   const [selectedTenures, setSelectedTenures] = useState<number[]>(() => currentConfig.tenures.map((t) => t.value));
   const [companyName, setCompanyName] = useState(currentConfig.companyName);
   const [companyWebsite, setCompanyWebsite] = useState(currentConfig.companyWebsite);
+  const [brandLogoUrl, setBrandLogoUrl] = useState(currentConfig.brandLogoUrl);
+  const [apiUrl, setApiUrl] = useState(currentConfig.apiUrl);
   const [loanManagerEmails, setLoanManagerEmails] = useState(currentConfig.loanManagerEmails.join(", "));
   const [adminEmails, setAdminEmails] = useState(currentConfig.adminEmails.join(", "));
   const [programs, setPrograms] = useState<Record<LoanProgramKey, LoanProgramConfig>>(() => ({
@@ -195,6 +197,8 @@ export default function AdminSettings() {
       loanPrograms: programs,
       companyName: companyName !== baseConfig.companyName ? companyName : undefined,
       companyWebsite: companyWebsite !== baseConfig.companyWebsite ? companyWebsite : undefined,
+      brandLogoUrl: brandLogoUrl !== baseConfig.brandLogoUrl ? brandLogoUrl : undefined,
+      apiUrl: apiUrl !== baseConfig.apiUrl ? apiUrl : undefined,
       loanManagerEmails: loanManagerEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
       adminEmails: adminEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
     };
@@ -236,6 +240,8 @@ export default function AdminSettings() {
     setSelectedTenures(baseConfig.tenures.map((t) => t.value));
     setCompanyName(baseConfig.companyName);
     setCompanyWebsite(baseConfig.companyWebsite);
+    setBrandLogoUrl(baseConfig.brandLogoUrl);
+    setApiUrl(baseConfig.apiUrl);
     setLoanManagerEmails(baseConfig.loanManagerEmails.join(", "));
     setAdminEmails(baseConfig.adminEmails.join(", "));
     setPrograms({ PERSONAL: structuredClone(baseConfig.loanPrograms.PERSONAL), BUSINESS: structuredClone(baseConfig.loanPrograms.BUSINESS) });
@@ -507,6 +513,14 @@ export default function AdminSettings() {
                   placeholder="www.yourcompany.com"
                 />
               </Field>
+              <Field label="Brand Logo URL">
+                <input type="url" value={brandLogoUrl} onChange={(e) => setBrandLogoUrl(e.target.value)} className="velo-input text-sm" placeholder="https://.../logo.png" />
+                <div className="mt-2 flex items-center gap-3"><img src={brandLogoUrl} alt="Brand preview" className="h-10 max-w-[180px] object-contain" /><span className="text-xs text-slate-500">Used in navigation, SEO, emails, and agreements where supported.</span></div>
+              </Field>
+              <Field label="Frontend API URL">
+                <input type="url" value={apiUrl} onChange={(e) => setApiUrl(e.target.value.replace(/\/$/, ""))} className="velo-input text-sm" placeholder="https://api.example.com" />
+                <div className="velo-helper">Changing this takes effect after a page reload.</div>
+              </Field>
               <Field label="Administrator Emails">
                 <input
                   type="text"
@@ -528,6 +542,22 @@ export default function AdminSettings() {
                 <div className="velo-helper">Comma-separated recipients for new applications and loan status updates.</div>
               </Field>
             </div>
+          </Section>
+
+          <Section title="Environment & Integrations" subtitle="Deployment-controlled values are shown for visibility. Secrets are never exposed in the browser or editable here." icon="🔒">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                ["Database", "Server secret", "Not exposed"],
+                ["JWT signing", "Server secret", "Not exposed"],
+                ["Flutterwave", "Payment provider", "Configured by backend"],
+                ["Prembly", "Identity provider", "Configured by backend"],
+                ["Google Drive", "Private document storage", "Configured by backend"],
+                ["Brevo / KUDI / Meta", "Notifications", "Configured by backend"],
+                ["Loan policy", "Eligibility thresholds", "Configured by backend"],
+                ["Reminder schedule", "Repayment notifications", "Configured by backend"],
+              ].map(([name, category, status]) => <div key={name} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700"><div className="text-sm font-semibold text-velo-900 dark:text-white">{name}</div><div className="mt-1 text-xs text-slate-500">{category}</div><div className="mt-2 text-xs font-semibold text-emerald-600">{status}</div></div>)}
+            </div>
+            <p className="mt-4 text-xs leading-5 text-slate-500">Provider keys, database credentials, admin passwords, JWT secrets, storage credentials, webhook secrets, and OTP secrets must be changed in the deployment environment and are intentionally unavailable to browser administrators.</p>
           </Section>
         </div>
 

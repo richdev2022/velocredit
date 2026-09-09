@@ -115,6 +115,11 @@ export interface KycInfo {
   nin: string;
   identificationType: IdentificationType;
   identificationNumber: string;
+  bvnVerified?: boolean;
+  ninVerified?: boolean;
+  livenessVerified?: boolean;
+  verifiedDetails?: Record<string, unknown>;
+  livenessStatus?: string;
 }
 
 // ---------------------------------------------------------------------------

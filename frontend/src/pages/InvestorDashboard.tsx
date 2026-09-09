@@ -3,9 +3,14 @@ import { Link, useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import { useAuth } from "../context/AuthContext";
 import {
+  fundWallet,
   getInvestorDashboard,
+  getInvestmentPlans,
+  getMyKyc,
   getInvestorTransactions,
-  submitKyc,
+  uploadKycDocument,
+  verifyMyBvn,
+  verifyMyNin,
 } from "../services/apiClient";
 
 const money = new Intl.NumberFormat("en-NG", {
@@ -24,9 +29,14 @@ type TransactionData = {
   payouts?: Array<{ amountNaira?: number; status?: string }>;
   investments?: Array<unknown>;
 };
+type KycData = {
+  status?: string;
+  checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean };
+};
+type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number };
 
 export default function InvestorDashboard() {
-  const { user, addUserRole } = useAuth();
+  const { user, addUserRole, refreshUser } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState<DashboardData | null>(null);
   const [transactions, setTransactions] = useState<TransactionData | null>(null);
@@ -35,33 +45,102 @@ export default function InvestorDashboard() {
   const [message, setMessage] = useState("");
   const [switchingBusy, setSwitchingBusy] = useState(false);
   const [switchMsg, setSwitchMsg] = useState("");
+  const [kyc, setKyc] = useState<KycData | null>(null);
+  const [kycBusy, setKycBusy] = useState("");
+  const [kycError, setKycError] = useState("");
+  const [bvn, setBvn] = useState("");
+  const [nin, setNin] = useState("");
+  const [action, setAction] = useState<"fund" | "plans" | "transactions" | "">("");
+  const [fundingAmount, setFundingAmount] = useState("100000");
+  const [plans, setPlans] = useState<Plan[]>([]);
 
   useEffect(() => {
     if (!user) return;
-    Promise.all([getInvestorDashboard(), getInvestorTransactions()])
-      .then(([dashboard, history]) => {
+    Promise.all([getInvestorDashboard(), getInvestorTransactions(), getMyKyc()])
+      .then(([dashboard, history, kycResponse]) => {
         setData(dashboard as DashboardData);
         setTransactions(history as TransactionData);
+        setKyc(kycResponse as unknown as KycData);
       })
       .catch((err) =>
         setError(err instanceof Error ? err.message : "Unable to load investor data")
       );
   }, [user]);
 
-  async function startKyc() {
-    setBusy(true);
-    setMessage("");
+  async function verifyIdentity(type: "BVN" | "NIN") {
+    const value = type === "BVN" ? bvn : nin;
+    if (!/^\d{11}$/.test(value)) {
+      setKycError(`${type} must be exactly 11 digits.`);
+      return;
+    }
+    setKycBusy(type);
+    setKycError("");
     try {
-      const response = (await submitKyc()) as { status?: string };
-      setMessage(
-        response.status === "PENDING_VERIFICATION"
-          ? "KYC submitted for verification."
-          : "KYC updated."
-      );
+      const names = (user?.fullName ?? "").trim().split(/\s+/);
+      const response = type === "BVN"
+        ? await verifyMyBvn(value, names[0], names.slice(1).join(" "))
+        : await verifyMyNin(value, names[0], names.slice(1).join(" "));
+      setKyc((current) => ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"] }));
+      await refreshUser();
+      setMessage(`${type} verification request completed.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to submit KYC");
+      setKycError(err instanceof Error ? err.message : `Unable to verify ${type}`);
+    } finally {
+      setKycBusy("");
+    }
+  }
+
+  async function uploadProofOfAddress(file: File) {
+    setKycBusy("PROOF_OF_ADDRESS");
+    setKycError("");
+    try {
+      const response = await uploadKycDocument("PROOF_OF_ADDRESS", file);
+      setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"] }));
+      setMessage("Proof of address uploaded. Submit it for review when BVN and NIN are verified.");
+    } catch (err) {
+      setKycError(err instanceof Error ? err.message : "Unable to upload proof of address");
+    } finally {
+      setKycBusy("");
+    }
+  }
+
+  async function submitAddressReview() {
+    if (!kyc?.checklist?.bvn || !kyc.checklist.nin || !kyc.checklist.proofOfAddress) return;
+    setBusy(true);
+    setKycError("");
+    try {
+      const response = await import("../services/apiClient").then(({ submitKyc }) => submitKyc());
+      setKyc((current) => ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"] }));
+      await refreshUser();
+      setMessage("Proof of address submitted for manual review.");
+    } catch (err) {
+      setKycError(err instanceof Error ? err.message : "Unable to submit proof of address");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function openAction(nextAction: "fund" | "plans" | "transactions") {
+    setAction(nextAction);
+    if (nextAction === "plans" && !plans.length) {
+      try {
+        const response = await getInvestmentPlans();
+        setPlans(response.plans as Plan[]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to load investment plans");
+      }
+    }
+  }
+
+  async function handleFundWallet(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const response = await fundWallet(Number(fundingAmount));
+      const link = response.checkout?.data?.link;
+      if (link) window.location.assign(link);
+      else setMessage(response.message || "Wallet funding is being processed.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start wallet funding");
     }
   }
 
@@ -80,7 +159,8 @@ export default function InvestorDashboard() {
   const returnRate = totalCapital ? Math.min(100, Math.round((returns / totalCapital) * 100)) : 0;
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
-  const isKycVerified = user?.kycStatus === "VERIFIED";
+  const checklist = kyc?.checklist ?? {};
+  const canSubmitAddressReview = Boolean(checklist.bvn && checklist.nin && checklist.proofOfAddress);
 
   async function handleEnableBorrower() {
     setSwitchingBusy(true);
@@ -125,9 +205,7 @@ export default function InvestorDashboard() {
                   </div>
                 ) : (
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    {isKycVerified
-                      ? "You're verified! Enable borrower access to apply for loans anytime."
-                      : "Complete KYC verification to access both investing and borrowing with a single account."}
+                    "Enable borrower access anytime. You can complete or continue KYC from the dashboard you choose."
                   </div>
                 )}
               </div>
@@ -163,9 +241,9 @@ export default function InvestorDashboard() {
                 <button
                   type="button"
                   onClick={handleEnableBorrower}
-                  disabled={switchingBusy || !isKycVerified}
+                  disabled={switchingBusy}
                   className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-gradient-to-r from-velo-600 to-velo-500 text-white text-sm font-semibold shadow-md shadow-velo-500/20 hover:shadow-lg hover:shadow-velo-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-                  title={!isKycVerified ? "Complete KYC first to enable borrower access" : ""}
+                  title="Enable borrower access"
                 >
                   {switchingBusy ? (
                     <>
@@ -314,15 +392,36 @@ export default function InvestorDashboard() {
                 </div>
               ))}
             </div>
+            {kycError && <p className="mt-4 text-sm text-red-600 dark:text-red-400">{kycError}</p>}
             {user?.kycStatus !== "VERIFIED" && (
-              <button
-                type="button"
-                onClick={startKyc}
-                disabled={busy}
-                className="btn-primary mt-6 inline-flex items-center gap-2"
-              >
-                {busy ? "Submitting…" : "Submit KYC for review"}
-              </button>
+              <div className="mt-6 space-y-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                <p className="text-sm font-semibold text-velo-900 dark:text-white">Complete your verification</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="velo-label">
+                    BVN
+                    <div className="mt-1 flex gap-2">
+                      <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={bvn} onChange={(event) => setBvn(event.target.value.replace(/\D/g, ""))} placeholder="11-digit BVN" />
+                      <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "BVN"} onClick={() => verifyIdentity("BVN")}>{kycBusy === "BVN" ? "Checking…" : checklist.bvn ? "Verified" : "Verify"}</button>
+                    </div>
+                  </label>
+                  <label className="velo-label">
+                    NIN
+                    <div className="mt-1 flex gap-2">
+                      <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={nin} onChange={(event) => setNin(event.target.value.replace(/\D/g, ""))} placeholder="11-digit NIN" />
+                      <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "NIN"} onClick={() => verifyIdentity("NIN")}>{kycBusy === "NIN" ? "Checking…" : checklist.nin ? "Verified" : "Verify"}</button>
+                    </div>
+                  </label>
+                </div>
+                <label className="velo-label block">
+                  Proof of address
+                  <input className="velo-input mt-1" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />
+                  <span className="mt-1 block text-xs font-normal text-slate-500">Upload a recent utility bill or bank statement.</span>
+                </label>
+                <button type="button" onClick={submitAddressReview} disabled={!canSubmitAddressReview || busy || kyc?.status === "PENDING_VERIFICATION"} className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50">
+                  {busy ? "Submitting…" : kyc?.status === "PENDING_VERIFICATION" ? "Address under review" : "Submit proof of address for review"}
+                </button>
+                {!canSubmitAddressReview && <p className="text-xs text-slate-500">Verify BVN and NIN and upload proof of address before submitting for review.</p>}
+              </div>
             )}
           </section>
 
@@ -330,7 +429,7 @@ export default function InvestorDashboard() {
             <h2 className="section-heading">Quick actions</h2>
             <p className="section-subheading">Investor essentials at your fingertips.</p>
             <div className="mt-5 space-y-2.5">
-              <div className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors group cursor-pointer">
+              <button type="button" onClick={() => void openAction("fund")} className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors group text-left">
                 <div className="flex items-center gap-3">
                   <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500 text-white">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -355,8 +454,8 @@ export default function InvestorDashboard() {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400 group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all">
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-              </div>
-              <div className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-velo-50 dark:bg-velo-900/30 hover:bg-velo-100 dark:hover:bg-velo-900/50 transition-colors group cursor-pointer">
+              </button>
+              <button type="button" onClick={() => void openAction("plans")} className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-velo-50 dark:bg-velo-900/30 hover:bg-velo-100 dark:hover:bg-velo-900/50 transition-colors group text-left">
                 <div className="flex items-center gap-3">
                   <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-velo-500 text-white">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -381,8 +480,8 @@ export default function InvestorDashboard() {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400 group-hover:text-velo-600 group-hover:translate-x-0.5 transition-all">
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-              </div>
-              <div className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors group cursor-pointer">
+              </button>
+              <button type="button" onClick={() => void openAction("transactions")} className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors group text-left">
                 <div className="flex items-center gap-3">
                   <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-velo-700 to-velo-600 text-white">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -407,8 +506,11 @@ export default function InvestorDashboard() {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400 group-hover:text-velo-600 group-hover:translate-x-0.5 transition-all">
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-              </div>
+              </button>
             </div>
+            {action === "fund" && <form onSubmit={handleFundWallet} className="mt-4 flex gap-2"><input className="velo-input" type="number" min="1000" step="100" value={fundingAmount} onChange={(event) => setFundingAmount(event.target.value)} aria-label="Funding amount" /><button className="btn-primary shrink-0" type="submit">Continue to payment</button></form>}
+            {action === "plans" && <div className="mt-4 space-y-2">{plans.map((plan) => <div key={plan.id} className="flex items-center justify-between rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700"><span className="font-semibold text-velo-900 dark:text-white">{plan.name} · {plan.tenureDays} days</span><span className="text-emerald-600">{plan.annualRatePercent}% p.a.</span></div>)}</div>}
+            {action === "transactions" && <div className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">{transactions?.payouts?.length ? transactions.payouts.map((payout, index) => <div key={index} className="flex justify-between"><span>{payout.status ?? "Payout"}</span><span>{money.format(Number(payout.amountNaira ?? 0))}</span></div>) : <p>No payout transactions yet.</p>}</div>}
           </section>
         </div>
       </div>

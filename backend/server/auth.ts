@@ -10,11 +10,14 @@ import {
   passwordResetTokens,
   notifications,
   findOrCreateKycCase,
+  ADMIN_PERMISSIONS,
+  auditLogs,
   consents,
   generateOtpCode,
   hashToken,
   type OtpAction,
   type User,
+  type AdminPermission,
 } from "./store.js";
 import { sendSms, maskPhone, formatOtpMessage } from "./providers/kudi.js";
 import { sendEmail } from "./email.js";
@@ -32,7 +35,7 @@ export function setAdminPasswordHashOverride(value: string): void {
 }
 
 export type AuthRequest = Request & {
-  user?: Pick<User, "id" | "email" | "roles" | "fullName" | "kycStatus">;
+  user?: Pick<User, "id" | "email" | "roles" | "fullName" | "kycStatus" | "adminPermissions">;
 };
 
 export function issueToken(user: User): string {
@@ -42,6 +45,7 @@ export function issueToken(user: User): string {
       email: user.email,
       fullName: user.fullName,
       roles: user.roles,
+      adminPermissions: user.adminPermissions ?? (user.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : undefined),
       kycStatus: user.kycStatus,
     },
     secret,
@@ -68,6 +72,7 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       email: string;
       fullName: string;
       roles: User["roles"];
+      adminPermissions?: AdminPermission[];
       kycStatus?: string;
     };
     req.user = {
@@ -75,8 +80,12 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       email: payload.email,
       fullName: payload.fullName,
       roles: payload.roles,
+      adminPermissions: payload.adminPermissions ?? (payload.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : undefined),
       kycStatus: (payload.kycStatus ?? "NOT_STARTED") as User["kycStatus"],
     };
+    if (req.originalUrl.includes("/api/v1/admin/")) {
+      auditLogs.push({ id: randomUUID(), userId: req.user.id, action: "ADMIN_ENDPOINT_CALL", resourceType: "ENDPOINT", resourceId: req.originalUrl.split("?")[0], metadata: { method: req.method }, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
+    }
     next();
   } catch {
     res.status(401).json({ ok: false, error: "Invalid or expired token" });
@@ -85,12 +94,31 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
 
 export function requireRole(...roles: User["roles"][number][]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
-    if (!req.user || !roles.some((role) => req.user?.roles.includes(role))) {
+    const isFullAdmin = req.user?.roles.includes("ADMIN");
+    const requiredPermission = adminPermissionForPath(req.path);
+    const hasManagerPermission = req.user?.roles.includes("LOAN_MANAGER") && Boolean(requiredPermission && (req.user.adminPermissions ?? []).includes(requiredPermission));
+    if (!req.user || !roles.some((role) => req.user?.roles.includes(role)) && !(roles.includes("ADMIN") && (isFullAdmin || hasManagerPermission))) {
       res.status(403).json({ ok: false, error: "Insufficient permissions" });
       return;
     }
     next();
   };
+}
+
+function adminPermissionForPath(path: string): AdminPermission | undefined {
+  if (path.includes("/summary")) return "overview";
+  if (path.includes("/users")) return "users";
+  if (path.includes("/investors")) return "investors";
+  if (path.includes("/kyc")) return "kyc";
+  if (path.includes("/payouts")) return "payouts";
+  if (path.includes("/loans") || path.includes("/loan-products")) return "loans";
+  if (path.includes("/reconciliation")) return "reconciliation";
+  if (path.includes("/audit")) return "audit";
+  if (path.includes("/administrators") || path.includes("/loan-managers")) return "staff";
+  if (path.includes("/investment-plans")) return "investments";
+  if (path.includes("/reports")) return "reports";
+  if (path.includes("/config")) return "settings";
+  return undefined;
 }
 
 export class OtpRateLimitError extends Error {

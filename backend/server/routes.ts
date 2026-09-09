@@ -49,6 +49,7 @@ import {
   auditLogs,
   type KycStatus,
   type Role,
+  ADMIN_PERMISSIONS,
 } from "./store.js";
 import { env } from "./config.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
@@ -61,7 +62,7 @@ import {
   initializeWalletFunding,
   verifyTransaction,
 } from "./providers/flutterwave.js";
-import { verifyBvn, verifyNin, requestCreditReport } from "./providers/prembly.js";
+import { verifyBvn, verifyNin, verifyLiveness, requestCreditReport } from "./providers/prembly.js";
 
 const router = Router();
 const normalizePhone = (value: unknown): unknown => {
@@ -167,6 +168,7 @@ const documentUpload = multer({
   fileFilter: (_req, file, callback) =>
     callback(null, env.DOCUMENT_ALLOWED_MIME_TYPES.split(",").includes(file.mimetype)),
 });
+const livenessUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 }, fileFilter: (_req, file, callback) => callback(null, ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)) });
 
 router.post("/auth/register", async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
@@ -279,10 +281,11 @@ router.post("/auth/admin/login", async (req, res) => {
   const persistedAdmin = findUserByEmail(parsed.data.email);
   const isEnvironmentAdmin = Boolean(env.ADMIN_EMAIL && parsed.data.email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase());
   const configuredAdminPasswordHash = getAdminPasswordHashOverride() ?? env.ADMIN_PASSWORD_HASH;
-  const passwordMatches = persistedAdmin?.roles.includes("ADMIN")
+  const isBackOfficeUser = Boolean(persistedAdmin?.roles.some((role) => ["ADMIN", "LOAN_MANAGER"].includes(role)));
+  const passwordMatches = isBackOfficeUser && persistedAdmin
     ? await bcrypt.compare(parsed.data.password, persistedAdmin.passwordHash)
     : isEnvironmentAdmin && Boolean(env.ADMIN_PASSWORD || configuredAdminPasswordHash) && (configuredAdminPasswordHash ? await bcrypt.compare(parsed.data.password, configuredAdminPasswordHash) : parsed.data.password === env.ADMIN_PASSWORD);
-  if ((!isEnvironmentAdmin && !persistedAdmin?.roles.includes("ADMIN")) || !passwordMatches) {
+  if ((!isEnvironmentAdmin && !isBackOfficeUser) || !passwordMatches) {
     res.status(401).json({ ok: false, error: "Invalid admin credentials" });
     return;
   }
@@ -292,12 +295,14 @@ router.post("/auth/admin/login", async (req, res) => {
     phone: persistedAdmin?.phone ?? "",
     fullName: persistedAdmin?.fullName ?? "Velo Administrator",
     passwordHash: persistedAdmin?.passwordHash ?? configuredAdminPasswordHash ?? "",
-    roles: ["ADMIN"] as Role[],
+    roles: persistedAdmin?.roles ?? ["ADMIN"] as Role[],
+    adminPermissions: persistedAdmin?.adminPermissions ?? [...ADMIN_PERMISSIONS],
     kycStatus: "VERIFIED" as KycStatus,
     createdAt: new Date().toISOString(),
   };
   try {
     const challenge = await createOtpChallenge(admin.id, "LOGIN_STEP_UP", "", admin.email, parsed.data.channel);
+    auditLogs.push({ id: randomUUID(), userId: admin.id, action: "ADMIN_LOGIN_INITIATED", resourceType: "AUTH", resourceId: admin.email, metadata: { channel: parsed.data.channel }, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
     res.json({
       ok: true,
       requiresOtp: true,
@@ -306,7 +311,7 @@ router.post("/auth/admin/login", async (req, res) => {
       channel: parsed.data.channel,
       resendAvailableAt: challenge.resendAvailableAt,
       resendSecondsRemaining: challenge.resendSecondsRemaining,
-      user: { id: admin.id, email: admin.email, fullName: admin.fullName, roles: admin.roles },
+      user: { id: admin.id, email: admin.email, fullName: admin.fullName, roles: admin.roles, adminPermissions: admin.adminPermissions },
     });
   } catch (error) {
     if (error instanceof OtpRateLimitError) {
@@ -324,7 +329,7 @@ router.post("/auth/admin/login/resend-otp", async (req, res) => {
     return;
   }
   const admin = findUserByEmail(parsed.data.email);
-  const adminId = admin?.roles.includes("ADMIN") ? admin.id : "env-admin";
+  const adminId = admin?.roles.some((role) => ["ADMIN", "LOAN_MANAGER"].includes(role)) ? admin.id : "env-admin";
   try {
     const challenge = await createOtpChallenge(adminId, "LOGIN_STEP_UP", admin?.phone ?? "", admin?.email ?? env.ADMIN_EMAIL, parsed.data.channel);
     res.status(201).json({ ok: true, challengeId: challenge.id, expiresAt: challenge.expiresAt, channel: parsed.data.channel, resendAvailableAt: challenge.resendAvailableAt, resendSecondsRemaining: challenge.resendSecondsRemaining });
@@ -348,10 +353,16 @@ router.post("/auth/admin/login/verify-otp", async (req, res) => {
     res.status(400).json({ ok: false, error: result.error ?? "Admin OTP verification failed" });
     return;
   }
-  const persistedAdmin = users.find((user) => user.id === result.userId && user.roles.includes("ADMIN"));
+  const persistedAdmin = users.find((user) => user.id === result.userId && user.roles.some((role) => ["ADMIN", "LOAN_MANAGER"].includes(role)));
   const configuredAdminPasswordHash = getAdminPasswordHashOverride() ?? env.ADMIN_PASSWORD_HASH;
-  const admin = persistedAdmin ?? { id: "env-admin", email: env.ADMIN_EMAIL!, phone: "", fullName: "Velo Administrator", passwordHash: configuredAdminPasswordHash ?? "", roles: ["ADMIN"] as Role[], kycStatus: "VERIFIED" as KycStatus, createdAt: new Date().toISOString() };
-  res.json({ ok: true, verified: true, accessToken: issueToken(admin), user: { id: admin.id, email: admin.email, fullName: admin.fullName, roles: admin.roles } });
+  const admin = persistedAdmin ?? { id: "env-admin", email: env.ADMIN_EMAIL!, phone: "", fullName: "Velo Administrator", passwordHash: configuredAdminPasswordHash ?? "", roles: ["ADMIN"] as Role[], adminPermissions: [...ADMIN_PERMISSIONS], kycStatus: "VERIFIED" as KycStatus, createdAt: new Date().toISOString() };
+  auditLogs.push({ id: randomUUID(), userId: admin.id, action: "ADMIN_LOGIN_VERIFIED", resourceType: "AUTH", resourceId: admin.email, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
+  res.json({ ok: true, verified: true, accessToken: issueToken(admin), user: { id: admin.id, email: admin.email, fullName: admin.fullName, roles: admin.roles, adminPermissions: admin.adminPermissions } });
+});
+
+router.post("/auth/admin/logout", requireAuth, (req: AuthRequest, res) => {
+  auditLogs.push({ id: randomUUID(), userId: req.user?.id, action: "ADMIN_LOGOUT", resourceType: "AUTH", resourceId: req.user?.email, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
+  res.json({ ok: true });
 });
 
 router.post("/auth/refresh", requireAuth, (req: AuthRequest, res) => {
@@ -680,7 +691,8 @@ router.post("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     kyc.checklist.nin = true;
   }
   if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
-  if (parsed.data.statusOverride === "PENDING_VERIFICATION" || Object.values(kyc.checklist).every(Boolean)) {
+  const requiredChecklistComplete = kyc.checklist.bvn && kyc.checklist.nin && kyc.checklist.proofOfAddress;
+  if (requiredChecklistComplete) {
     kyc.status = "PENDING_VERIFICATION";
     kyc.submittedAt = kyc.submittedAt ?? new Date().toISOString();
   }
@@ -696,7 +708,7 @@ router.post("/me/kyc", requireAuth, (req: AuthRequest, res) => {
         ? "KYC is verified."
         : kyc.status === "PENDING_VERIFICATION"
         ? "KYC submitted for verification. Provider credentials are required for automated checks."
-        : "KYC updated. Complete all checklist items to submit.",
+        : "KYC updated. Verify your BVN and NIN and upload proof of address to submit.",
   });
 });
 
@@ -746,7 +758,17 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     checklist: kyc.checklist,
     providerConfigured: !result.errorMessage?.includes("not configured"),
     error: result.errorMessage,
+    verifiedDetails: result.status === "SUCCESS" ? result.normalizedFields : undefined,
   });
+});
+
+router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image"), async (req: AuthRequest, res) => {
+  if (!req.file) { res.status(400).json({ ok: false, error: "A supported selfie image is required" }); return; }
+  const kyc = findOrCreateKycCase(req.user!.id);
+  const result = await verifyLiveness(req.file.buffer, req.file.mimetype);
+  identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: "LIVENESS", providerReference: result.providerReference, status: result.status, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
+  if (result.status === "SUCCESS") { kyc.checklist.liveness = true; kyc.updatedAt = new Date().toISOString(); }
+  res.json({ ok: true, verificationStatus: result.status, providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist });
 });
 
 router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => {
@@ -1251,6 +1273,11 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), (req
     return;
   }
   const input = parsed.data;
+  const kyc = findOrCreateKycCase(req.user!.id);
+  if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
+    res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
+    return;
+  }
   const user = users.find((item) => item.id === req.user!.id);
   const latestExternalCredit = creditReports
     .filter((item) => item.userId === req.user!.id && item.status === "RECEIVED" && item.score != null)
@@ -1381,6 +1408,11 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
   const application = loanApplications.find((a) => a.id === req.params.id && a.borrowerId === req.user?.id);
   if (!application) {
     res.status(404).json({ ok: false, error: "Application not found" });
+    return;
+  }
+  const kyc = findOrCreateKycCase(req.user!.id);
+  if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
+    res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
     return;
   }
   application.status = "SUBMITTED";
@@ -1646,6 +1678,7 @@ router.post("/admin/loan-managers", requireAuth, requireRole("ADMIN"), async (re
     phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")),
     password: z.string().min(12),
     role: z.literal("LOAN_MANAGER").optional(),
+    permissions: z.array(z.enum(ADMIN_PERMISSIONS)).default([...ADMIN_PERMISSIONS]),
   }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -1663,6 +1696,7 @@ router.post("/admin/loan-managers", requireAuth, requireRole("ADMIN"), async (re
     fullName: parsed.data.fullName,
     passwordHash: await bcrypt.hash(parsed.data.password, 12),
     roles: ["LOAN_MANAGER"] as Role[],
+    adminPermissions: parsed.data.permissions,
     kycStatus: "NOT_STARTED" as KycStatus,
     createdAt: now,
     updatedAt: now,
@@ -1711,11 +1745,11 @@ router.get("/admin/administrators", requireAuth, requireRole("ADMIN"), (_req, re
 });
 
 router.post("/admin/administrators", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
-  const parsed = z.object({ email: z.string().email(), fullName: z.string().min(2).max(120), phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/)), password: z.string().min(12) }).safeParse(req.body);
+  const parsed = z.object({ email: z.string().email(), fullName: z.string().min(2).max(120), phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/)), password: z.string().min(12), roles: z.array(z.enum(["ADMIN", "LOAN_MANAGER"])).min(1).default(["ADMIN"]), permissions: z.array(z.enum(ADMIN_PERMISSIONS)).default([...ADMIN_PERMISSIONS]) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   if (findUserByEmail(parsed.data.email)) { res.status(409).json({ ok: false, error: "An account with this email already exists" }); return; }
   const now = new Date().toISOString();
-  const administrator = { id: randomUUID(), email: parsed.data.email.toLowerCase(), phone: parsed.data.phone, fullName: parsed.data.fullName, passwordHash: await bcrypt.hash(parsed.data.password, 12), roles: ["ADMIN"] as Role[], kycStatus: "VERIFIED" as KycStatus, createdAt: now, updatedAt: now, isActive: true };
+  const administrator = { id: randomUUID(), email: parsed.data.email.toLowerCase(), phone: parsed.data.phone, fullName: parsed.data.fullName, passwordHash: await bcrypt.hash(parsed.data.password, 12), roles: parsed.data.roles as Role[], adminPermissions: parsed.data.permissions, kycStatus: "VERIFIED" as KycStatus, createdAt: now, updatedAt: now, isActive: true };
   users.push(administrator);
   recordAdminAudit(req, "ADMIN_CREATED", "USER", administrator.id, { email: administrator.email });
   const { passwordHash: _passwordHash, ...safeAdministrator } = administrator;

@@ -174,7 +174,7 @@ export default function StartApplication() {
                     to="/account?mode=register&role=BORROWER"
                     className="inline-flex items-center justify-center gap-2 px-6 py-4 rounded-2xl bg-gradient-to-r from-velo-600 to-velo-500 dark:bg-velo-600 dark:from-velo-600 dark:to-velo-600 text-white font-semibold shadow-lg shadow-velo-500/25 transition-all duration-200 hover:shadow-xl hover:shadow-velo-500/40 hover:scale-[1.02] active:scale-[0.98] group animate-pulse-glow"
                   >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     Borrow Money
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="group-hover:translate-x-1 transition-transform">
                       <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>

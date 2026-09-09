@@ -29,6 +29,8 @@ export interface AdminConfigOverride {
   loanPrograms?: LoanProgramOverrides;
   companyName?: string;
   companyWebsite?: string;
+  brandLogoUrl?: string;
+  apiUrl?: string;
   loanManagerEmails?: string[];
   adminEmails?: string[];
 }
@@ -96,6 +98,8 @@ export interface AppConfig {
   tenureFees: TenureFeeOverrides;
   companyName: string;
   companyWebsite: string;
+  brandLogoUrl: string;
+  apiUrl: string;
   loanManagerEmails: string[];
   adminEmails: string[];
   loanPrograms: Record<LoanProgramKey, LoanProgramConfig>;
@@ -158,6 +162,8 @@ const baseConfig: AppConfig = {
   loanPrograms: {} as Record<LoanProgramKey, LoanProgramConfig>,
   companyName: getStr("VITE_COMPANY_NAME", "Velo Finance LTD"),
   companyWebsite: getStr("VITE_COMPANY_WEBSITE", "www.velofinance.co"),
+  brandLogoUrl: getStr("VITE_BRAND_LOGO_URL", "https://i.ibb.co/b57jKwmk/Velo-New-Logo-2.png"),
+  apiUrl: getStr("VITE_API_URL", "http://localhost:4000").replace(/\/$/, ""),
   loanManagerEmails: getStr("VITE_LOAN_MANAGER_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
   adminEmails: getStr("VITE_ADMIN_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
 };
@@ -252,6 +258,8 @@ export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOve
     },
     companyName: overrides.companyName || baseConfig.companyName,
     companyWebsite: overrides.companyWebsite || baseConfig.companyWebsite,
+    brandLogoUrl: overrides.brandLogoUrl || baseConfig.brandLogoUrl,
+    apiUrl: overrides.apiUrl || baseConfig.apiUrl,
     loanManagerEmails: overrides.loanManagerEmails ?? baseConfig.loanManagerEmails,
     adminEmails: overrides.adminEmails ?? baseConfig.adminEmails,
   };

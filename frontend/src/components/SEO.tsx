@@ -47,12 +47,12 @@ export default function SEO() {
     upsertMeta("property", "og:description", description);
     upsertMeta("property", "og:url", canonicalUrl);
     upsertMeta("property", "og:site_name", config.companyName);
-    upsertMeta("property", "og:image", `${origin}/velo-logo.png`);
+    upsertMeta("property", "og:image", config.brandLogoUrl || `${origin}/velo-logo.png`);
     upsertMeta("property", "og:image:alt", `${config.companyName} logo`);
     upsertMeta("name", "twitter:card", "summary_large_image");
     upsertMeta("name", "twitter:title", title);
     upsertMeta("name", "twitter:description", description);
-    upsertMeta("name", "twitter:image", `${origin}/velo-logo.png`);
+    upsertMeta("name", "twitter:image", config.brandLogoUrl || `${origin}/velo-logo.png`);
     upsertLink("canonical", canonicalUrl);
 
     const existingSchema = document.getElementById("velo-seo-schema");
@@ -69,7 +69,7 @@ export default function SEO() {
             "@type": "Organization",
             name: config.companyName,
             url: origin,
-            logo: `${origin}/velo-logo.png`,
+            logo: config.brandLogoUrl || `${origin}/velo-logo.png`,
           },
           {
             "@type": "FinancialService",

@@ -3,9 +3,9 @@ import { z } from "zod";
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  API_PORT: z.coerce.number().int().positive().default(4000),
+  API_PORT: z.coerce.number().int().positive().default(Number(process.env.PORT ?? 4000)),
   API_PUBLIC_URL: z.string().url().default("http://localhost:4000"),
-  API_ORIGIN: z.string().url().default("http://localhost:5173"),
+  API_ORIGIN: z.string().default("http://localhost:5173"),
   DATABASE_URL: z.string().url().optional(),
   JWT_SECRET: z.string().min(32).optional(),
   JWT_EXPIRES_IN: z.string().default("2h"),
@@ -30,6 +30,7 @@ const envSchema = z.object({
   PREMBLY_API_KEY: z.string().optional(),
   PREMBLY_APP_ID: z.string().optional(),
   PREMBLY_CREDIT_REPORT_PATH: z.string().startsWith("/").optional(),
+  PREMBLY_LIVENESS_PATH: z.string().startsWith("/").default("/identitypass/face-verification/liveness"),
   PREMBLY_WEBHOOK_SECRET: z.string().optional(),
   KUDI_BASE_URL: z.string().url().default("https://my.kudisms.net/api"),
   KUDI_API_KEY: z.string().optional(),

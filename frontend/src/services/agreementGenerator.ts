@@ -175,7 +175,7 @@ export function generateLoanAgreement(
 <div class="agreement-doc" id="agreement-doc">
   <div class="agr-header">
     <div class="agr-brand">
-      <img src="/velo-logo.png" alt="${config.companyName}" class="agr-logo" />
+      <img src="${config.brandLogoUrl}" alt="${config.companyName}" class="agr-logo" />
     </div>
     <div class="agr-meta">
       <div>Agreement Ref: ${bold(app.applicationId || "—")}</div>
@@ -288,7 +288,7 @@ export function generateLoanAgreement(
       <h3 class="agr-h3">SIGNED FOR AND ON BEHALF OF THE LENDER</h3>
       <p class="pn-name">(${config.companyName})</p>
       <div class="lender-brand-panel">
-        <img src="/velo-logo.png" alt="${config.companyName}" class="exec-logo" />
+        <img src="${config.brandLogoUrl}" alt="${config.companyName}" class="exec-logo" />
         <div class="lender-brand-name">${config.companyName}</div>
         <div class="lender-brand-line">CBN Regulated | NDIC Insured</div>
         <div class="lender-brand-url">${config.companyWebsite}</div>
