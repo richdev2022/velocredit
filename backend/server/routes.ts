@@ -49,7 +49,7 @@ import {
   auditLogs,
   type KycStatus,
   type Role,
-  ADMIN_PERMISSIONS,,
+  ADMIN_PERMISSIONS,
   getAdminLedgerBalanceMinor,
   adminLedger,
   getPlatformSettings,
@@ -2399,7 +2399,7 @@ router.get("/payments/flutterwave/return", (req, res) => {
 // ===============================
 // Investor withdrawal endpoint
 // ===============================
-router.post("/investor/wallet/withdraw", requireAuth, requireRole(["INVESTOR"]), async (req: AuthRequest, res) => {
+router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
   const schema = z.object({
     amountNaira: z.number().positive().max(50_000_000),
     bankCode: z.string().min(2).max(10),
@@ -2429,21 +2429,23 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole(["INVESTOR"]),
     res.status(400).json({ ok: false, error: "Insufficient wallet balance" });
     return;
   }
-  const bank = await resolveBankAccount(parsed.data.bankCode, parsed.data.accountNumber);
-  if (!bank.ok) {
-    res.status(400).json({ ok: false, error: bank.error ?? "Could not verify bank account" });
+  const bank = await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode);
+  if (bank.status !== "success") {
+    res.status(400).json({ ok: false, error: bank.message ?? "Could not verify bank account" });
     return;
   }
-  appendLedger(wallet, {
+  const resolvedAccountName = bank.data?.account_name ?? "Beneficiary";
+  const resolvedBankName = parsed.data.bankCode;
+  const debitEntry = appendLedger(wallet, {
     entryType: "WITHDRAWAL_INITIATED",
     referenceId: "pending",
     amountMinor,
     direction: "DEBIT",
-    description: `Withdrawal to ${bank.bankName} *${parsed.data.accountNumber.slice(-4)}`,
+    description: `Withdrawal to ${resolvedBankName} *${parsed.data.accountNumber.slice(-4)}`,
     metadata: {
       bankCode: parsed.data.bankCode,
       accountNumber: parsed.data.accountNumber,
-      beneficiaryName: bank.accountName,
+      beneficiaryName: resolvedAccountName,
       feeMinor: totalFeeMinor,
       netMinor,
     },
@@ -2477,21 +2479,16 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole(["INVESTOR"]),
     netNaira: Math.round(netMinor) / 100,
     currency: "NGN" as const,
     bankCode: parsed.data.bankCode,
-    bankName: bank.bankName,
+    bankName: resolvedBankName,
     accountNumber: parsed.data.accountNumber,
-    accountName: bank.accountName,
+    accountName: resolvedAccountName,
     status: "PENDING_APPROVAL" as const,
     narration: parsed.data.narration,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
   investorWithdrawals.push(withdrawalEntry);
-  if (wallet.ledger && wallet.ledger.length > 0) {
-    const lastEntry = wallet.ledger[wallet.ledger.length - 1];
-    if (lastEntry && lastEntry.referenceId === "pending") {
-      lastEntry.referenceId = withdrawalId;
-    }
-  }
+  debitEntry.referenceId = withdrawalId;
   const emailTpl = investorWithdrawalEmail({
     investorName: investor.fullName,
     withdrawalId,
@@ -2499,7 +2496,7 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole(["INVESTOR"]),
     feeNaira: Math.round(totalFeeMinor) / 100,
     netNaira: Math.round(netMinor) / 100,
     balanceNaira: Math.round(wallet.availableMinor) / 100,
-    bankName: bank.bankName,
+    bankName: resolvedBankName,
     accountNumber: parsed.data.accountNumber,
   });
   void sendEmail({
@@ -2539,7 +2536,7 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole(["INVESTOR"]),
 // ===============================
 // Admin platform settings routes
 // ===============================
-router.get("/admin/settings/platform", requireAuth, requireRole(["ADMIN"]), async (_req, res) => {
+router.get("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const settings = getPlatformSettings();
   const balanceMinor = getAdminLedgerBalanceMinor();
   res.json({
@@ -2550,7 +2547,7 @@ router.get("/admin/settings/platform", requireAuth, requireRole(["ADMIN"]), asyn
   });
 });
 
-router.put("/admin/settings/platform", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+router.put("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const schema = z.object({
     investorWithdrawalFeePercent: z.number().min(0).max(100).optional(),
     investorWithdrawalFeeFlatMinor: z.number().int().min(0).optional(),
@@ -2578,7 +2575,7 @@ router.put("/admin/settings/platform", requireAuth, requireRole(["ADMIN"]), asyn
   res.json({ ok: true, settings: updated });
 });
 
-router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const schema = z.object({
     annualRatePercent: z.number().min(0).max(100),
   });
@@ -2587,8 +2584,8 @@ router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const { investorId } = req.params;
-  const investor = users.find((u) => u.id === investorId && u.role === "INVESTOR");
+  const investorId = String(req.params.investorId);
+  const investor = users.find((u) => u.id === investorId && u.roles.includes("INVESTOR"));
   if (!investor) {
     res.status(404).json({ ok: false, error: "Investor not found" });
     return;
@@ -2606,7 +2603,7 @@ router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole
   });
 });
 
-router.post("/admin/investors/:investorId/credit-wallet", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+router.post("/admin/investors/:investorId/credit-wallet", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const schema = z.object({
     amountNaira: z.number().positive().max(500_000_000),
     description: z.string().max(200).optional(),
@@ -2617,8 +2614,9 @@ router.post("/admin/investors/:investorId/credit-wallet", requireAuth, requireRo
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const { investorId } = req.params;
-  const investor = users.find((u) => u.id === investorId && u.role === "INVESTOR");
+  const investorId = String(req.params.investorId);
+  const reasonVal = Array.isArray(parsed.data.reason) ? parsed.data.reason[0] : parsed.data.reason;
+  const investor = users.find((u) => u.id === investorId && u.roles.includes("INVESTOR"));
   const wallet = findWallet(investorId);
   if (!investor || !wallet) {
     res.status(404).json({ ok: false, error: "Investor or wallet not found" });
@@ -2632,16 +2630,16 @@ router.post("/admin/investors/:investorId/credit-wallet", requireAuth, requireRo
     investorId,
     amountMinor,
     direction: "DEBIT",
-    description: parsed.data.description ?? `Admin manual credit - ${parsed.data.reason}`,
-    metadata: { reason: parsed.data.reason, creditedBy: req.user?.id },
+    description: parsed.data.description ?? `Admin manual credit - ${reasonVal}`,
+    metadata: { reason: reasonVal, creditedBy: req.user?.id },
   });
   appendLedger(wallet, {
     entryType: "INVESTMENT_RETURN",
     referenceId: refId,
     amountMinor,
     direction: "CREDIT",
-    description: parsed.data.description ?? `Admin credit: ${parsed.data.reason}`,
-    metadata: { reason: parsed.data.reason, creditedBy: req.user?.id },
+    description: parsed.data.description ?? `Admin credit: ${reasonVal}`,
+    metadata: { reason: reasonVal, creditedBy: req.user?.id },
   });
   const balanceNaira = Math.round(wallet.availableMinor) / 100;
   const emailTpl = investorWalletFundedEmail({
@@ -2680,7 +2678,7 @@ router.post("/admin/investors/:investorId/credit-wallet", requireAuth, requireRo
   });
 });
 
-router.get("/admin/ledger", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+router.get("/admin/ledger", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? 100)));
   const offset = Math.max(0, Number(req.query.offset ?? 0));
   const entryType = req.query.entryType ? String(req.query.entryType) : undefined;
@@ -2701,8 +2699,8 @@ router.get("/admin/ledger", requireAuth, requireRole(["ADMIN"]), async (req, res
   });
 });
 
-router.get("/admin/investors/:investorId/withdrawals", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
-  const { investorId } = req.params;
+router.get("/admin/investors/:investorId/withdrawals", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  const investorId = String(req.params.investorId);
   const statusFilter = req.query.status ? String(req.query.status) : undefined;
   let items = investorWithdrawals.filter((w) => w.investorId === investorId);
   if (statusFilter) items = items.filter((w) => w.status === statusFilter);
@@ -2710,7 +2708,7 @@ router.get("/admin/investors/:investorId/withdrawals", requireAuth, requireRole(
   res.json({ ok: true, withdrawals: items });
 });
 
-router.get("/admin/withdrawals", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+router.get("/admin/withdrawals", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const statusFilter = req.query.status ? String(req.query.status) : undefined;
   let items = [...investorWithdrawals];
   if (statusFilter) items = items.filter((w) => w.status === statusFilter);
@@ -2720,8 +2718,8 @@ router.get("/admin/withdrawals", requireAuth, requireRole(["ADMIN"]), async (req
   res.json({ ok: true, total: items.length, withdrawals: items.slice(offset, offset + limit) });
 });
 
-router.put("/admin/withdrawals/:withdrawalId/approve", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
-  const { withdrawalId } = req.params;
+router.put("/admin/withdrawals/:withdrawalId/approve", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  const withdrawalId = String(req.params.withdrawalId);
   const w = investorWithdrawals.find((x) => x.id === withdrawalId);
   if (!w) {
     res.status(404).json({ ok: false, error: "Withdrawal not found" });
@@ -2732,14 +2730,14 @@ router.put("/admin/withdrawals/:withdrawalId/approve", requireAuth, requireRole(
     return;
   }
   try {
-    const netMinor = Math.round(Number(w.netNaira) * 100);
-    const transfer = await createInvestmentPayout({
-      userId: w.investorId,
-      amountMinor: netMinor,
-      bankCode: w.bankCode,
-      accountNumber: w.accountNumber,
-      accountName: w.accountName,
-      reference: `WITHDRAWAL-${w.id.slice(0, 8)}`,
+    const netNaira = Number(w.netNaira);
+    const transfer = await createInvestorPayout({
+      txRef: `WITHDRAWAL-${w.id.slice(0, 8)}`,
+      amountNaira: netNaira,
+      accountNumber: String(w.accountNumber),
+      accountBank: String(w.bankCode),
+      beneficiaryName: String(w.accountName),
+      narration: `Velo investor withdrawal ${w.id}`,
     });
     w.status = "PROCESSING";
     w.providerTransfer = transfer as any;
@@ -2750,7 +2748,7 @@ router.put("/admin/withdrawals/:withdrawalId/approve", requireAuth, requireRole(
   }
 });
 
-router.put("/admin/withdrawals/:withdrawalId/reject", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+router.put("/admin/withdrawals/:withdrawalId/reject", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const schema = z.object({ reason: z.string().max(200).optional() });
   const parsed = schema.safeParse(req.body);
   const { withdrawalId } = req.params;

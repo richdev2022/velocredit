@@ -62,7 +62,7 @@ export interface LedgerEntry {
   id: string;
   walletId: string;
   userId: string;
-  entryType: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RELEASE" | "INVESTMENT_RETURN" | "PAYOUT" | "FEE" | "MANUAL_ADJUSTMENT" | "REVERSAL";
+  entryType: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RELEASE" | "INVESTMENT_RETURN" | "PAYOUT" | "FEE" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "WITHDRAWAL_INITIATED" | "WITHDRAWAL_REVERSAL";
   referenceId?: string;
   amountMinor: number;
   direction: "DEBIT" | "CREDIT";

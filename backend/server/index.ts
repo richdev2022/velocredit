@@ -343,7 +343,7 @@ app.post(
                       sentAt: emailRes.sent ? new Date().toISOString() : undefined,
                     });
                   }).catch(() => undefined);
-                });
+                }
             }
           }
         }

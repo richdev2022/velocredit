@@ -34,7 +34,7 @@ type TransactionData = {
 };
 type KycData = {
   status?: string;
-  checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean };
+  checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean; selfieUploaded?: boolean };
 };
 type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number };
 

@@ -377,9 +377,8 @@ export default function AdminSettings() {
     setSaving(true);
     setSaveError("");
     try {
-      const savedOverrides = await adminSaveConfig(overrides);
-      saveAdminOverrides(savedOverrides);
-      refreshConfig(savedOverrides);
+      saveAdminOverrides(overrides);
+      refreshConfig(overrides);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (error) {
@@ -393,7 +392,6 @@ export default function AdminSettings() {
     setSaving(true);
     setSaveError("");
     try {
-      await adminResetConfig();
       resetAdminOverrides();
       refreshConfig({});
     setMin(currentConfig.loanLimits.min);
@@ -788,115 +786,8 @@ export default function AdminSettings() {
         </div>
       </div>
 
-      {/* Bottom sticky save bar on mobile */}
-      <div className="lg:hidden sticky bottom-4 -mx-4 sm:-mx-6 px-4 sm:px-6 z-20">
-        <div className="velo-card p-3 flex items-center gap-2 shadow-elevated rounded-2xl border-0">
-          <div className="flex-1 min-w-0">
-            {saved ? (
-              <div className="text-xs font-bold text-emerald-700">✓ Settings saved</div>
-            ) : (
-              <div className="text-xs text-slate-500">Click Save to persist changes</div>
-            )}
-          </div>
-          <button type="button" onClick={handleSave} disabled={saving || formErrors.some((error) => error.severity === "error")} className="btn-primary !py-2 !px-4 text-xs !font-extrabold shrink-0">
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* =======================================================================
-   Small UI helpers
-   ======================================================================= */
-
-function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon?: string; children: React.ReactNode }) {
-  return (
-    <div className="velo-card p-5 sm:p-6 rounded-2xl border-0">
-      <div className="mb-4">
-        <div className="flex items-center gap-2">
-          {icon && <span className="text-xl leading-none">{icon}</span>}
-          <h3 className="font-extrabold text-velo-900 text-base">{title}</h3>
-        </div>
-        {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="block text-xs font-bold text-velo-900 mb-1.5">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function NumberField({ label, value, onChange, helpText }: { label: string; value: number; onChange: (n: number) => void; helpText?: string }) {
-  return (
-    <Field label={label}>
-      <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">₦</span>
-        <input
-          type="text"
-          inputMode="numeric"
-          value={value.toLocaleString("en-NG")}
-          onChange={(e) => {
-            const n = Number(e.target.value.replace(/[^0-9]/g, ""));
-            onChange(Number.isFinite(n) ? n : 0);
-          }}
-          className="velo-input pl-8 font-bold text-sm"
-        />
-      </div>
-      {helpText && <div className="text-[11px] text-slate-400 mt-1">{helpText}</div>}
-    </Field>
-  );
-}
-
-function FeeField({
-  feeKey, label, baseFee, value, onChange, compact, baseLabel,
-}: {
-  feeKey: FeeKey;
-  label: string;
-  baseFee: { type: "flat" | "percentage"; value: number; includeUpfront: boolean };
-  value: { type: "flat" | "percentage"; value: number; includeUpfront: boolean };
-  onChange: (v: { type: "flat" | "percentage"; value: number; includeUpfront: boolean }) => void;
-  compact?: boolean;
-  baseLabel?: string;
-}) {
-  return (
-    <div className={`rounded-xl border border-slate-200 p-4 hover:border-velo-200 hover:shadow-sm transition-all duration-200 ${compact ? "p-3" : ""}`}>
-      <div className="flex items-start justify-between gap-2 mb-3">
-        <div>
-          <div className={`font-extrabold text-velo-900 ${compact ? "text-xs" : "text-sm"}`}>{label}</div>
-        </div>
-      </div>
-      <div className="space-y-2.5">
-        <div className="flex items-center gap-2">
-          <select
-            value={value.type}
-            onChange={(e) => onChange({ ...value, type: e.target.value as "flat" | "percentage" })}
-            className={`velo-input !py-2 text-xs font-bold w-28 shrink-0 ${compact ? "!py-1.5 text-[10px]" : ""}`}
-          >
-            <option value="flat">Flat (₦)</option>
-            <option value="percentage">Percentage (%)</option>
-          </select>
-          <input
-            type="number"
-            min={0}
-            step={value.type === "percentage" ? 0.1 : 500}
-            value={value.value}
-            onChange={(e) => onChange({ ...value, value: Number(e.target.value) || 0 })}
-            className={`velo-input !py-2 text-sm font-bold flex-1 ${compact ? "!py-1.5 text-xs" : ""}`}
-          />
-          <span className={`text-xs font-bold text-slate-500 w-6 ${compact ? "text-[10px]" : ""}`}>
-            {value.type === "flat" ? "₦" : "%"}
-          </span>
-        
-
+      {/* ===== Investor Management + Admin Ledger Center ===== */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* ============ INVESTOR MANAGEMENT ============ */}
           <div className="lg:col-span-2 space-y-6">
             <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(16,185,129,0.12)] rounded-2xl border-l-4 border-emerald-500">
@@ -1299,6 +1190,118 @@ function FeeField({
               )}
             </div>
           </div>
+
+      </div>
+
+
+      {/* Bottom sticky save bar on mobile */}
+      <div className="lg:hidden sticky bottom-4 -mx-4 sm:-mx-6 px-4 sm:px-6 z-20">
+        <div className="velo-card p-3 flex items-center gap-2 shadow-elevated rounded-2xl border-0">
+          <div className="flex-1 min-w-0">
+            {saved ? (
+              <div className="text-xs font-bold text-emerald-700">✓ Settings saved</div>
+            ) : (
+              <div className="text-xs text-slate-500">Click Save to persist changes</div>
+            )}
+          </div>
+          <button type="button" onClick={handleSave} disabled={saving || formErrors.some((error) => error.severity === "error")} className="btn-primary !py-2 !px-4 text-xs !font-extrabold shrink-0">
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =======================================================================
+   Small UI helpers
+   ======================================================================= */
+
+function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon?: string; children: React.ReactNode }) {
+  return (
+    <div className="velo-card p-5 sm:p-6 rounded-2xl border-0">
+      <div className="mb-4">
+        <div className="flex items-center gap-2">
+          {icon && <span className="text-xl leading-none">{icon}</span>}
+          <h3 className="font-extrabold text-velo-900 text-base">{title}</h3>
+        </div>
+        {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-bold text-velo-900 mb-1.5">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function NumberField({ label, value, onChange, helpText }: { label: string; value: number; onChange: (n: number) => void; helpText?: string }) {
+  return (
+    <Field label={label}>
+      <div className="relative">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">₦</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={value.toLocaleString("en-NG")}
+          onChange={(e) => {
+            const n = Number(e.target.value.replace(/[^0-9]/g, ""));
+            onChange(Number.isFinite(n) ? n : 0);
+          }}
+          className="velo-input pl-8 font-bold text-sm"
+        />
+      </div>
+      {helpText && <div className="text-[11px] text-slate-400 mt-1">{helpText}</div>}
+    </Field>
+  );
+}
+
+function FeeField({
+  feeKey, label, baseFee, value, onChange, compact, baseLabel,
+}: {
+  feeKey: FeeKey;
+  label: string;
+  baseFee: { type: "flat" | "percentage"; value: number; includeUpfront: boolean };
+  value: { type: "flat" | "percentage"; value: number; includeUpfront: boolean };
+  onChange: (v: { type: "flat" | "percentage"; value: number; includeUpfront: boolean }) => void;
+  compact?: boolean;
+  baseLabel?: string;
+}) {
+  return (
+    <div className={`rounded-xl border border-slate-200 p-4 hover:border-velo-200 hover:shadow-sm transition-all duration-200 ${compact ? "p-3" : ""}`}>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <div>
+          <div className={`font-extrabold text-velo-900 ${compact ? "text-xs" : "text-sm"}`}>{label}</div>
+        </div>
+      </div>
+      <div className="space-y-2.5">
+        <div className="flex items-center gap-2">
+          <select
+            value={value.type}
+            onChange={(e) => onChange({ ...value, type: e.target.value as "flat" | "percentage" })}
+            className={`velo-input !py-2 text-xs font-bold w-28 shrink-0 ${compact ? "!py-1.5 text-[10px]" : ""}`}
+          >
+            <option value="flat">Flat (₦)</option>
+            <option value="percentage">Percentage (%)</option>
+          </select>
+          <input
+            type="number"
+            min={0}
+            step={value.type === "percentage" ? 0.1 : 500}
+            value={value.value}
+            onChange={(e) => onChange({ ...value, value: Number(e.target.value) || 0 })}
+            className={`velo-input !py-2 text-sm font-bold flex-1 ${compact ? "!py-1.5 text-xs" : ""}`}
+          />
+          <span className={`text-xs font-bold text-slate-500 w-6 ${compact ? "text-[10px]" : ""}`}>
+            {value.type === "flat" ? "₦" : "%"}
+          </span>
+
 
 </div>
         <label className={`flex items-center gap-2 text-slate-600 cursor-pointer select-none ${compact ? "text-[10px]" : "text-[11px]"}`}>
