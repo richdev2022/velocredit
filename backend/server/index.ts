@@ -27,8 +27,14 @@ import {
   findWallet,
   appendLedger,
   wallets,
+  users,
+  appendAdminLedger,
+  seedAdminLedgerOpeningBalance,
+  getPlatformSettings,
+  notifications,
 } from "./store.js";
 import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts } from "./store.js";
+import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } from "./email.js";
 
 assertProductionSecrets();
 
@@ -111,6 +117,20 @@ app.post(
               if (wallet) {
                 const amountMinor = Math.round(amount * 100);
                 wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - amountMinor);
+                appendAdminLedger({
+                  entryType: "INVESTOR_FUNDING",
+                  referenceId: walletTx.id,
+                  investorId: wallet.userId,
+                  amountMinor,
+                  direction: "DEBIT",
+                  description: `Admin ledger debit for investor wallet funding - txRef: ${txRef}`,
+                  metadata: {
+                    provider: "flutterwave",
+                    providerReference,
+                    txRef,
+                    eventType: event.event,
+                  },
+                });
                 appendLedger(wallet, {
                   entryType: "FUNDING",
                   referenceId: walletTx.id,
@@ -124,6 +144,38 @@ app.post(
                     eventType: event.event,
                   },
                 });
+                const investor = users.find((u) => u.id === wallet.userId);
+                if (investor) {
+                  const balanceNaira = Math.round(wallet.availableMinor) / 100;
+                  const emailTemplate = investorWalletFundedEmail({
+                    investorName: investor.fullName,
+                    amountNaira: amount,
+                    balanceNaira,
+                    reference: providerReference,
+                  });
+                  void sendEmail({
+                    to: investor.email,
+                    name: investor.fullName,
+                    subject: emailTemplate.subject,
+                    html: emailTemplate.html,
+                  }).then((emailResult) => {
+                    notifications.push({
+                      id: randomUUID(),
+                      userId: investor.id,
+                      channel: "EMAIL",
+                      kind: "WALLET_FUNDED",
+                      subject: emailTemplate.subject,
+                      recipientMasked: investor.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+                      status: emailResult.sent ? "SENT" : "NOT_CONFIGURED",
+                      providerMessageId: emailResult.providerReference,
+                      retryCount: 0,
+                      relatedEntityType: "WALLET_TRANSACTION",
+                      relatedEntityId: walletTx.id,
+                      createdAt: new Date().toISOString(),
+                      sentAt: emailResult.sent ? new Date().toISOString() : undefined,
+                    });
+                  }).catch(() => undefined);
+                }
               }
             }
             walletTx.status = "SUCCESSFUL";
@@ -229,18 +281,69 @@ app.post(
             if (investment.planId || true) {
               const wallet = findWallet(payout.userId);
               const amountMinor = Math.round(Number(payout.amountNaira ?? 0) * 100);
-              appendLedger(wallet, {
-                entryType: "INVESTMENT_RETURN",
-                referenceId: investment.id,
-                amountMinor,
-                direction: "CREDIT",
-                description: `Investment payout ${payout.id}`,
-                metadata: {
-                  provider: "flutterwave",
-                  providerReference: payout.providerReference,
-                  payoutType: payout.payoutType,
-                },
-              });
+              appendAdminLedger({
+                  entryType: "INVESTMENT_PAYOUT",
+                  referenceId: payout.id,
+                  investorId: payout.userId,
+                  amountMinor,
+                  direction: "DEBIT",
+                  description: `Admin ledger debit for investment payout - ${payout.payoutType}`,
+                  metadata: {
+                    provider: "flutterwave",
+                    providerReference: payout.providerReference,
+                    payoutType: payout.payoutType,
+                    investmentId: investment.id,
+                  },
+                });
+                appendLedger(wallet, {
+                  entryType: "INVESTMENT_RETURN",
+                  referenceId: investment.id,
+                  amountMinor,
+                  direction: "CREDIT",
+                  description: `Investment payout ${payout.id}`,
+                  metadata: {
+                    provider: "flutterwave",
+                    providerReference: payout.providerReference,
+                    payoutType: payout.payoutType,
+                  },
+                });
+                const investorUser = users.find((u) => u.id === payout.userId);
+                if (investorUser) {
+                  const principalVal = Number(payout.principalNaira ?? investment.amountNaira ?? 0);
+                  const earningsVal = Number(payout.earningsNaira ?? investment.expectedEarningsNaira ?? 0);
+                  const totalVal = Number(payout.amountNaira ?? 0);
+                  const balanceNairaVal = Math.round(wallet.availableMinor) / 100;
+                  const emailTpl = investorEarningsCreditedEmail({
+                    investorName: investorUser.fullName,
+                    investmentId: investment.id,
+                    principalNaira: principalVal,
+                    earningsNaira: earningsVal,
+                    totalNaira: totalVal,
+                    balanceNaira: balanceNairaVal,
+                  });
+                  void sendEmail({
+                    to: investorUser.email,
+                    name: investorUser.fullName,
+                    subject: emailTpl.subject,
+                    html: emailTpl.html,
+                  }).then((emailRes) => {
+                    notifications.push({
+                      id: randomUUID(),
+                      userId: investorUser.id,
+                      channel: "EMAIL",
+                      kind: "INVESTMENT_PAYOUT",
+                      subject: emailTpl.subject,
+                      recipientMasked: investorUser.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+                      status: emailRes.sent ? "SENT" : "NOT_CONFIGURED",
+                      providerMessageId: emailRes.providerReference,
+                      retryCount: 0,
+                      relatedEntityType: "PAYOUT",
+                      relatedEntityId: payout.id,
+                      createdAt: new Date().toISOString(),
+                      sentAt: emailRes.sent ? new Date().toISOString() : undefined,
+                    });
+                  }).catch(() => undefined);
+                });
             }
           }
         }
@@ -410,6 +513,8 @@ async function start(): Promise<void> {
     await initializeStore();
     seedInvestmentPlans();
     seedLoanProducts();
+    seedAdminLedgerOpeningBalance(100_000_000 * 100);
+    getPlatformSettings();
     await persistStore();
     console.log("Database initialization complete.");
     app.listen(env.API_PORT, () => {

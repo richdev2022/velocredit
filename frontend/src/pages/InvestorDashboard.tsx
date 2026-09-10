@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
+import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
 import { useAuth } from "../context/AuthContext";
 import {
   fundWallet,
@@ -11,6 +12,8 @@ import {
   uploadKycDocument,
   verifyMyBvn,
   verifyMyNin,
+  verifyMyLiveness,
+  updateMyKyc,
 } from "../services/apiClient";
 
 const money = new Intl.NumberFormat("en-NG", {
@@ -117,6 +120,36 @@ export default function InvestorDashboard() {
       setKycError(err instanceof Error ? err.message : "Unable to submit proof of address");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function verifyLivenessFile(file: File) {
+    setKycBusy("LIVENESS_FILE");
+    setKycError("");
+    try {
+      const idNumber = bvn || nin || "";
+      const idType = bvn && /^\d{11}$/.test(bvn) ? "BVN" : nin && /^\d{11}$/.test(nin) ? "NIN" : undefined;
+      const response = await verifyMyLiveness(file, { idType, idNumber });
+      setKyc((current) => current ? ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"] }) : current);
+      await refreshUser();
+      setMessage("Liveness check completed.");
+    } catch (err) {
+      setKycError(err instanceof Error ? err.message : "Liveness check failed. Try again or use the camera widget.");
+    } finally {
+      setKycBusy("");
+    }
+  }
+
+  async function onPremblyLivenessResult(result: { success: boolean; message: string }) {
+    if (result.success) {
+      try {
+        const updated = await getMyKyc();
+        setKyc(updated as unknown as KycData);
+        await refreshUser();
+      } catch { /* ignore */ }
+      setMessage(result.message);
+    } else {
+      setKycError(result.message);
     }
   }
 
@@ -412,6 +445,34 @@ export default function InvestorDashboard() {
                     </div>
                   </label>
                 </div>
+
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-800/50 dark:bg-emerald-900/10">
+                  <h3 className="mb-2 text-sm font-semibold text-emerald-800 dark:text-emerald-300">Liveness verification <span className="text-red-500">*</span></h3>
+                  <p className="mb-3 text-xs text-emerald-700 dark:text-emerald-300/80">Complete a quick in-app selfie scan using our identity verification widget (recommended &amp; primary method).</p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <PremblyKycWidgetButton
+                      fullName={user?.fullName}
+                      email={user?.email}
+                      phone={user?.phone}
+                      idType={checklist.bvn ? "BVN" : "NIN"}
+                      idNumber={bvn || nin || ""}
+                      onResult={onPremblyLivenessResult}
+                    />
+                    {checklist.selfieUploaded && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
+                  </div>
+                  <div className="mt-4 border-t border-emerald-200/70 pt-3 dark:border-emerald-700/40">
+                    <details className="group">
+                      <summary className="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-800 dark:text-slate-300 dark:hover:text-white">Having trouble with the camera? Click here to upload a selfie instead (fallback).</summary>
+                      <div className="mt-2">
+                        <label className="velo-label text-xs">
+                          Upload live selfie
+                          <input className="velo-input mt-1" type="file" accept="image/jpeg,image/png,image/webp" disabled={kycBusy === "LIVENESS_FILE"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void verifyLivenessFile(file); }} />
+                        </label>
+                      </div>
+                    </details>
+                  </div>
+                </div>
+
                 <label className="velo-label block">
                   Proof of address
                   <input className="velo-input mt-1" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />

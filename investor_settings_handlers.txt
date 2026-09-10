@@ -1,0 +1,152 @@
+
+
+  const [platformSettings, setPlatformSettings] = useState<any>(null);
+  const [platformLoading, setPlatformLoading] = useState(false);
+  const [platformMessage, setPlatformMessage] = useState("");
+  const [platformError, setPlatformError] = useState("");
+
+  const [withdrawalFeePercent, setWithdrawalFeePercent] = useState(1);
+  const [withdrawalFeeFlatNaira, setWithdrawalFeeFlatNaira] = useState(0);
+  const [defaultAnnualRate, setDefaultAnnualRate] = useState(12);
+  const [adminLedgerBalance, setAdminLedgerBalance] = useState<number | null>(null);
+
+  const [earningInvestorId, setEarningInvestorId] = useState("");
+  const [earningRatePercent, setEarningRatePercent] = useState(15);
+  const [earningRateSaving, setEarningRateSaving] = useState(false);
+  const [earningRateMsg, setEarningRateMsg] = useState("");
+
+  const [creditInvestorId, setCreditInvestorId] = useState("");
+  const [creditAmountNaira, setCreditAmountNaira] = useState("50000");
+  const [creditReason, setCreditReason] = useState<"MANUAL_CREDIT" | "INVESTMENT_RETURN" | "BONUS" | "CORRECTION">("MANUAL_CREDIT");
+  const [creditDescription, setCreditDescription] = useState("");
+  const [creditSaving, setCreditSaving] = useState(false);
+  const [creditMsg, setCreditMsg] = useState("");
+
+  const [investors, setInvestors] = useState<any[]>([]);
+  const [investorsLoading, setInvestorsLoading] = useState(true);
+  const [withdrawals, setWithdrawals] = useState<any[]>([]);
+  const [withdrawalsLoading, setWithdrawalsLoading] = useState(true);
+  const [withdrawalActioning, setWithdrawalActioning] = useState<string | null>(null);
+
+  const [ledgerEntries, setLedgerEntries] = useState<any[]>([]);
+  const [ledgerLoading, setLedgerLoading] = useState(true);
+  const [ledgerFilter, setLedgerFilter] = useState<string>("");
+
+  useEffect(() => {
+    async function loadAdminData() {
+      try {
+        const settings = await adminGetPlatformSettings();
+        setPlatformSettings(settings.settings);
+        setWithdrawalFeePercent(settings.settings.investorWithdrawalFeePercent ?? 1);
+        setWithdrawalFeeFlatNaira(Math.round((settings.settings.investorWithdrawalFeeFlatMinor ?? 0) / 100));
+        setDefaultAnnualRate(settings.settings.defaultInvestmentAnnualRatePercent ?? 12);
+        setAdminLedgerBalance(settings.adminLedgerBalanceMinor ?? 0);
+      } catch (e: any) {
+        setPlatformError(e.message || "Failed to load platform settings");
+      }
+      try {
+        const inv = await adminListInvestors({ limit: 50 });
+        setInvestors(inv.investors ?? []);
+      } finally {
+        setInvestorsLoading(false);
+      }
+      try {
+        const wd = await adminListWithdrawals({ limit: 50 });
+        setWithdrawals(wd.withdrawals ?? []);
+      } finally {
+        setWithdrawalsLoading(false);
+      }
+      try {
+        const ledger = await adminGetLedger({ limit: 50 });
+        setLedgerEntries(ledger.entries ?? []);
+        if (adminLedgerBalance === null) setAdminLedgerBalance(ledger.balanceMinor ?? 0);
+      } finally {
+        setLedgerLoading(false);
+      }
+    }
+    void loadAdminData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSavePlatformSettings() {
+    setPlatformLoading(true);
+    setPlatformMessage("");
+    setPlatformError("");
+    try {
+      const result = await adminUpdatePlatformSettings({
+        investorWithdrawalFeePercent: Number(withdrawalFeePercent),
+        investorWithdrawalFeeFlatNaira: Number(withdrawalFeeFlatNaira),
+        defaultInvestmentAnnualRatePercent: Number(defaultAnnualRate),
+      });
+      setPlatformSettings(result.settings);
+      setPlatformMessage("✅ Platform settings saved successfully.");
+      setTimeout(() => setPlatformMessage(""), 4000);
+    } catch (e: any) {
+      setPlatformError(e.message || "Failed to save settings");
+    } finally {
+      setPlatformLoading(false);
+    }
+  }
+
+  async function handleSaveEarningRate() {
+    if (!earningInvestorId) {
+      setEarningRateMsg("Please select an investor first.");
+      return;
+    }
+    setEarningRateSaving(true);
+    setEarningRateMsg("");
+    try {
+      await adminSetInvestorEarningRate(earningInvestorId, Number(earningRatePercent));
+      setEarningRateMsg("✅ Investor earning rate saved successfully.");
+      setTimeout(() => setEarningRateMsg(""), 4000);
+    } catch (e: any) {
+      setEarningRateMsg("❌ " + (e.message || "Failed"));
+    } finally {
+      setEarningRateSaving(false);
+    }
+  }
+
+  async function handleCreditInvestor() {
+    if (!creditInvestorId || !Number(creditAmountNaira)) {
+      setCreditMsg("Please select investor and enter valid amount.");
+      return;
+    }
+    setCreditSaving(true);
+    setCreditMsg("");
+    try {
+      await adminCreditInvestorWallet(creditInvestorId, {
+        amountNaira: Number(creditAmountNaira),
+        reason: creditReason,
+        description: creditDescription || undefined,
+      });
+      setCreditMsg("✅ Investor wallet credited successfully.");
+      setCreditAmountNaira("50000");
+      setCreditDescription("");
+      setTimeout(() => setCreditMsg(""), 4000);
+    } catch (e: any) {
+      setCreditMsg("❌ " + (e.message || "Failed"));
+    } finally {
+      setCreditSaving(false);
+    }
+  }
+
+  async function handleApproveWithdrawal(id: string) {
+    setWithdrawalActioning(id);
+    try {
+      const res = await adminApproveWithdrawal(id);
+      setWithdrawals(current => current.map(w => (w.id === id ? res.withdrawal : w)));
+    } finally {
+      setWithdrawalActioning(null);
+    }
+  }
+
+  async function handleRejectWithdrawal(id: string) {
+    const reasonInput = window.prompt("Reason for rejection (optional):") as string | undefined;
+    setWithdrawalActioning(id);
+    try {
+      const res = await adminRejectWithdrawal(id, reasonInput);
+      setWithdrawals(current => current.map(w => (w.id === id ? res.withdrawal : w)));
+    } finally {
+      setWithdrawalActioning(null);
+    }
+  }

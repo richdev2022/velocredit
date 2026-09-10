@@ -158,12 +158,10 @@ export default function PersonalKycSection() {
         </div>
         {verificationError && <p className="text-sm text-red-600">{verificationError}</p>}
 
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-          <label className="velo-label">Liveness verification <span className="text-red-500">*</span>
-            <input className="velo-input mt-1" type="file" accept="image/jpeg,image/png,image/webp" disabled={livenessBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void verifyLiveness(file); }} />
-          </label>
-          <p className="mt-1 text-xs text-amber-800">Upload a clear live selfie. This is checked by Prembly and cannot be skipped.</p>
-          <div className="mt-3">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+          <h3 className="mb-2 text-sm font-semibold text-emerald-800">Liveness verification <span className="text-red-500">*</span></h3>
+          <p className="mb-3 text-xs text-emerald-700">Complete a quick in-app selfie scan using our identity verification widget (recommended &amp; primary method).</p>
+          <div className="flex flex-wrap items-center gap-3">
             <PremblyKycWidgetButton
               fullName={currentApplication.personalInfo?.fullName}
               email={currentApplication.personalInfo?.email}
@@ -176,7 +174,18 @@ export default function PersonalKycSection() {
               }}
             />
           </div>
-          {verification.liveness && <p className={`mt-2 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
+          <div className="mt-4 border-t border-emerald-200/70 pt-3">
+            <details className="group">
+              <summary className="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-800">Having trouble with the camera? Click here to upload a selfie instead (fallback).</summary>
+              <div className="mt-2">
+                <label className="velo-label text-xs">
+                  Upload live selfie
+                  <input className="velo-input mt-1" type="file" accept="image/jpeg,image/png,image/webp" disabled={livenessBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void verifyLiveness(file); }} />
+                </label>
+              </div>
+            </details>
+          </div>
+          {verification.liveness && <p className={`mt-3 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">

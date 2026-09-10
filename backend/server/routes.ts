@@ -49,7 +49,15 @@ import {
   auditLogs,
   type KycStatus,
   type Role,
-  ADMIN_PERMISSIONS,
+  ADMIN_PERMISSIONS,,
+  getAdminLedgerBalanceMinor,
+  adminLedger,
+  getPlatformSettings,
+  updatePlatformSettings,
+  setInvestorEarningRateOverride,
+  getEffectiveInvestorRate,
+  investorWithdrawals,
+  appendAdminLedger
 } from "./store.js";
 import { env } from "./config.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
@@ -61,8 +69,10 @@ import {
   createInvestorPayout,
   initializeWalletFunding,
   verifyTransaction,
+  resolveBankAccount,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail } from "./email.js";
 
 const router = Router();
 const normalizePhone = (value: unknown): unknown => {
@@ -735,16 +745,56 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
   };
   identityVerificationEvents.push(event);
   kyc.bvn = parsed.data.bvn;
+  let otpChallengeForPhone = undefined;
   if (result.status === "SUCCESS") {
     kyc.checklist.bvn = true;
     kyc.bvnVerifiedAt = new Date().toISOString();
+    if (user) {
+      const details = result.normalizedFields ?? {};
+      const idPhoneKeys = ["phone_number", "phoneNumber", "phone", "mobile", "telephoneno"];
+      let identityPhone = undefined;
+      for (const key of idPhoneKeys) {
+        if (typeof details[key] === "string" && String(details[key]).trim()) {
+          identityPhone = String(details[key]).trim();
+          break;
+        }
+      }
+      if (identityPhone) {
+        const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
+        let normalized = digitsOnly;
+        if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
+        if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user.phone) {
+          try {
+            const channel = user.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS";
+            const challenge = await createOtpChallenge(
+              user.id,
+              "KYC_VERIFICATION",
+              normalized,
+              user.email,
+              channel
+            );
+            otpChallengeForPhone = {
+              challengeId: challenge.id,
+              expiresAt: challenge.expiresAt,
+              channel,
+              phoneLastFour: normalized.slice(-4),
+              resendAvailableAt: challenge.resendAvailableAt,
+              resendSecondsRemaining: challenge.resendSecondsRemaining,
+              requiresPhoneVerification: true,
+            };
+          } catch (otpError) {
+            // ignore OTP rate limit errors for now, user can request later
+          }
+        }
+      }
+    }
   }
   if (user) {
     if (result.status === "SUCCESS" && !user.fullName.includes(parsed.data.firstName ?? "") && parsed.data.firstName) {
-      // Name matched: nothing to override yet — manual review can confirm
+      // Name matched: nothing to override yet — manual review can confirm      
     }
   }
-  if (Object.values(kyc.checklist).every(Boolean)) {
+if (Object.values(kyc.checklist).every(Boolean)) {
     kyc.status = "PENDING_VERIFICATION";
     kyc.submittedAt = kyc.submittedAt ?? new Date().toISOString();
   } else if (kyc.status === "NOT_STARTED") {
@@ -760,6 +810,7 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     providerConfigured: !result.errorMessage?.includes("not configured"),
     error: result.errorMessage,
     verifiedDetails: result.status === "SUCCESS" ? result.normalizedFields : undefined,
+    otpChallenge: otpChallengeForPhone,
   });
 });
 
@@ -829,9 +880,49 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
   };
   identityVerificationEvents.push(event);
   kyc.nin = parsed.data.nin;
+  let ninOtpChallenge = undefined;
   if (result.status === "SUCCESS") {
     kyc.checklist.nin = true;
     kyc.ninVerifiedAt = new Date().toISOString();
+    if (user) {
+      const details = result.normalizedFields ?? {};
+      const idPhoneKeys = ["phone_number", "phoneNumber", "phone", "mobile", "telephoneno"];
+      let identityPhone = undefined;
+      for (const key of idPhoneKeys) {
+        if (typeof details[key] === "string" && String(details[key]).trim()) {
+          identityPhone = String(details[key]).trim();
+          break;
+        }
+      }
+      if (identityPhone) {
+        const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
+        let normalized = digitsOnly;
+        if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
+        if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user.phone) {
+          try {
+            const channel = user.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS";
+            const challenge = await createOtpChallenge(
+              user.id,
+              "KYC_VERIFICATION",
+              normalized,
+              user.email,
+              channel
+            );
+            ninOtpChallenge = {
+              challengeId: challenge.id,
+              expiresAt: challenge.expiresAt,
+              channel,
+              phoneLastFour: normalized.slice(-4),
+              resendAvailableAt: challenge.resendAvailableAt,
+              resendSecondsRemaining: challenge.resendSecondsRemaining,
+              requiresPhoneVerification: true,
+            };
+          } catch (otpError) {
+            // ignore
+          }
+        }
+      }
+    }
   }
   if (Object.values(kyc.checklist).every(Boolean)) {
     kyc.status = "PENDING_VERIFICATION";
@@ -848,6 +939,8 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     checklist: kyc.checklist,
     providerConfigured: !result.errorMessage?.includes("not configured"),
     error: result.errorMessage,
+    verifiedDetails: result.status === "SUCCESS" ? result.normalizedFields : undefined,
+    otpChallenge: ninOtpChallenge,
   });
 });
 
@@ -1071,7 +1164,8 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), (req:
     return;
   }
   const plan = parsed.data.planId ? investmentPlans.find((p) => p.id === parsed.data.planId) : undefined;
-  const annualRate = plan?.annualRatePercent ?? parsed.data.annualRatePercent;
+  const planRate = plan?.annualRatePercent ?? parsed.data.annualRatePercent;
+  const annualRate = getEffectiveInvestorRate(req.user!.id, planRate);
   const tenure = plan?.tenureDays ?? parsed.data.tenureDays;
   if (plan) {
     if (!plan.isActive) {
@@ -2299,6 +2393,401 @@ router.get("/payments/flutterwave/return", (req, res) => {
   }
   const redirect = `${env.API_ORIGIN}/account?purchase=complete&tx_ref=${encodeURIComponent(txRef)}&status=${encodeURIComponent(status)}`;
   res.redirect(302, redirect);
+});
+
+
+// ===============================
+// Investor withdrawal endpoint
+// ===============================
+router.post("/investor/wallet/withdraw", requireAuth, requireRole(["INVESTOR"]), async (req: AuthRequest, res) => {
+  const schema = z.object({
+    amountNaira: z.number().positive().max(50_000_000),
+    bankCode: z.string().min(2).max(10),
+    accountNumber: z.string().regex(/^\d{10}$/),
+    narration: z.string().max(100).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const userId = req.user!.id;
+  const wallet = findWallet(userId);
+  const investor = users.find((u) => u.id === userId);
+  if (!wallet || !investor) {
+    res.status(404).json({ ok: false, error: "Wallet not found" });
+    return;
+  }
+  const settings = getPlatformSettings();
+  const feePercent = settings.investorWithdrawalFeePercent ?? 0;
+  const flatMinor = settings.investorWithdrawalFeeFlatMinor ?? 0;
+  const amountMinor = Math.round(parsed.data.amountNaira * 100);
+  const feePercentMinor = Math.round(amountMinor * (feePercent / 100));
+  const totalFeeMinor = feePercentMinor + flatMinor;
+  const netMinor = amountMinor - totalFeeMinor;
+  if (netMinor < 0 || wallet.availableMinor < amountMinor) {
+    res.status(400).json({ ok: false, error: "Insufficient wallet balance" });
+    return;
+  }
+  const bank = await resolveBankAccount(parsed.data.bankCode, parsed.data.accountNumber);
+  if (!bank.ok) {
+    res.status(400).json({ ok: false, error: bank.error ?? "Could not verify bank account" });
+    return;
+  }
+  appendLedger(wallet, {
+    entryType: "WITHDRAWAL_INITIATED",
+    referenceId: "pending",
+    amountMinor,
+    direction: "DEBIT",
+    description: `Withdrawal to ${bank.bankName} *${parsed.data.accountNumber.slice(-4)}`,
+    metadata: {
+      bankCode: parsed.data.bankCode,
+      accountNumber: parsed.data.accountNumber,
+      beneficiaryName: bank.accountName,
+      feeMinor: totalFeeMinor,
+      netMinor,
+    },
+  });
+  if (flatMinor > 0) {
+    appendAdminLedger({
+      entryType: "WITHDRAWAL_FEE",
+      investorId: userId,
+      amountMinor: flatMinor,
+      direction: "CREDIT",
+      description: "Flat withdrawal fee collected",
+      metadata: { feeType: "FLAT", amountMinor: flatMinor },
+    });
+  }
+  if (feePercentMinor > 0) {
+    appendAdminLedger({
+      entryType: "WITHDRAWAL_FEE",
+      investorId: userId,
+      amountMinor: feePercentMinor,
+      direction: "CREDIT",
+      description: `Percentage withdrawal fee (${feePercent}%)`,
+      metadata: { feeType: "PERCENT", percent: feePercent, amountMinor: feePercentMinor },
+    });
+  }
+  const withdrawalId = randomUUID();
+  const withdrawalEntry = {
+    id: withdrawalId,
+    investorId: userId,
+    amountNaira: parsed.data.amountNaira,
+    feeNaira: Math.round(totalFeeMinor) / 100,
+    netNaira: Math.round(netMinor) / 100,
+    currency: "NGN" as const,
+    bankCode: parsed.data.bankCode,
+    bankName: bank.bankName,
+    accountNumber: parsed.data.accountNumber,
+    accountName: bank.accountName,
+    status: "PENDING_APPROVAL" as const,
+    narration: parsed.data.narration,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  investorWithdrawals.push(withdrawalEntry);
+  if (wallet.ledger && wallet.ledger.length > 0) {
+    const lastEntry = wallet.ledger[wallet.ledger.length - 1];
+    if (lastEntry && lastEntry.referenceId === "pending") {
+      lastEntry.referenceId = withdrawalId;
+    }
+  }
+  const emailTpl = investorWithdrawalEmail({
+    investorName: investor.fullName,
+    withdrawalId,
+    amountNaira: parsed.data.amountNaira,
+    feeNaira: Math.round(totalFeeMinor) / 100,
+    netNaira: Math.round(netMinor) / 100,
+    balanceNaira: Math.round(wallet.availableMinor) / 100,
+    bankName: bank.bankName,
+    accountNumber: parsed.data.accountNumber,
+  });
+  void sendEmail({
+    to: investor.email,
+    name: investor.fullName,
+    subject: emailTpl.subject,
+    html: emailTpl.html,
+  }).then((emailRes) => {
+    notifications.push({
+      id: randomUUID(),
+      userId: investor.id,
+      channel: "EMAIL" as const,
+      kind: "WITHDRAWAL_REQUEST" as const,
+      subject: emailTpl.subject,
+      recipientMasked: investor.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+      status: emailRes.sent ? "SENT" : "NOT_CONFIGURED",
+      providerMessageId: emailRes.providerReference,
+      retryCount: 0,
+      relatedEntityType: "WITHDRAWAL",
+      relatedEntityId: withdrawalId,
+      createdAt: new Date().toISOString(),
+      sentAt: emailRes.sent ? new Date().toISOString() : undefined,
+    });
+  }).catch(() => undefined);
+  res.json({
+    ok: true,
+    withdrawal: withdrawalEntry,
+    feeBreakdown: {
+      flatNaira: Math.round(flatMinor) / 100,
+      percentNaira: Math.round(feePercentMinor) / 100,
+      totalNaira: Math.round(totalFeeMinor) / 100,
+      netNaira: Math.round(netMinor) / 100,
+    },
+  });
+});
+
+// ===============================
+// Admin platform settings routes
+// ===============================
+router.get("/admin/settings/platform", requireAuth, requireRole(["ADMIN"]), async (_req, res) => {
+  const settings = getPlatformSettings();
+  const balanceMinor = getAdminLedgerBalanceMinor();
+  res.json({
+    ok: true,
+    settings,
+    adminLedgerBalanceMinor: balanceMinor,
+    adminLedgerBalanceNaira: Math.round(balanceMinor) / 100,
+  });
+});
+
+router.put("/admin/settings/platform", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const schema = z.object({
+    investorWithdrawalFeePercent: z.number().min(0).max(100).optional(),
+    investorWithdrawalFeeFlatMinor: z.number().int().min(0).optional(),
+    investorWithdrawalFeeFlatNaira: z.number().min(0).optional(),
+    defaultInvestmentAnnualRatePercent: z.number().min(0).max(100).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const updates: Record<string, number> = {};
+  if (parsed.data.investorWithdrawalFeePercent !== undefined) {
+    updates.investorWithdrawalFeePercent = parsed.data.investorWithdrawalFeePercent;
+  }
+  if (parsed.data.investorWithdrawalFeeFlatMinor !== undefined) {
+    updates.investorWithdrawalFeeFlatMinor = parsed.data.investorWithdrawalFeeFlatMinor;
+  } else if (parsed.data.investorWithdrawalFeeFlatNaira !== undefined) {
+    updates.investorWithdrawalFeeFlatMinor = Math.round(parsed.data.investorWithdrawalFeeFlatNaira * 100);
+  }
+  if (parsed.data.defaultInvestmentAnnualRatePercent !== undefined) {
+    updates.defaultInvestmentAnnualRatePercent = parsed.data.defaultInvestmentAnnualRatePercent;
+  }
+  const updated = updatePlatformSettings(updates);
+  res.json({ ok: true, settings: updated });
+});
+
+router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const schema = z.object({
+    annualRatePercent: z.number().min(0).max(100),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const { investorId } = req.params;
+  const investor = users.find((u) => u.id === investorId && u.role === "INVESTOR");
+  if (!investor) {
+    res.status(404).json({ ok: false, error: "Investor not found" });
+    return;
+  }
+  const settings = setInvestorEarningRateOverride(investorId, parsed.data.annualRatePercent);
+  res.json({
+    ok: true,
+    investor: {
+      id: investorId,
+      fullName: investor.fullName,
+      email: investor.email,
+      earningRatePercent: parsed.data.annualRatePercent,
+    },
+    settings,
+  });
+});
+
+router.post("/admin/investors/:investorId/credit-wallet", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const schema = z.object({
+    amountNaira: z.number().positive().max(500_000_000),
+    description: z.string().max(200).optional(),
+    reason: z.enum(["MANUAL_CREDIT", "INVESTMENT_RETURN", "BONUS", "CORRECTION"]).default("MANUAL_CREDIT"),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const { investorId } = req.params;
+  const investor = users.find((u) => u.id === investorId && u.role === "INVESTOR");
+  const wallet = findWallet(investorId);
+  if (!investor || !wallet) {
+    res.status(404).json({ ok: false, error: "Investor or wallet not found" });
+    return;
+  }
+  const amountMinor = Math.round(parsed.data.amountNaira * 100);
+  const refId = randomUUID();
+  appendAdminLedger({
+    entryType: "INVESTMENT_RETURN_CREDIT",
+    referenceId: refId,
+    investorId,
+    amountMinor,
+    direction: "DEBIT",
+    description: parsed.data.description ?? `Admin manual credit - ${parsed.data.reason}`,
+    metadata: { reason: parsed.data.reason, creditedBy: req.user?.id },
+  });
+  appendLedger(wallet, {
+    entryType: "INVESTMENT_RETURN",
+    referenceId: refId,
+    amountMinor,
+    direction: "CREDIT",
+    description: parsed.data.description ?? `Admin credit: ${parsed.data.reason}`,
+    metadata: { reason: parsed.data.reason, creditedBy: req.user?.id },
+  });
+  const balanceNaira = Math.round(wallet.availableMinor) / 100;
+  const emailTpl = investorWalletFundedEmail({
+    investorName: investor.fullName,
+    amountNaira: parsed.data.amountNaira,
+    balanceNaira,
+    reference: refId,
+  });
+  void sendEmail({
+    to: investor.email,
+    name: investor.fullName,
+    subject: emailTpl.subject,
+    html: emailTpl.html,
+  }).then((emailRes) => {
+    notifications.push({
+      id: randomUUID(),
+      userId: investorId,
+      channel: "EMAIL" as const,
+      kind: "WALLET_FUNDED" as const,
+      subject: emailTpl.subject,
+      recipientMasked: investor.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+      status: emailRes.sent ? "SENT" : "NOT_CONFIGURED",
+      providerMessageId: emailRes.providerReference,
+      retryCount: 0,
+      relatedEntityType: "WALLET_TRANSACTION",
+      relatedEntityId: refId,
+      createdAt: new Date().toISOString(),
+      sentAt: emailRes.sent ? new Date().toISOString() : undefined,
+    });
+  }).catch(() => undefined);
+  res.json({
+    ok: true,
+    walletBalanceMinor: wallet.availableMinor,
+    walletBalanceNaira: Math.round(wallet.availableMinor) / 100,
+    transactionId: refId,
+  });
+});
+
+router.get("/admin/ledger", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? 100)));
+  const offset = Math.max(0, Number(req.query.offset ?? 0));
+  const entryType = req.query.entryType ? String(req.query.entryType) : undefined;
+  const filtered = entryType
+    ? adminLedger.filter((e) => e.entryType === entryType)
+    : adminLedger;
+  const sorted = filtered.slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const page = sorted.slice(offset, offset + limit);
+  const balanceMinor = getAdminLedgerBalanceMinor();
+  res.json({
+    ok: true,
+    balanceMinor,
+    balanceNaira: Math.round(balanceMinor) / 100,
+    totalEntries: sorted.length,
+    entries: page,
+    limit,
+    offset,
+  });
+});
+
+router.get("/admin/investors/:investorId/withdrawals", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const { investorId } = req.params;
+  const statusFilter = req.query.status ? String(req.query.status) : undefined;
+  let items = investorWithdrawals.filter((w) => w.investorId === investorId);
+  if (statusFilter) items = items.filter((w) => w.status === statusFilter);
+  items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  res.json({ ok: true, withdrawals: items });
+});
+
+router.get("/admin/withdrawals", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const statusFilter = req.query.status ? String(req.query.status) : undefined;
+  let items = [...investorWithdrawals];
+  if (statusFilter) items = items.filter((w) => w.status === statusFilter);
+  items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? 100)));
+  const offset = Math.max(0, Number(req.query.offset ?? 0));
+  res.json({ ok: true, total: items.length, withdrawals: items.slice(offset, offset + limit) });
+});
+
+router.put("/admin/withdrawals/:withdrawalId/approve", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const { withdrawalId } = req.params;
+  const w = investorWithdrawals.find((x) => x.id === withdrawalId);
+  if (!w) {
+    res.status(404).json({ ok: false, error: "Withdrawal not found" });
+    return;
+  }
+  if (w.status !== "PENDING_APPROVAL") {
+    res.status(400).json({ ok: false, error: `Withdrawal already ${w.status}` });
+    return;
+  }
+  try {
+    const netMinor = Math.round(Number(w.netNaira) * 100);
+    const transfer = await createInvestmentPayout({
+      userId: w.investorId,
+      amountMinor: netMinor,
+      bankCode: w.bankCode,
+      accountNumber: w.accountNumber,
+      accountName: w.accountName,
+      reference: `WITHDRAWAL-${w.id.slice(0, 8)}`,
+    });
+    w.status = "PROCESSING";
+    w.providerTransfer = transfer as any;
+    w.updatedAt = new Date().toISOString();
+    res.json({ ok: true, withdrawal: w, providerResponse: transfer });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+router.put("/admin/withdrawals/:withdrawalId/reject", requireAuth, requireRole(["ADMIN"]), async (req, res) => {
+  const schema = z.object({ reason: z.string().max(200).optional() });
+  const parsed = schema.safeParse(req.body);
+  const { withdrawalId } = req.params;
+  const w = investorWithdrawals.find((x) => x.id === withdrawalId);
+  if (!w) {
+    res.status(404).json({ ok: false, error: "Withdrawal not found" });
+    return;
+  }
+  if (w.status === "SUCCESSFUL") {
+    res.status(400).json({ ok: false, error: "Cannot reject already completed withdrawal" });
+    return;
+  }
+  const wallet = findWallet(w.investorId);
+  const amountMinor = Math.round(Number(w.amountNaira) * 100);
+  if (wallet) {
+    appendLedger(wallet, {
+      entryType: "WITHDRAWAL_REVERSAL",
+      referenceId: w.id,
+      amountMinor,
+      direction: "CREDIT",
+      description: `Withdrawal reversal - ${parsed.data?.reason ?? "Rejected by admin"}`,
+    });
+  }
+  const feeMinor = Math.round(Number(w.feeNaira) * 100);
+  if (feeMinor > 0) {
+    appendAdminLedger({
+      entryType: "REVERSAL",
+      referenceId: w.id,
+      investorId: w.investorId,
+      amountMinor: feeMinor,
+      direction: "DEBIT",
+      description: "Reverse withdrawal fee due to rejection",
+    });
+  }
+  w.status = "REJECTED";
+  w.updatedAt = new Date().toISOString();
+  res.json({ ok: true, withdrawal: w });
 });
 
 export default router;

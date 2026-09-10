@@ -307,6 +307,29 @@ export interface Payout {
   updatedAt?: string;
 }
 
+export type InvestorWithdrawalStatus = "PENDING_APPROVAL" | "PROCESSING" | "SUCCESSFUL" | "FAILED" | "REJECTED" | "CANCELLED";
+
+export interface InvestorWithdrawal {
+  id: string;
+  investorId: string;
+  amountNaira: number;
+  feeNaira: number;
+  netNaira: number;
+  currency: "NGN";
+  bankCode: string;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  status: InvestorWithdrawalStatus;
+  narration?: string;
+  providerTransfer?: Record<string, unknown>;
+  providerReference?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  processedAt?: string;
+}
+
 export interface CreditHistoryEvent {
   id: string;
   userId: string;
@@ -411,6 +434,30 @@ export interface Consent {
   metadata?: Record<string, unknown>;
 }
 
+export interface AdminLedgerEntry {
+  id: string;
+  entryType: "INVESTOR_FUNDING" | "INVESTMENT_PAYOUT" | "INVESTMENT_RETURN_CREDIT" | "WITHDRAWAL_FEE" | "PLATFORM_EARNING" | "MANUAL_ADJUSTMENT" | "REVERSAL";
+  referenceId?: string;
+  investorId?: string;
+  amountMinor: number;
+  direction: "DEBIT" | "CREDIT";
+  balanceAfterMinor: number;
+  currency: "NGN";
+  description?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PlatformSettings {
+  id: string;
+  investorWithdrawalFeePercent: number;
+  investorWithdrawalFeeFlatMinor: number;
+  investorEarningRateOverrides: Record<string, number>;
+  defaultInvestmentAnnualRatePercent: number;
+  updatedAt: string;
+  createdAt: string;
+}
+
 export interface LoanProduct {
   id: string;
   name: string;
@@ -435,7 +482,8 @@ type StoreKey =
   | "identityVerificationEvents" | "documents" | "payoutAccounts" | "investmentPlans"
   | "investments" | "loanApplications" | "loans" | "loanSchedules" | "repayments"
   | "payouts" | "creditHistory" | "creditScores" | "creditReports" | "otpChallenges"
-  | "passwordResetTokens" | "notifications" | "providerEvents" | "consents" | "loanProducts" | "auditLogs";
+  | "passwordResetTokens" | "notifications" | "providerEvents" | "consents" | "loanProducts" | "auditLogs"
+  | "adminLedger" | "platformSettings" | "investorWithdrawals";
 
 const storeKeys: StoreKey[] = [
   "users", "wallets", "ledgerEntries", "walletTransactions", "kycCases",
@@ -443,6 +491,7 @@ const storeKeys: StoreKey[] = [
   "investments", "loanApplications", "loans", "loanSchedules", "repayments", "payouts",
   "creditHistory", "creditScores", "creditReports", "otpChallenges", "passwordResetTokens",
   "notifications", "providerEvents", "consents", "loanProducts", "auditLogs",
+  "adminLedger", "platformSettings", "investorWithdrawals",
 ];
 
 const rawState = {} as Record<StoreKey, unknown[]>;
@@ -527,12 +576,16 @@ export const providerEvents = createPersistentArray<ProviderWebhookEvent>("provi
 export const consents = createPersistentArray<Consent>("consents");
 export const loanProducts = createPersistentArray<LoanProduct>("loanProducts");
 export const auditLogs = createPersistentArray<AuditLog>("auditLogs");
+export const adminLedger = createPersistentArray<AdminLedgerEntry>("adminLedger");
+export const platformSettings = createPersistentArray<PlatformSettings>("platformSettings");
+export const investorWithdrawals = createPersistentArray<InvestorWithdrawal>("investorWithdrawals");
 
 const collections: Record<StoreKey, unknown[]> = {
   users, wallets, ledgerEntries, walletTransactions, kycCases, identityVerificationEvents,
   documents, payoutAccounts, investmentPlans, investments, loanApplications, loans,
   loanSchedules, repayments, payouts, creditHistory, creditScores, creditReports,
   otpChallenges, passwordResetTokens, notifications, providerEvents, consents, loanProducts, auditLogs,
+  adminLedger, platformSettings, investorWithdrawals,
 };
 
 function snapshotStore(): Record<StoreKey, unknown[]> {
@@ -667,4 +720,99 @@ export function seedLoanProducts(): void {
   for (const product of seed) {
     loanProducts.push({ id: randomUUID(), createdAt: now, ...product });
   }
+}
+
+let adminLedgerBalanceCache = 0;
+let adminLedgerBalanceDirty = true;
+
+export function getAdminLedgerBalanceMinor(): number {
+  if (adminLedgerBalanceDirty) {
+    let balance = 0;
+    for (const entry of adminLedger) {
+      balance += entry.direction === "CREDIT" ? entry.amountMinor : -entry.amountMinor;
+    }
+    adminLedgerBalanceCache = Math.max(0, balance);
+    adminLedgerBalanceDirty = false;
+  }
+  return adminLedgerBalanceCache;
+}
+
+export function appendAdminLedger(entry: Omit<AdminLedgerEntry, "id" | "balanceAfterMinor" | "currency" | "createdAt">): AdminLedgerEntry {
+  const currentBalance = getAdminLedgerBalanceMinor();
+  const newBalance = entry.direction === "CREDIT"
+    ? currentBalance + entry.amountMinor
+    : currentBalance - entry.amountMinor;
+  adminLedgerBalanceCache = Math.max(0, newBalance);
+  const record: AdminLedgerEntry = {
+    id: randomUUID(),
+    balanceAfterMinor: adminLedgerBalanceCache,
+    currency: "NGN",
+    createdAt: new Date().toISOString(),
+    ...entry,
+  };
+  adminLedger.push(record);
+  return record;
+}
+
+export function seedAdminLedgerOpeningBalance(openingBalanceMinor: number): void {
+  if (adminLedger.length > 0) return;
+  if (openingBalanceMinor <= 0) return;
+  adminLedgerBalanceDirty = true;
+  appendAdminLedger({
+    entryType: "MANUAL_ADJUSTMENT",
+    amountMinor: openingBalanceMinor,
+    direction: "CREDIT",
+    description: "Opening balance for admin operating ledger",
+  });
+}
+
+export function getPlatformSettings(): PlatformSettings {
+  if (platformSettings.length > 0) return platformSettings[0];
+  const now = new Date().toISOString();
+  const defaults: PlatformSettings = {
+    id: randomUUID(),
+    investorWithdrawalFeePercent: 1,
+    investorWithdrawalFeeFlatMinor: 0,
+    investorEarningRateOverrides: {},
+    defaultInvestmentAnnualRatePercent: 12,
+    updatedAt: now,
+    createdAt: now,
+  };
+  platformSettings.push(defaults);
+  return defaults;
+}
+
+export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "investorWithdrawalFeePercent" | "investorWithdrawalFeeFlatMinor" | "investorEarningRateOverrides" | "defaultInvestmentAnnualRatePercent">>): PlatformSettings {
+  const settings = getPlatformSettings();
+  if (updates.investorWithdrawalFeePercent !== undefined) {
+    settings.investorWithdrawalFeePercent = Math.max(0, Math.min(100, Number(updates.investorWithdrawalFeePercent)));
+  }
+  if (updates.investorWithdrawalFeeFlatMinor !== undefined) {
+    settings.investorWithdrawalFeeFlatMinor = Math.max(0, Number(updates.investorWithdrawalFeeFlatMinor));
+  }
+  if (updates.investorEarningRateOverrides !== undefined) {
+    settings.investorEarningRateOverrides = { ...updates.investorEarningRateOverrides };
+  }
+  if (updates.defaultInvestmentAnnualRatePercent !== undefined) {
+    settings.defaultInvestmentAnnualRatePercent = Math.max(0, Math.min(100, Number(updates.defaultInvestmentAnnualRatePercent)));
+  }
+  settings.updatedAt = new Date().toISOString();
+  return settings;
+}
+
+export function setInvestorEarningRateOverride(investorId: string, annualRatePercent: number): void {
+  const settings = getPlatformSettings();
+  const rate = Math.max(0, Math.min(100, Number(annualRatePercent)));
+  if (rate > 0) {
+    settings.investorEarningRateOverrides[investorId] = rate;
+  } else {
+    delete settings.investorEarningRateOverrides[investorId];
+  }
+  settings.updatedAt = new Date().toISOString();
+}
+
+export function getEffectiveInvestorRate(investorId: string, planRatePercent: number): number {
+  const settings = getPlatformSettings();
+  const override = settings.investorEarningRateOverrides[investorId];
+  return override ?? planRatePercent ?? settings.defaultInvestmentAnnualRatePercent;
 }
