@@ -29,6 +29,7 @@ import {
   adminListWithdrawals,
   adminApproveWithdrawal,
   adminRejectWithdrawal,
+  type AdminLedgerEntry,
 } from "../../services/adminApi";
 import { formatNaira } from "../../utils/loanCalculator";
 import { calculateLoan } from "../../utils/loanCalculator";
@@ -129,6 +130,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const [ledgerEntries, setLedgerEntries] = useState<any[]>([]);
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const [ledgerFilter, setLedgerFilter] = useState<string>("");
+  const [selectedLedgerEntry, setSelectedLedgerEntry] = useState(null as AdminLedgerEntry | null);
+  const [ledgerOffset, setLedgerOffset] = useState(0);
+  const [ledgerTotal, setLedgerTotal] = useState(0);
+  const LEDGER_LIMIT = 20;
 
   useEffect(() => {
     async function loadAdminData() {
@@ -155,8 +160,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         setWithdrawalsLoading(false);
       }
       try {
-        const ledger = await adminGetLedger({ limit: 50 });
+        const ledger = await adminGetLedger({ limit: LEDGER_LIMIT, offset: 0 });
         setLedgerEntries(ledger.entries ?? []);
+        setLedgerTotal(ledger.totalEntries ?? 0);
         if (adminLedgerBalance === null) setAdminLedgerBalance(ledger.balanceMinor ?? 0);
       } finally {
         setLedgerLoading(false);
@@ -165,6 +171,30 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     void loadAdminData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function reloadLedger(offset: number, entryType?: string) {
+    setLedgerLoading(true);
+    try {
+      const ledger = await adminGetLedger({
+        limit: LEDGER_LIMIT,
+        offset,
+        entryType: entryType || undefined,
+      });
+      setLedgerEntries(ledger.entries ?? []);
+      setLedgerTotal(ledger.totalEntries ?? 0);
+      if (adminLedgerBalance === null) setAdminLedgerBalance(ledger.balanceMinor ?? 0);
+    } catch (_e) {
+      /* ignore, keep stale list */
+    } finally {
+      setLedgerLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    setLedgerOffset(0);
+    void reloadLedger(0, ledgerFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledgerFilter]);
 
   async function handleSavePlatformSettings() {
     setPlatformLoading(true);
@@ -1178,9 +1208,12 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
                   {ledgerEntries
                     .filter(e => !ledgerFilter || e.entryType === ledgerFilter)
-                    .slice(0, 40)
                     .map((e) => (
-                      <div key={e.id} className="flex items-start gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">
+                      <div
+                        key={e.id}
+                        onClick={() => setSelectedLedgerEntry(e as AdminLedgerEntry)}
+                        className="flex items-start gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:shadow-md cursor-pointer transition"
+                      >
                         <div className={`mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-lg flex-shrink-0 ${e.direction === "DEBIT" ? "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400" : "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"}`}>
                           {e.direction === "DEBIT" ? "▼" : "▲"}
                         </div>
@@ -1209,8 +1242,139 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   )}
                 </div>
               )}
+
+              {!ledgerLoading && ledgerTotal > 0 && (
+                <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                    Showing {ledgerOffset + 1}–{Math.min(ledgerOffset + LEDGER_LIMIT, ledgerTotal)} of {ledgerTotal} entries
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = Math.max(0, ledgerOffset - LEDGER_LIMIT);
+                        setLedgerOffset(next);
+                        void reloadLedger(next, ledgerFilter);
+                      }}
+                      disabled={ledgerOffset === 0}
+                      className="px-2.5 py-1 text-[10px] font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                    >
+                      ← Prev
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = Math.min(Math.max(0, ledgerTotal - LEDGER_LIMIT), ledgerOffset + LEDGER_LIMIT);
+                        setLedgerOffset(next);
+                        void reloadLedger(next, ledgerFilter);
+                      }}
+                      disabled={ledgerOffset + LEDGER_LIMIT >= ledgerTotal}
+                      className="px-2.5 py-1 text-[10px] font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
+          )}
+
+          {selectedLedgerEntry !== null && (
+            <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6 animate-fade-in" onClick={() => setSelectedLedgerEntry(null)}>
+              <div className="velo-card max-w-lg w-full max-h-[90vh] overflow-y-auto rounded-2xl border-0 shadow-elevated dark:bg-slate-900 dark:border-slate-800 animate-slide-in-left" onClick={(ev) => ev.stopPropagation()}>
+                <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-4 sticky top-0 bg-white dark:bg-slate-900 z-10 rounded-t-2xl">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${selectedLedgerEntry.direction === "DEBIT" ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600"}`}>
+                        {selectedLedgerEntry.direction === "DEBIT" ? "▼" : "▲"}
+                      </span>
+                      <h3 className="text-base font-black text-velo-900 dark:text-white">Ledger Entry Details</h3>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">Full transaction breakdown and metadata</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedLedgerEntry(null)}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="p-5 space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700/60">
+                      <div className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-0.5">Entry Type</div>
+                      <div className="text-sm font-black text-velo-900 dark:text-white">{String(selectedLedgerEntry.entryType).replace(/_/g, " ")}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700/60">
+                      <div className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-0.5">Direction</div>
+                      <div className={`text-sm font-black ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-600" : "text-emerald-600"}`}>{selectedLedgerEntry.direction}</div>
+                    </div>
+                  </div>
+
+                  <div className={`p-4 rounded-2xl ${selectedLedgerEntry.direction === "DEBIT" ? "bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900/50" : "bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900/50"}`}>
+                    <div className="text-[10px] uppercase font-bold tracking-wider mb-1 opacity-70" style={{ color: selectedLedgerEntry.direction === "DEBIT" ? "#991b1b" : "#065f46" }}>
+                      Transaction Amount
+                    </div>
+                    <div className={`text-2xl font-black ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-700 dark:text-red-400" : "text-emerald-700 dark:text-emerald-400"}`}>
+                      {selectedLedgerEntry.direction === "DEBIT" ? "-" : "+"}₦{Math.round(selectedLedgerEntry.amountMinor / 100).toLocaleString("en-NG")}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Entry ID</span>
+                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right font-mono break-all">{selectedLedgerEntry.id}</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Created At</span>
+                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right">{new Date(selectedLedgerEntry.createdAt).toLocaleString()}</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Reference ID</span>
+                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right font-mono">{selectedLedgerEntry.referenceId || "—"}</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Investor ID</span>
+                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right font-mono break-all">{selectedLedgerEntry.investorId || "—"}</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Currency</span>
+                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right">{selectedLedgerEntry.currency}</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Balance After</span>
+                      <span className="text-[11px] font-black text-emerald-700 dark:text-emerald-400 text-right">₦{Math.round(selectedLedgerEntry.balanceAfterMinor / 100).toLocaleString("en-NG")}</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 py-2">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Description</span>
+                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right">{selectedLedgerEntry.description || "—"}</span>
+                    </div>
+                  </div>
+
+                  {selectedLedgerEntry.metadata && Object.keys(selectedLedgerEntry.metadata).length > 0 && (
+                    <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
+                      <div className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-2">Metadata</div>
+                      <pre className="p-3 rounded-xl bg-slate-900 dark:bg-slate-950 text-emerald-400 text-[10px] leading-relaxed overflow-x-auto font-mono border border-slate-800">
+                        {JSON.stringify(selectedLedgerEntry.metadata, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 border-t border-slate-100 dark:border-slate-800 sticky bottom-0 bg-white dark:bg-slate-900 rounded-b-2xl">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedLedgerEntry(null)}
+                    className="btn-primary w-full !py-2.5 text-xs !font-extrabold"
+                  >
+                    Close Details
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
 
       </div>

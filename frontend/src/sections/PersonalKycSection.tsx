@@ -3,7 +3,7 @@
 // Section 2 for Personal Loan applicants — BVN, NIN, ID document, proof of address.
 // ============================================================================
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import FormInput from "../components/FormInput";
@@ -13,7 +13,14 @@ import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
 import { kycSchema, type KycForm } from "../utils/validation";
 import type { UploadedDocument, DocumentSlot } from "../types/documents";
-import { verifyMyBvn, verifyMyNin, verifyMyLiveness } from "../services/apiClient";
+import {
+  verifyMyBvn,
+  verifyMyNin,
+  verifyMyLiveness,
+  confirmKycOwnershipOtp,
+  resendKycOwnershipOtp,
+  type KycOtpChallenge,
+} from "../services/apiClient";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
 
 const ID_TYPES = [
@@ -28,8 +35,36 @@ export default function PersonalKycSection() {
   const [verification, setVerification] = useState<{ bvn?: string; nin?: string; liveness?: string }>({});
   const [verificationError, setVerificationError] = useState("");
   const [livenessBusy, setLivenessBusy] = useState(false);
+  const [otpMethodPickerFor, setOtpMethodPickerFor] = useState<null | "BVN" | "NIN">(null);
+  const [activeOtpChallenge, setActiveOtpChallenge] = useState<null | {
+    idType: "BVN" | "NIN";
+    challenge: KycOtpChallenge;
+    otpCode: string;
+    cooldown: number;
+    error?: string;
+    busy?: boolean;
+  }>(null);
+  const countdownRef = useRef<number | null>(null);
   if (!application) return null;
   const currentApplication = application;
+
+  useEffect(() => {
+    if (!activeOtpChallenge) return;
+    if (countdownRef.current) window.clearInterval(countdownRef.current);
+    countdownRef.current = window.setInterval(() => {
+      setActiveOtpChallenge((current) => {
+        if (!current) return current;
+        if (current.cooldown <= 1) {
+          if (countdownRef.current) window.clearInterval(countdownRef.current);
+          return { ...current, cooldown: 0 };
+        }
+        return { ...current, cooldown: current.cooldown - 1 };
+      });
+    }, 1000);
+    return () => {
+      if (countdownRef.current) window.clearInterval(countdownRef.current);
+    };
+  }, [activeOtpChallenge?.challenge?.challengeId]);
 
   const {
     register,
@@ -64,24 +99,72 @@ export default function PersonalKycSection() {
       return;
     }
     setVerificationError("");
-    setVerification((current) => ({ ...current, [type]: "Checking with Prembly…" }));
+    setOtpMethodPickerFor(type.toUpperCase() as "BVN" | "NIN");
+  }
+
+  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS" | "WHATSAPP") {
+    const value = type === "BVN" ? currentApplication.kyc?.bvn || "" : currentApplication.kyc?.nin || "";
+    setOtpMethodPickerFor(null);
+    const lowerType = type.toLowerCase() as "bvn" | "nin";
+    setVerification((current) => ({ ...current, [lowerType]: "Verifying…" }));
+    setActiveOtpChallenge(null);
     try {
       const names = currentApplication.personalInfo?.fullName?.trim().split(/\s+/) ?? [];
-      const response = type === "bvn"
-        ? await verifyMyBvn(value, names[0], names.slice(1).join(" "))
-        : await verifyMyNin(value, names[0], names.slice(1).join(" "));
+      const response = type === "BVN"
+        ? await verifyMyBvn(value, names[0], names.slice(1).join(" "), undefined, channel)
+        : await verifyMyNin(value, names[0], names.slice(1).join(" "), undefined, channel);
+      const challenge = (response as any)?.otpChallenge as KycOtpChallenge | undefined;
+      if (challenge && challenge.requiresPhoneVerification) {
+        setActiveOtpChallenge({ idType: type, challenge, otpCode: "", cooldown: challenge.resendSecondsRemaining });
+        setVerificationError(`A verification code was sent to the phone number on ${type} records ending in ···${challenge.phoneLastFour}. Enter the code to confirm ownership.`);
+        setVerification((current) => ({ ...current, [lowerType]: "OTP required" }));
+        return;
+      }
       const status = response.verificationStatus === "SUCCESS" ? "Verified" : response.error || "Verification failed";
-      setVerification((current) => ({ ...current, [type]: status }));
+      setVerification((current) => ({ ...current, [lowerType]: status }));
       if (response.verificationStatus === "SUCCESS") {
-        patchKyc({ [type === "bvn" ? "bvnVerified" : "ninVerified"]: true, verifiedDetails: response.verifiedDetails });
+        patchKyc({ [lowerType === "bvn" ? "bvnVerified" : "ninVerified"]: true, verifiedDetails: response.verifiedDetails });
         const details = response.verifiedDetails ?? {};
-        const value = (keys: string[]) => keys.map((key) => details[key]).find((item) => typeof item === "string" && item.trim()) as string | undefined;
-        const autofill = Object.fromEntries(Object.entries({ fullName: value(["full_name", "fullName", "name"]), phone: value(["phone_number", "phone", "mobile"]), dateOfBirth: value(["date_of_birth", "dateOfBirth", "dob"]) }).filter(([, item]) => item));
+        const pick = (keys: string[]) => keys.map((key) => details[key]).find((item) => typeof item === "string" && item.trim()) as string | undefined;
+        const autofill = Object.fromEntries(Object.entries({ fullName: pick(["full_name", "fullName", "name"]), phone: pick(["phone_number", "phone", "mobile"]), dateOfBirth: pick(["date_of_birth", "dateOfBirth", "dob"]) }).filter(([, item]) => item));
         if (Object.keys(autofill).length) patchPersonalInfo(autofill);
       }
     } catch (error) {
-      setVerification((current) => ({ ...current, [type]: "Verification failed" }));
-      setVerificationError(error instanceof Error ? error.message : `Unable to verify ${type.toUpperCase()}`);
+      setVerification((current) => ({ ...current, [lowerType]: "Verification failed" }));
+      setVerificationError(error instanceof Error ? error.message : `Unable to verify ${type}`);
+    }
+  }
+
+  async function submitActiveKycOtp() {
+    if (!activeOtpChallenge || activeOtpChallenge.otpCode.length !== 6) return;
+    setActiveOtpChallenge((current) => current ? { ...current, busy: true, error: undefined } : current);
+    try {
+      const confirmed = await confirmKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, code: activeOtpChallenge.otpCode });
+      const lowerType = activeOtpChallenge.idType.toLowerCase() as "bvn" | "nin";
+      patchKyc({ [lowerType === "bvn" ? "bvnVerified" : "ninVerified"]: true, checklist: confirmed.checklist as any });
+      setVerification((current) => ({ ...current, [lowerType]: "Verified" }));
+      setVerificationError("");
+      setActiveOtpChallenge(null);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "Unable to verify code";
+      setActiveOtpChallenge((current) => current ? { ...current, busy: false, error: reason, otpCode: "" } : current);
+      setVerificationError(reason);
+    }
+  }
+
+  async function resendActiveKycOtp(newChannel?: "SMS" | "WHATSAPP") {
+    if (!activeOtpChallenge) return;
+    try {
+      const res = await resendKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, channel: newChannel });
+      setActiveOtpChallenge((current) => current ? {
+        ...current,
+        challenge: { ...current.challenge, challengeId: res.challengeId, expiresAt: res.expiresAt, channel: res.channel, resendAvailableAt: res.resendAvailableAt, resendSecondsRemaining: res.resendSecondsRemaining },
+        otpCode: "",
+        cooldown: res.resendSecondsRemaining,
+        error: undefined,
+      } : current);
+    } catch (err) {
+      setActiveOtpChallenge((current) => current ? { ...current, error: err instanceof Error ? err.message : "Unable to resend code" } : current);
     }
   }
 
@@ -160,7 +243,7 @@ export default function PersonalKycSection() {
 
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
           <h3 className="mb-2 text-sm font-semibold text-emerald-800">Liveness verification <span className="text-red-500">*</span></h3>
-          <p className="mb-3 text-xs text-emerald-700">Complete a quick in-app selfie scan using our identity verification widget (recommended &amp; primary method).</p>
+          <p className="mb-3 text-xs text-emerald-700">Complete a quick in-app selfie scan using the camera verification widget to confirm your identity.</p>
           <div className="flex flex-wrap items-center gap-3">
             <PremblyKycWidgetButton
               fullName={currentApplication.personalInfo?.fullName}
@@ -173,17 +256,6 @@ export default function PersonalKycSection() {
                 if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS" });
               }}
             />
-          </div>
-          <div className="mt-4 border-t border-emerald-200/70 pt-3">
-            <details className="group">
-              <summary className="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-800">Having trouble with the camera? Click here to upload a selfie instead (fallback).</summary>
-              <div className="mt-2">
-                <label className="velo-label text-xs">
-                  Upload live selfie
-                  <input className="velo-input mt-1" type="file" accept="image/jpeg,image/png,image/webp" disabled={livenessBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void verifyLiveness(file); }} />
-                </label>
-              </div>
-            </details>
           </div>
           {verification.liveness && <p className={`mt-3 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
         </div>
@@ -225,6 +297,124 @@ export default function PersonalKycSection() {
             onRemove={() => handleRemoveFile("proofOfAddress")}
           />
         </div>
+
+        {otpMethodPickerFor && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
+            <div className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl animate-slide-in-left">
+              <div className="mb-5">
+                <h3 className="text-lg font-extrabold text-velo-900 dark:text-white">Verify {otpMethodPickerFor} ownership</h3>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Choose how to receive your one-time verification code.</p>
+              </div>
+              <div className="grid gap-3 space-y-3">
+                <button
+                  type="button"
+                  onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}
+                  className="w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-velo-300 dark:hover:border-velo-500 hover:bg-velo-50 dark:hover:bg-velo-900/20 transition group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-lg bg-velo-500 text-white flex items-center justify-center shrink-0">
+                      <span className="text-lg">💬</span>
+                    </div>
+                    <div>
+                      <div className="font-bold text-velo-900 dark:text-white">SMS</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">Receive code via text message</div>
+                    </div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}
+                  className="w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-lg bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                      <span className="text-lg">💚</span>
+                    </div>
+                    <div>
+                      <div className="font-bold text-velo-900 dark:text-white">WhatsApp</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">Receive code on WhatsApp</div>
+                    </div>
+                  </div>
+                </button>
+              </div>
+              <div className="mt-5 text-right">
+                <button
+                  type="button"
+                  onClick={() => setOtpMethodPickerFor(null)}
+                  className="btn-secondary text-sm"
+                >Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeOtpChallenge && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
+            <div className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl animate-slide-in-left">
+              <div className="mb-5">
+                <h3 className="text-lg font-extrabold text-velo-900 dark:text-white">Enter verification code</h3>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  We sent a 6-digit code to the {activeOtpChallenge.idType} phone number ending in
+                  <span className="font-bold text-velo-900 dark:text-white ml-1">
+                    ···{activeOtpChallenge.challenge.phoneLastFour}</span> via {activeOtpChallenge.challenge.channel}.
+                </p>
+              </div>
+              <div>
+                <label className="velo-label">Verification code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="Enter 6-digit code"
+                  value={activeOtpChallenge.otpCode}
+                  onChange={(e) => {
+                    const code = e.target.value.replace(/\D/g, "");
+                    setActiveOtpChallenge((cur) => (cur ? { ...cur, otpCode: code } : cur));
+                  }}
+                  className="velo-input text-center font-bold tracking-[0.5em] text-xl"
+                  autoFocus
+                />
+              </div>
+              {activeOtpChallenge.error && (
+                <div className="mt-3 text-sm text-red-600 dark:text-red-400">{activeOtpChallenge.error}</div>
+              )}
+              <div className="mt-5 flex items-center justify-between">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {activeOtpChallenge.cooldown > 0
+                    ? `Resend available in ${activeOtpChallenge.cooldown}s`
+                    : activeOtpChallenge.cooldown === 0 && "Code expired"
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void resendActiveKycOtp("SMS")}
+                    disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy}
+                    className="text-xs font-semibold text-velo-600 dark:text-velo-400 hover:underline disabled:opacity-60"
+                  >Resend SMS</button>
+                  <button
+                    type="button"
+                    onClick={() => void resendActiveKycOtp("WHATSAPP")}
+                    disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy}
+                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline disabled:opacity-60"
+                  >Resend WhatsApp</button>
+                </div>
+              </div>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setActiveOtpChallenge(null); setVerificationError(""); }}
+                  className="btn-secondary text-sm"
+                >Cancel</button>
+                <button
+                  type="button"
+                  onClick={() => void submitActiveKycOtp()}
+                  disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy}
+                  className="btn-primary text-sm"
+                >{activeOtpChallenge.busy ? "Verifying…" : "Confirm code"}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </SectionShell>
   );

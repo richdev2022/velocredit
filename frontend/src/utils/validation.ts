@@ -85,6 +85,7 @@ export const personalInfoSchema = z.object({
 export const disbursementAccountSchema = z.object({
   accountName: z.string().min(3, "Account name is required."),
   bankName: z.string().min(2, "Bank name is required."),
+  bankCode: z.string().min(1, "Select your bank."),
   accountNumber: z.string().regex(/^\d{10}$/, "Account number must be exactly 10 digits."),
 });
 

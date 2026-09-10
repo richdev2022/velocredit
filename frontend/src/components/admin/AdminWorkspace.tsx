@@ -16,6 +16,11 @@ import {
 import {
   adminListDisbursements,
   adminRetryDisbursement,
+  adminListAuditLogs,
+  adminCreateUser,
+  adminPatchUserRoles,
+  adminPatchUserStatus,
+  adminEditUser,
   type LoanDisbursement,
 } from "../../services/adminApi";
 
@@ -51,12 +56,202 @@ function Overview() {
 }
 
 function Users({ role, title }: { role: "BORROWER" | undefined; title: string }) {
-  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const [selected, setSelected] = useState<any>(null); const size = 20;
+  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const size = 20;
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editFor, setEditFor] = useState<any>(null);
+  const [actionBusy, setActionBusy] = useState("");
+  const [formError, setFormError] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newFullName, setNewFullName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRoles, setNewRoles] = useState<Array<"INVESTOR" | "BORROWER">>(["INVESTOR", "BORROWER"]);
+  const [editFullName, setEditFullName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editRoles, setEditRoles] = useState<Array<"INVESTOR" | "BORROWER">>(["INVESTOR", "BORROWER"]);
+
+  async function reload() {
+    try {
+      const response = await adminListUsers(size, page * size, role);
+      setRows(response.users);
+      setTotal(response.meta?.total || response.users.length);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load users");
+    }
+  }
   useEffect(() => { setPage(0); }, [role]);
-  useEffect(() => { adminListUsers(size, page * size, role).then((response) => { setRows(response.users); setTotal(response.meta?.total || response.users.length); }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load users")); }, [role, page]);
+  useEffect(() => { void reload(); }, [role, page]);
   const pages = Math.max(1, Math.ceil(total / size));
-  if (selected) return <Panel title={`${title} detail`} action={<button className="btn-secondary text-xs" onClick={() => setSelected(null)}>Back to {title.toLowerCase()}</button>}><DetailFields value={selected} /></Panel>;
-  return <Panel title={`${title} management`} action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} records</span>}>{error ? <ErrorBox message={error} /> : <Table headers={["Name", "Email", "Phone", "KYC", "Status", "Created"]}>{rows.map((user) => <tr key={user.id} className="cursor-pointer hover:bg-velo-50/40 dark:hover:bg-slate-800/40" onClick={() => setSelected(user)}><td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{user.fullName}</td><td className="px-3 py-3 text-slate-600 dark:text-slate-300">{user.email}</td><td className="px-3 py-3 text-slate-600 dark:text-slate-300">{user.phone || "—"}</td><td className="px-3 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{user.kycStatus || "NOT_STARTED"}</span></td><td className="px-3 py-3 dark:text-slate-200">{user.isActive === false ? "Inactive" : "Active"}</td><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "—"}</td></tr>)}</Table>}{!error && !rows.length && <Empty />}{!error && <Pager page={page} pages={pages} onPage={setPage} />}</Panel>;
+
+  async function handleCreate() {
+    if (!newEmail || !newFullName || !newPhone || !newPassword || !newRoles.length) return;
+    setActionBusy("create"); setFormError("");
+    try {
+      await adminCreateUser({ email: newEmail, fullName: newFullName, phone: newPhone, password: newPassword, roles: newRoles });
+      setCreateOpen(false);
+      setNewEmail(""); setNewFullName(""); setNewPhone(""); setNewPassword(""); setNewRoles(["INVESTOR", "BORROWER"]);
+      await reload();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Unable to create user");
+    } finally { setActionBusy(""); }
+  }
+
+  function openEdit(user: any) {
+    setEditFor(user);
+    setEditFullName(user.fullName || "");
+    setEditPhone(user.phone || "");
+    setEditRoles(Array.isArray(user.roles) ? user.roles.filter((r: string) => r === "INVESTOR" || r === "BORROWER") : ["INVESTOR", "BORROWER"]);
+    setFormError("");
+  }
+
+  async function saveEdit() {
+    if (!editFor) return;
+    setActionBusy(`edit-${editFor.id}`); setFormError("");
+    try {
+      await adminEditUser(editFor.id, { fullName: editFullName, phone: editPhone });
+      await adminPatchUserRoles(editFor.id, editRoles);
+      setEditFor(null);
+      await reload();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Unable to save changes");
+    } finally { setActionBusy(""); }
+  }
+
+  async function toggleStatus(user: any) {
+    const next = user.isActive === false ? true : false;
+    if (!next && !confirm(`Deactivate user "${user.fullName}"? They will not be able to log in.`)) return;
+    setActionBusy(`status-${user.id}`);
+    try {
+      await adminPatchUserStatus(user.id, next);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update status");
+    } finally { setActionBusy(""); }
+  }
+
+  function RoleChips({ roles }: { roles?: string[] }) {
+    if (!roles || !roles.length) return <span className="text-slate-400 text-xs">—</span>;
+    return <div className="flex flex-wrap gap-1">{roles.map((r) => <span key={r} className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${r === "INVESTOR" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : r === "BORROWER" ? "bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-400" : "bg-slate-100 text-slate-600"}`}>{r}</span>)}</div>;
+  }
+
+  return (
+    <>
+      <Panel
+        title={`${title} management`}
+        action={
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-500 dark:text-slate-400">{total} records</span>
+            <button type="button" onClick={() => { setCreateOpen(true); setFormError(""); }} className="btn-primary !py-2 !px-3 text-xs font-extrabold">
+              + Create User
+            </button>
+          </div>
+        }
+      >
+        {error ? <ErrorBox message={error} /> : (
+          <Table headers={["Name", "Email", "Phone", "Roles", "KYC", "Status", "Created", "Actions"]}>
+            {rows.map((user) => (
+              <tr key={user.id} className="hover:bg-velo-50/40 dark:hover:bg-slate-800/40">
+                <td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{user.fullName}</td>
+                <td className="px-3 py-3 text-slate-600 dark:text-slate-300 text-xs">{user.email}</td>
+                <td className="px-3 py-3 text-slate-600 dark:text-slate-300 text-xs">{user.phone || "—"}</td>
+                <td className="px-3 py-3"><RoleChips roles={user.roles} /></td>
+                <td className="px-3 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{user.kycStatus || "NOT_STARTED"}</span></td>
+                <td className="px-3 py-3">
+                  <button type="button" onClick={() => void toggleStatus(user)} disabled={actionBusy === `status-${user.id}`} className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-bold transition ${user.isActive === false ? "bg-slate-100 text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 dark:bg-slate-800 dark:text-slate-400" : "bg-emerald-50 text-emerald-700 hover:bg-red-50 hover:text-red-700 dark:bg-emerald-900/30 dark:text-emerald-400"}`}>
+                    {user.isActive === false ? "Inactive · Tap to activate" : "Active · Tap to deactivate"}
+                  </button>
+                </td>
+                <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "—"}</td>
+                <td className="px-3 py-3">
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => openEdit(user)} className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300">Edit</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </Table>
+        )}
+        {!error && !rows.length && <Empty />}
+        {!error && <Pager page={page} pages={pages} onPage={setPage} />}
+      </Panel>
+
+      {createOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in">
+          <div className="velo-card rounded-2xl w-full max-w-lg p-5 sm:p-6 animate-slide-in-left">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-bold text-velo-900 dark:text-white text-lg">Create new user</h3>
+              <button type="button" onClick={() => { setCreateOpen(false); setFormError(""); }} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xl leading-none">×</button>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">A wallet is automatically created for the new user.</p>
+            {formError && <div className="mt-3"><ErrorBox message={formError} /></div>}
+            <div className="mt-4 grid gap-3">
+              <label className="velo-label">Full name<input className="velo-input mt-1" value={newFullName} onChange={(e) => setNewFullName(e.target.value)} placeholder="e.g. John Doe" /></label>
+              <label className="velo-label">Email<input className="velo-input mt-1" type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="you@example.com" /></label>
+              <label className="velo-label">Phone<input className="velo-input mt-1" value={newPhone} onChange={(e) => setNewPhone(e.target.value.replace(/\D/g, ""))} placeholder="0801 234 5678" inputMode="numeric" /></label>
+              <label className="velo-label">Temporary password (min 12 chars)<input className="velo-input mt-1" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 12 characters" /></label>
+              <div>
+                <div className="velo-label mb-1">Roles</div>
+                <div className="flex flex-wrap gap-2">
+                  {(["INVESTOR", "BORROWER"] as const).map((r) => {
+                    const checked = newRoles.includes(r);
+                    return (
+                      <label key={r} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs font-bold transition ${checked ? "border-velo-400 bg-velo-50 text-velo-800 dark:border-velo-600/50 dark:bg-velo-900/20 dark:text-velo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"}`}>
+                        <input type="checkbox" checked={checked} onChange={() => setNewRoles(checked ? newRoles.filter((x) => x !== r) : [...newRoles, r])} className="accent-velo-600" />
+                        {r}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className="mt-5 flex gap-3 justify-end">
+              <button type="button" onClick={() => { setCreateOpen(false); setFormError(""); }} className="btn-secondary text-sm">Cancel</button>
+              <button type="button" onClick={() => void handleCreate()} disabled={!newEmail || !newFullName || !newPhone || newPassword.length < 12 || !newRoles.length || actionBusy === "create"} className="btn-primary text-sm">
+                {actionBusy === "create" ? "Creating…" : "Create user"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in">
+          <div className="velo-card rounded-2xl w-full max-w-lg p-5 sm:p-6 animate-slide-in-left">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-bold text-velo-900 dark:text-white text-lg">Edit user</h3>
+              <button type="button" onClick={() => { setEditFor(null); setFormError(""); }} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xl leading-none">×</button>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Update basic info and access roles for {editFor.fullName || editFor.email}.</p>
+            {formError && <div className="mt-3"><ErrorBox message={formError} /></div>}
+            <div className="mt-4 grid gap-3">
+              <label className="velo-label">Full name<input className="velo-input mt-1" value={editFullName} onChange={(e) => setEditFullName(e.target.value)} /></label>
+              <label className="velo-label">Phone<input className="velo-input mt-1" value={editPhone} onChange={(e) => setEditPhone(e.target.value.replace(/\D/g, ""))} inputMode="numeric" /></label>
+              <div>
+                <div className="velo-label mb-1">Roles</div>
+                <div className="flex flex-wrap gap-2">
+                  {(["INVESTOR", "BORROWER"] as const).map((r) => {
+                    const checked = editRoles.includes(r);
+                    return (
+                      <label key={r} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs font-bold transition ${checked ? "border-velo-400 bg-velo-50 text-velo-800 dark:border-velo-600/50 dark:bg-velo-900/20 dark:text-velo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"}`}>
+                        <input type="checkbox" checked={checked} onChange={() => setEditRoles(checked ? editRoles.filter((x) => x !== r) : [...editRoles, r])} className="accent-velo-600" />
+                        {r}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className="mt-5 flex gap-3 justify-end">
+              <button type="button" onClick={() => { setEditFor(null); setFormError(""); }} className="btn-secondary text-sm">Cancel</button>
+              <button type="button" onClick={() => void saveEdit()} disabled={actionBusy === `edit-${editFor.id}` || !editRoles.length} className="btn-primary text-sm">
+                {actionBusy === `edit-${editFor.id}` ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 function Investors() {
@@ -196,4 +391,4 @@ function Loans() {
   })}</Table> : <Empty />}{!error && <Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} />}</Panel>;
 }
 function Reconciliation() { const [data, setData] = useState<any>(null); const [error, setError] = useState(""); useEffect(() => { adminGetReconciliation().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load reconciliation")); }, []); return <Panel title="Reconciliation center">{error ? <ErrorBox message={error} /> : data ? <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["providerEvents", "unverifiedDeposits", "unverifiedRepayments", "pendingPayouts"].map((key) => <div key={key} className="rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{key.replace(/([A-Z])/g, " $1")}</div><div className="mt-2 text-2xl font-bold text-velo-900 dark:text-white">{data[key]?.length || 0}</div></div>)}</div> : <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading reconciliation…</div>}</Panel>; }
-function Audit() { const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); useEffect(() => { fetch("/api/v1/admin/audit-logs", { headers: { Authorization: `Bearer ${sessionStorage.getItem("velo:admin-token")}` } }).then((response) => response.json()).then((body) => setRows(body.logs || [])).catch((err) => setError(err instanceof Error ? err.message : "Unable to load audit logs")); }, []); return <Panel title="Audit log" action={<span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} events</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <Table headers={["Time", "Action", "Resource", "Actor"]}>{rows.map((row) => <tr key={row.id}><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{new Date(row.createdAt).toLocaleString()}</td><td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{row.action}</td><td className="px-3 py-3 text-slate-600 dark:text-slate-300">{row.resourceType} {row.resourceId || ""}</td><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{row.userId || "system"}</td></tr>)}</Table> : <Empty />}</Panel>; }
+function Audit() { const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); useEffect(() => { adminListAuditLogs().then((body) => setRows(body.logs || [])).catch((err) => setError(err instanceof Error ? err.message : "Unable to load audit logs")); }, []); return <Panel title="Audit log" action={<span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} events</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <Table headers={["Time", "Action", "Resource", "Actor"]}>{rows.map((row) => <tr key={row.id}><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{new Date(row.createdAt).toLocaleString()}</td><td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{row.action}</td><td className="px-3 py-3 text-slate-600 dark:text-slate-300">{row.resourceType} {row.resourceId || ""}</td><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{row.userId || "system"}</td></tr>)}</Table> : <Empty />}</Panel>; }

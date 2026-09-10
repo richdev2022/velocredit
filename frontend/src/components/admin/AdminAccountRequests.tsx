@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { adminApi } from "../../services/adminApi";
+import { adminApi, adminListAccountRequests } from "../../services/adminApi";
 
 type AccountRequestType = "INVESTOR_PAYOUT_ACCOUNT" | "BORROWER_DISBURSEMENT_ACCOUNT";
 type AccountRequestStatus = "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
@@ -44,16 +44,9 @@ export default function AdminAccountRequests() {
   async function load() {
     setError("");
     try {
-      const res = await fetch(
-        `/api/v1/admin/account-requests${filter !== "ALL" ? `?status=${filter}` : ""}`,
-        {
-          headers: {
-            Authorization: `Bearer ${sessionStorage.getItem("velo:admin-token") ?? ""}`,
-          },
-        }
-      ).then((r) => r.json());
+      const res = await adminListAccountRequests({ status: filter !== "ALL" ? filter : undefined });
       if (res.ok) setRows(res.requests ?? []);
-      else setError(res.error || "Could not load account change requests");
+      else setError((res as any).error || "Could not load account change requests");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load requests");
     }

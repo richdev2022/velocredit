@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
+import ReceiptDownload from "../components/ReceiptDownload";
 import { useAuth } from "../context/AuthContext";
 import {
   fundWallet,
@@ -19,7 +20,10 @@ import {
   resendKycOwnershipOtp,
   type KycOtpChallenge,
   initializeLoanRepayment,
+  createInvestment,
+  getAccessToken,
 } from "../services/apiClient";
+import { config } from "../utils/config";
 
 const money = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -34,14 +38,29 @@ type DashboardData = {
   }>;
 };
 type TransactionData = {
-  payouts?: Array<{ amountNaira?: number; status?: string }>;
-  investments?: Array<unknown>;
+  payouts?: Array<Record<string, unknown>>;
+  investments?: Array<Record<string, unknown>>;
+  ledger?: Array<Record<string, unknown>>;
+  walletTransactions?: Array<Record<string, unknown>>;
 };
 type KycData = {
   status?: string;
-  checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean; selfieUploaded?: boolean };
+  checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean; selfieUploaded?: boolean; liveness?: boolean };
 };
-type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number };
+type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number };
+
+type UnifiedTx = {
+  id: string;
+  kind: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RETURN" | "INVESTMENT" | "PAYOUT" | "DEPOSIT" | "FEE" | "OTHER";
+  direction: "CREDIT" | "DEBIT";
+  amountMinor: number;
+  label: string;
+  narration?: string;
+  referenceId?: string;
+  createdAt: string;
+  balanceAfterMinor?: number;
+  raw: Record<string, unknown>;
+};
 
 export default function InvestorDashboard() {
   const { user, addUserRole, refreshUser } = useAuth();
@@ -59,7 +78,7 @@ export default function InvestorDashboard() {
   const [kycError, setKycError] = useState("");
   const [bvn, setBvn] = useState("");
   const [nin, setNin] = useState("");
-  const [action, setAction] = useState("" as "fund" | "plans" | "transactions" | "");
+  const [action, setAction] = useState("" as "plans" | "");
   const [fundingAmount, setFundingAmount] = useState("100000");
   const [plans, setPlans] = useState([] as Plan[]);
   const [fundingBanner, setFundingBanner] = useState(null as { ok: boolean; text: string } | null);
@@ -70,7 +89,7 @@ export default function InvestorDashboard() {
     { key: "wallet", label: "Wallet", icon: "💳", hint: "Fund & withdraw" },
     { key: "investments", label: "Investments", icon: "📈", hint: "Plans & positions" },
     { key: "kyc", label: "Verification", icon: "✅", hint: "BVN / NIN / Liveness" },
-    { key: "transactions", label: "Transactions", icon: "🧾", hint: "Ledger & history" },
+    { key: "transactions", label: "Transactions", icon: "🧾", hint: "Transactions & history" },
     { key: "payout", label: "Payout account", icon: "🏦", hint: "Bank details" },
     { key: "profile", label: "Profile", icon: "👤", hint: "Personal information" },
   ];
@@ -84,6 +103,15 @@ export default function InvestorDashboard() {
       busy?: boolean;
     });
   const countdownRef = useRef(null as number | null);
+
+  const [fundModalOpen, setFundModalOpen] = useState(false);
+  const [fundModalAmount, setFundModalAmount] = useState("100000");
+  const [fundModalBusy, setFundModalBusy] = useState(false);
+  const [investModalOpen, setInvestModalOpen] = useState(false);
+  const [investModalPlan, setInvestModalPlan] = useState(null as Plan | null);
+  const [investModalAmount, setInvestModalAmount] = useState("");
+  const [investModalBusy, setInvestModalBusy] = useState(false);
+  const [selectedTx, setSelectedTx] = useState(null as UnifiedTx | null);
 
   useEffect(() => {
     const fundingStatus = searchParams.get("funding");
@@ -103,11 +131,12 @@ export default function InvestorDashboard() {
           } else if (!fundingBanner) {
             setFundingBanner({ ok: false, text: res.reason || "Funding could not be confirmed at this time. Your balance will update once the provider confirms." });
           }
-          Promise.all([getInvestorDashboard(), getInvestorTransactions(), getMyKyc()])
-            .then(([dashboard, history, kycResponse]) => {
+          Promise.all([getInvestorDashboard(), getInvestorTransactions(), getMyKyc(), getInvestmentPlans()])
+            .then(([dashboard, history, kycResponse, plansRes]) => {
               setData(dashboard as DashboardData);
-              setTransactions(history as TransactionData);
+              setTransactions(history as unknown as TransactionData);
               setKyc(kycResponse as unknown as KycData);
+              setPlans((plansRes as any)?.plans || []);
             })
             .catch(() => undefined);
         }).catch(() => undefined);
@@ -126,11 +155,12 @@ export default function InvestorDashboard() {
 
   useEffect(() => {
     if (!user) return;
-    Promise.all([getInvestorDashboard(), getInvestorTransactions(), getMyKyc()])
-      .then(([dashboard, history, kycResponse]) => {
+    Promise.all([getInvestorDashboard(), getInvestorTransactions(), getMyKyc(), getInvestmentPlans()])
+      .then(([dashboard, history, kycResponse, plansRes]) => {
         setData(dashboard as DashboardData);
-        setTransactions(history as TransactionData);
+        setTransactions(history as unknown as TransactionData);
         setKyc(kycResponse as unknown as KycData);
+        setPlans((plansRes as any)?.plans || []);
       })
       .catch((err) =>
         setError(err instanceof Error ? err.message : "Unable to load investor data")
@@ -255,6 +285,7 @@ export default function InvestorDashboard() {
     }
   }
 
+  /*
   async function verifyLivenessFile(file: File) {
     setKycBusy("LIVENESS_FILE");
     setKycError("");
@@ -271,6 +302,7 @@ export default function InvestorDashboard() {
       setKycBusy("");
     }
   }
+  */
 
   async function onPremblyLivenessResult(result: any) {
     if (result.success) {
@@ -295,27 +327,74 @@ export default function InvestorDashboard() {
     }
   }
 
-  async function openAction(nextAction: "fund" | "plans" | "transactions") {
+  async function openAction(nextAction: "plans") {
     setAction(nextAction);
-    if (nextAction === "plans" && !plans.length) {
-      try {
-        const response = await getInvestmentPlans();
-        setPlans(response.plans as Plan[]);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to load investment plans");
+  }
+
+  async function openFundModal() {
+    setFundModalAmount(fundingAmount || "100000");
+    setFundModalOpen(true);
+  }
+
+  async function handleFundModalSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const amt = Number(fundModalAmount);
+    if (!Number.isFinite(amt) || amt < 1000) {
+      setError("Minimum funding amount is ₦1,000.");
+      return;
+    }
+    setFundModalBusy(true);
+    setError("");
+    try {
+      const response = await fundWallet(amt);
+      const link = response.checkout?.data?.link;
+      if (link) {
+        setFundingAmount(String(amt));
+        window.location.assign(link);
+      } else {
+        setMessage(response.message || "Wallet funding is being processed.");
+        setFundModalOpen(false);
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to start wallet funding");
+    } finally {
+      setFundModalBusy(false);
     }
   }
 
-  async function handleFundWallet(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function openInvestModal(plan: Plan) {
+    setInvestModalPlan(plan);
+    setInvestModalAmount(String(plan.minAmountNaira || 10000));
+    setInvestModalOpen(true);
+  }
+
+  async function handleInvestModalSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!investModalPlan) return;
+    const amt = Number(investModalAmount);
+    if (!Number.isFinite(amt)) { setError("Enter a valid amount."); return; }
+    if (investModalPlan.minAmountNaira && amt < investModalPlan.minAmountNaira) {
+      setError(`Minimum investment is ₦${Number(investModalPlan.minAmountNaira).toLocaleString()}.`);
+      return;
+    }
+    if (investModalPlan.maxAmountNaira && amt > investModalPlan.maxAmountNaira) {
+      setError(`Maximum investment is ₦${Number(investModalPlan.maxAmountNaira).toLocaleString()}.`);
+      return;
+    }
+    setInvestModalBusy(true);
+    setError("");
     try {
-      const response = await fundWallet(Number(fundingAmount));
-      const link = response.checkout?.data?.link;
-      if (link) window.location.assign(link);
-      else setMessage(response.message || "Wallet funding is being processed.");
+      await createInvestment({ planId: investModalPlan.id, amountNaira: amt });
+      setMessage(`Investment of ₦${amt.toLocaleString("en-NG")} created successfully!`);
+      setInvestModalOpen(false);
+      setInvestModalPlan(null);
+      const [dashboard, history] = await Promise.all([getInvestorDashboard(), getInvestorTransactions()]);
+      setData(dashboard as DashboardData);
+      setTransactions(history as unknown as TransactionData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to start wallet funding");
+      setError(err instanceof Error ? err.message : "Unable to create investment");
+    } finally {
+      setInvestModalBusy(false);
     }
   }
 
@@ -368,7 +447,6 @@ export default function InvestorDashboard() {
           className={`fixed lg:static z-50 top-0 left-0 h-full w-80 max-w-[86vw] lg:w-72 shrink-0 lg:h-auto transition-transform duration-300 ease-out lg:transform-none ${
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
-          style={{ padding: sidebarOpen ? undefined : undefined }}
         >
           <div className="lg:hidden absolute top-4 right-4 z-10">
             <button
@@ -408,7 +486,7 @@ export default function InvestorDashboard() {
                     <button
                       key={item.key}
                       type="button"
-                      onClick={() => { setView(item.key); setMessage(""); setError(""); setSidebarOpen(false); }}
+                      onClick={() => { setView(item.key); setMessage(""); setError(""); setSidebarOpen(false); setSelectedTx(null); }}
                       className={`w-full group flex items-center gap-3 px-3.5 py-2.5 sm:py-3 rounded-xl transition-all duration-200 text-left ${
                         active
                           ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-md shadow-emerald-500/25 hover:shadow-lg hover:shadow-emerald-500/30"
@@ -492,13 +570,12 @@ export default function InvestorDashboard() {
               investments={investments}
               kyc={kyc}
               transactions={transactions}
-              busy={busy}
               openAction={openAction}
               action={action}
-              fundingAmount={fundingAmount}
-              setFundingAmount={setFundingAmount}
-              handleFundWallet={handleFundWallet}
               plans={plans}
+              openFundModal={openFundModal}
+              openInvestModal={openInvestModal}
+              goToTransactions={() => { setView("transactions"); setAction(""); }}
             />
           )}
 
@@ -511,12 +588,7 @@ export default function InvestorDashboard() {
               fundingBanner={fundingBanner}
               error={error}
               message={message}
-              busy={busy}
-              action={action}
-              openAction={openAction}
-              fundingAmount={fundingAmount}
-              setFundingAmount={setFundingAmount}
-              handleFundWallet={handleFundWallet}
+              openFundModal={openFundModal}
             />
           )}
 
@@ -524,11 +596,10 @@ export default function InvestorDashboard() {
             <InvestorInvestments
               investments={investments}
               plans={plans}
-              loadPlans={() => openAction("plans")}
               totalCapital={totalCapital}
               returns={returns}
               returnRate={returnRate}
-              busy={busy}
+              openInvestModal={openInvestModal}
               setError={setError}
             />
           )}
@@ -548,11 +619,9 @@ export default function InvestorDashboard() {
               submitAddressReview={submitAddressReview}
               busy={busy}
               uploadProofOfAddress={uploadProofOfAddress}
-              verifyLivenessFile={verifyLivenessFile}
               onPremblyLivenessResult={onPremblyLivenessResult}
               kycError={kycError}
               message={message}
-              setMessage={setMessage}
               activeOtpChallenge={activeOtpChallenge}
               setActiveOtpChallenge={setActiveOtpChallenge}
               submitActiveKycOtp={submitActiveKycOtp}
@@ -566,6 +635,8 @@ export default function InvestorDashboard() {
           {view === "transactions" && (
             <InvestorTransactions
               transactions={transactions}
+              selectedTx={selectedTx}
+              setSelectedTx={setSelectedTx}
             />
           )}
 
@@ -578,12 +649,81 @@ export default function InvestorDashboard() {
           )}
         </main>
       </div>
+
+      {fundModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm px-4 animate-fade-in">
+          <div className="velo-card w-full max-w-md p-6 shadow-2xl animate-slide-in-left">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-velo-900 dark:text-white">Fund your wallet</h3>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Enter an amount to deposit and start investing.</p>
+              </div>
+              <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setFundModalOpen(false)} aria-label="Close">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+              </button>
+            </div>
+            <form onSubmit={handleFundModalSubmit} className="mt-5 space-y-4">
+              <label className="velo-label block">
+                Amount (NGN)
+                <div className="relative mt-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">₦</span>
+                  <input className="velo-input pl-8 font-bold" type="number" min="1000" step="100" value={fundModalAmount} onChange={(e) => setFundModalAmount(e.target.value)} required autoFocus />
+                </div>
+                <span className="mt-1 block text-xs text-slate-500">Minimum deposit: ₦1,000</span>
+              </label>
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                <button type="button" className="btn-secondary" onClick={() => setFundModalOpen(false)} disabled={fundModalBusy}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={fundModalBusy}>
+                  {fundModalBusy ? "Processing…" : "Continue to payment"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {investModalOpen && investModalPlan && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm px-4 animate-fade-in">
+          <div className="velo-card w-full max-w-md p-6 shadow-2xl animate-slide-in-left">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-velo-900 dark:text-white">Invest in {investModalPlan.name}</h3>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{investModalPlan.tenureDays} days · {investModalPlan.annualRatePercent}% p.a.</p>
+              </div>
+              <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => { setInvestModalOpen(false); setInvestModalPlan(null); }} aria-label="Close">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+              </button>
+            </div>
+            <div className="mt-4 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 p-4 text-sm space-y-1 border border-emerald-100 dark:border-emerald-900/30">
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Min investment</span><span className="font-bold text-velo-900 dark:text-white">₦{Number(investModalPlan.minAmountNaira).toLocaleString()}</span></div>
+              {investModalPlan.maxAmountNaira && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Max investment</span><span className="font-bold text-velo-900 dark:text-white">₦{Number(investModalPlan.maxAmountNaira).toLocaleString()}</span></div>}
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Available wallet</span><span className="font-bold text-emerald-600">{money.format(available)}</span></div>
+            </div>
+            <form onSubmit={handleInvestModalSubmit} className="mt-5 space-y-4">
+              <label className="velo-label block">
+                Amount to invest (NGN)
+                <div className="relative mt-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">₦</span>
+                  <input className="velo-input pl-8 font-bold" type="number" min={investModalPlan.minAmountNaira} max={investModalPlan.maxAmountNaira} step="100" value={investModalAmount} onChange={(e) => setInvestModalAmount(e.target.value)} required autoFocus />
+                </div>
+              </label>
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                <button type="button" className="btn-secondary" onClick={() => { setInvestModalOpen(false); setInvestModalPlan(null); }} disabled={investModalBusy}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={investModalBusy || available < Number(investModalAmount)}>
+                  {investModalBusy ? "Processing…" : available < Number(investModalAmount) ? "Insufficient wallet balance" : "Confirm investment"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }
 
 function InvestorOverview(props: any) {
-  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, returnRate, investments, kyc, transactions, busy, openAction, action, fundingAmount, setFundingAmount, handleFundWallet, plans } = props;
+  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, returnRate, investments, kyc, transactions, openAction, action, plans, openFundModal, openInvestModal, goToTransactions } = props;
+  const payoutCount = transactions?.payouts?.length ?? 0;
   return (
     <div className="space-y-6">
         <div>
@@ -611,7 +751,7 @@ function InvestorOverview(props: any) {
                   </div>
                 ) : (
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    "Enable borrower access anytime. You can complete or continue KYC from the dashboard you choose."
+                    Enable borrower access anytime. You can complete or continue KYC from the dashboard you choose.
                   </div>
                 )}
               </div>
@@ -815,7 +955,7 @@ function InvestorOverview(props: any) {
             <h2 className="section-heading">Quick actions</h2>
             <p className="section-subheading">Investor essentials at your fingertips.</p>
             <div className="mt-5 space-y-2.5">
-              <button type="button" onClick={() => void openAction("fund")} className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors group text-left">
+              <button type="button" onClick={openFundModal} className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors group text-left">
                 <div className="flex items-center gap-3">
                   <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500 text-white">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -867,7 +1007,7 @@ function InvestorOverview(props: any) {
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-              <button type="button" onClick={() => void openAction("transactions")} className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors group text-left">
+              <button type="button" onClick={goToTransactions} className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors group text-left">
                 <div className="flex items-center gap-3">
                   <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-velo-700 to-velo-600 text-white">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -884,7 +1024,7 @@ function InvestorOverview(props: any) {
                       Transaction history
                     </div>
                     <div className="text-xs text-slate-500 dark:text-slate-400">
-                      {transactions?.payouts?.length ?? 0} payout records
+                      {payoutCount} record{payoutCount === 1 ? "" : "s"}
                     </div>
                   </div>
                 </div>
@@ -893,18 +1033,55 @@ function InvestorOverview(props: any) {
                 </svg>
               </button>
             </div>
-            {action === "fund" && <form onSubmit={handleFundWallet} className="mt-4 flex gap-2"><input className="velo-input" type="number" min="1000" step="100" value={fundingAmount} onChange={(event) => setFundingAmount(event.target.value)} aria-label="Funding amount" /><button className="btn-primary shrink-0" type="submit">Continue to payment</button></form>}
-            {action === "plans" && <div className="mt-4 space-y-2">{plans.map((plan: any) => <div key={plan.id} className="flex items-center justify-between rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700"><span className="font-semibold text-velo-900 dark:text-white">{plan.name} · {plan.tenureDays} days</span><span className="text-emerald-600">{plan.annualRatePercent}% p.a.</span></div>)}</div>}
-            {action === "transactions" && <div className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">{transactions?.payouts?.length ? transactions.payouts.map((payout: any, index: number) => <div key={index} className="flex justify-between"><span>{payout.status ?? "Payout"}</span><span>{money.format(Number(payout.amountNaira ?? 0))}</span></div>) : <p>No payout transactions yet.</p>}</div>}
+            {action === "plans" && (
+              <div className="mt-4 space-y-2">
+                {plans.length ? plans.map((plan: Plan) => (
+                  <div key={plan.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-700 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-velo-900 dark:text-white">{plan.name} · {plan.tenureDays} days</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Min ₦{Number(plan.minAmountNaira).toLocaleString()} · {plan.annualRatePercent}% p.a.</div>
+                    </div>
+                    <button type="button" className="btn-primary !py-1.5 !px-3 text-xs" onClick={() => openInvestModal(plan)}>Invest</button>
+                  </div>
+                )) : <Empty text="Loading investment plans…" />}
+              </div>
+            )}
           </section>
         </div>
+
+        {plans.length > 0 && (
+          <section className="velo-card p-4 sm:p-5 lg:p-6">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div>
+                <h2 className="section-heading mb-0">Available investment plans</h2>
+                <p className="section-subheading mb-0">Choose a plan and start investing today.</p>
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {plans.map((plan: Plan) => (
+                <div key={plan.id} className="rounded-2xl border border-slate-100 dark:border-slate-800 p-4 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50 hover:shadow-lg transition-shadow">
+                  <div className="flex items-start justify-between">
+                    <div className="text-sm font-bold text-velo-900 dark:text-white">{plan.name}</div>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">{plan.annualRatePercent}% p.a.</span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                    <div><p className="text-slate-500 dark:text-slate-400">Tenor</p><p className="font-semibold dark:text-white">{plan.tenureDays}d</p></div>
+                    <div><p className="text-slate-500 dark:text-slate-400">Min</p><p className="font-semibold dark:text-white truncate">₦{(plan.minAmountNaira/1000 >= 1 ? plan.minAmountNaira/1000 + "k" : plan.minAmountNaira)}</p></div>
+                    <div><p className="text-slate-500 dark:text-slate-400">Rate</p><p className="font-semibold text-emerald-600">{plan.annualRatePercent}%</p></div>
+                  </div>
+                  <button type="button" className="mt-4 w-full btn-primary text-xs" onClick={() => openInvestModal(plan)}>Invest now</button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );
 }
 
 function InvestorWallet(props: any) {
-  const { available, locked, returns, fundingBanner, error, message, busy, action, openAction, fundingAmount, setFundingAmount, handleFundWallet } = props;
+  const { available, locked, returns, fundingBanner, error, message, openFundModal } = props;
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -913,6 +1090,9 @@ function InvestorWallet(props: any) {
           <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Manage your funds</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">Fund your wallet and track your balances.</p>
         </div>
+        <button type="button" className="btn-primary" onClick={openFundModal}>
+          + Fund wallet
+        </button>
       </div>
       {fundingBanner && (
         <div className={`rounded-xl border p-4 text-sm flex items-start gap-2.5 ${fundingBanner.ok ? "border-emerald-100 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 text-emerald-700 dark:text-emerald-400" : "border-amber-100 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-900/30 text-amber-700 dark:text-amber-400"}`}>
@@ -926,23 +1106,28 @@ function InvestorWallet(props: any) {
         <Metric label="Held in investments" value={money.format(locked)} detail="Active positions" />
         <Metric label="Expected earnings" value={money.format(returns)} detail="Projected returns" />
       </div>
-      <section className="velo-card p-4 sm:p-5 lg:p-6">
-        <h2 className="section-heading">Fund wallet</h2>
-        <p className="section-subheading">Make a deposit via Flutterwave.</p>
-        <form className="mt-5 flex flex-col sm:flex-row gap-3 sm:items-end" onSubmit={handleFundWallet}>
-          <label className="velo-label flex-1">
-            Amount (NGN)
-            <input className="velo-input mt-1" type="number" min="1000" step="100" value={fundingAmount} onChange={(e) => setFundingAmount(e.target.value)} />
-          </label>
-          <button className="btn-primary whitespace-nowrap" type="submit" disabled={busy}>Continue to payment</button>
-        </form>
+      <section className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-800 text-white border-0 shadow-[0_20px_60px_-20px_rgba(6,78,59,0.38)]">
+        <div className="absolute -top-10 -right-10 w-36 h-36 rounded-full bg-white/5 blur-xl pointer-events-none"></div>
+        <div className="relative flex flex-col sm:flex-row sm:items-end sm:justify-between gap-5">
+          <div className="max-w-md">
+            <div className="text-[11px] uppercase tracking-wider font-bold text-emerald-100/80">Wallet balance</div>
+            <div className="mt-2 text-4xl font-black tracking-tight">{money.format(available)}</div>
+            <div className="mt-2 text-sm text-emerald-100/80">Fund your wallet to start earning returns on verified investment plans.</div>
+          </div>
+          <button type="button" onClick={openFundModal} className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-white text-emerald-700 font-bold shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all whitespace-nowrap">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M3 3v18h18M7 14l4-4 4 4 5-5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Deposit to start investing
+          </button>
+        </div>
       </section>
     </div>
   );
 }
 
 function InvestorInvestments(props: any) {
-  const { investments, plans, loadPlans, totalCapital, returns, returnRate } = props;
+  const { investments, plans, totalCapital, returns, returnRate, openInvestModal } = props;
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -960,22 +1145,27 @@ function InvestorInvestments(props: any) {
       <section className="velo-card p-4 sm:p-5 lg:p-6">
         <div className="flex items-center justify-between gap-3 mb-4">
           <h2 className="section-heading mb-0">Available investment plans</h2>
-          {!plans.length && <button type="button" className="btn-secondary text-xs" onClick={() => loadPlans()}>Load plans</button>}
         </div>
         {plans.length ? (
           <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
             {plans.map((plan: Plan) => (
-              <div key={plan.id} className="rounded-2xl border border-slate-100 dark:border-slate-800 p-4 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50">
-                <div className="text-sm font-bold text-velo-900 dark:text-white">{plan.name}</div>
-                <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                  <div><p className="text-slate-500">Tenor</p><p className="font-semibold dark:text-white">{plan.tenureDays} days</p></div>
-                  <div><p className="text-slate-500">Rate</p><p className="font-semibold text-emerald-600">{plan.annualRatePercent}% p.a.</p></div>
-                  <div><p className="text-slate-500">Min</p><p className="font-semibold dark:text-white">₦{Number(plan.minAmountNaira).toLocaleString()}</p></div>
+              <div key={plan.id} className="rounded-2xl border border-slate-100 dark:border-slate-800 p-4 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50 hover:shadow-lg transition-shadow">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-velo-900 dark:text-white">{plan.name}</div>
+                    <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{plan.tenureDays}-day tenor</div>
+                  </div>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">{plan.annualRatePercent}% p.a.</span>
                 </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <div><p className="text-slate-500 dark:text-slate-400">Min</p><p className="font-semibold dark:text-white">₦{Number(plan.minAmountNaira).toLocaleString()}</p></div>
+                  {plan.maxAmountNaira && <div><p className="text-slate-500 dark:text-slate-400">Max</p><p className="font-semibold dark:text-white">₦{Number(plan.maxAmountNaira).toLocaleString()}</p></div>}
+                </div>
+                <button type="button" className="mt-4 w-full btn-primary text-xs" onClick={() => openInvestModal(plan)}>Invest now</button>
               </div>
             ))}
           </div>
-        ) : <Empty text="No plans loaded." />}
+        ) : <Empty text="No investment plans available at this time." />}
       </section>
       <section className="velo-card p-4 sm:p-5 lg:p-6">
         <h2 className="section-heading">Investment history</h2>
@@ -996,7 +1186,7 @@ function InvestorInvestments(props: any) {
 }
 
 function InvestorKyc(props: any) {
-  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, verifyLivenessFile, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel } = props;
+  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel } = props;
   const [error, setError] = useState("");
   useEffect(() => { setError(kycError); }, [kycError]);
   return (
@@ -1029,15 +1219,17 @@ function InvestorKyc(props: any) {
                 BVN
                 <div className="mt-1 flex gap-2">
                   <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={bvn} onChange={(event) => setBvn(event.target.value.replace(/\D/g, ""))} placeholder="11-digit BVN" />
-                  <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "BVN"} onClick={() => verifyIdentity("BVN")}>{kycBusy === "BVN" ? "Checking…" : checklist.bvn ? "Verified" : "Verify"}</button>
+                  <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "BVN"} onClick={() => verifyIdentity("BVN")}>{kycBusy === "BVN" ? "Verifying…" : checklist.bvn ? "Verified" : "Verify"}</button>
                 </div>
+                <span className="mt-1 block text-xs text-slate-500">Dial *565*0# on your registered line to retrieve your BVN.</span>
               </label>
               <label className="velo-label">
                 NIN
                 <div className="mt-1 flex gap-2">
                   <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={nin} onChange={(event) => setNin(event.target.value.replace(/\D/g, ""))} placeholder="11-digit NIN" />
-                  <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "NIN"} onClick={() => verifyIdentity("NIN")}>{kycBusy === "NIN" ? "Checking…" : checklist.nin ? "Verified" : "Verify"}</button>
+                  <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "NIN"} onClick={() => verifyIdentity("NIN")}>{kycBusy === "NIN" ? "Verifying…" : checklist.nin ? "Verified" : "Verify"}</button>
                 </div>
+                <span className="mt-1 block text-xs text-slate-500">Found on your National Identity Card or via the NIMC app.</span>
               </label>
             </div>
             {activeOtpChallenge && (
@@ -1067,21 +1259,10 @@ function InvestorKyc(props: any) {
             )}
             <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-800/50 dark:bg-emerald-900/10">
               <h3 className="mb-2 text-sm font-semibold text-emerald-800 dark:text-emerald-300">Liveness verification <span className="text-red-500">*</span></h3>
-              <p className="mb-3 text-xs text-emerald-700 dark:text-emerald-300/80">Complete a quick in-app selfie scan using our identity verification widget (recommended &amp; primary method).</p>
+              <p className="mb-3 text-xs text-emerald-700 dark:text-emerald-300/80">Complete a quick in-app selfie scan using our identity verification widget.</p>
               <div className="flex flex-wrap items-center gap-3">
                 <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} onResult={onPremblyLivenessResult} />
-                {checklist.selfieUploaded && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
-              </div>
-              <div className="mt-4 border-t border-emerald-200/70 pt-3 dark:border-emerald-700/40">
-                <details className="group">
-                  <summary className="cursor-pointer text-xs font-medium text-slate-600 hover:text-slate-800 dark:text-slate-300 dark:hover:text-white">Having trouble with the camera? Click here to upload a selfie instead (fallback).</summary>
-                  <div className="mt-2">
-                    <label className="velo-label text-xs">
-                      Upload live selfie
-                      <input className="velo-input mt-1" type="file" accept="image/jpeg,image/png,image/webp" disabled={kycBusy === "LIVENESS_FILE"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void verifyLivenessFile(file); }} />
-                    </label>
-                  </div>
-                </details>
+                {(checklist.selfieUploaded || checklist.liveness) && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
               </div>
             </div>
             <label className="velo-label block">
@@ -1125,46 +1306,178 @@ function InvestorKyc(props: any) {
   );
 }
 
-type InvestorTransactionsProps = { transactions: TransactionData | null };
+function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
+  const out: UnifiedTx[] = [];
+  if (!data) return out;
+  (data.ledger || []).forEach((entry: any) => {
+    const entryType = String(entry.entryType || "");
+    const direction: "CREDIT" | "DEBIT" = entry.direction === "CREDIT" ? "CREDIT" : entry.direction === "DEBIT" ? "DEBIT" : (["INVESTOR_FUNDING", "INVESTMENT_RETURN", "DEPOSIT_CREDIT", "FUNDING"].some(k => entryType.includes(k)) ? "CREDIT" : "DEBIT");
+    let kind: UnifiedTx["kind"] = "OTHER";
+    if (/FUNDING|DEPOSIT/.test(entryType)) kind = "FUNDING";
+    else if (/INVESTMENT.*LOCK|INVESTMENT_DEBIT/.test(entryType)) kind = "INVESTMENT_LOCK";
+    else if (/INVESTMENT.*RETURN|INVESTMENT_CREDIT|MATURITY/.test(entryType)) kind = "INVESTMENT_RETURN";
+    else if (/PAYOUT|WITHDRAWAL/.test(entryType)) kind = "PAYOUT";
+    else if (/FEE/.test(entryType)) kind = "FEE";
+    out.push({
+      id: String(entry.id || `ledger-${entry.createdAt}-${entry.amountMinor}`),
+      kind,
+      direction,
+      amountMinor: Number(entry.amountMinor ?? 0),
+      label: String(entry.entryType || "Ledger entry").replace(/_/g, " "),
+      narration: entry.description || entry.narration,
+      referenceId: entry.referenceId,
+      createdAt: entry.createdAt || new Date().toISOString(),
+      balanceAfterMinor: entry.balanceAfterMinor != null ? Number(entry.balanceAfterMinor) : undefined,
+      raw: entry,
+    });
+  });
+  (data.walletTransactions || []).forEach((tx: any) => {
+    const isCredit = /CREDIT|DEPOSIT|FUNDING|IN/.test(String(tx.type || tx.direction || "").toUpperCase());
+    out.push({
+      id: String(tx.id || `wallet-${tx.createdAt}-${tx.amountMinor}`),
+      kind: isCredit ? "DEPOSIT" : "OTHER",
+      direction: isCredit ? "CREDIT" : "DEBIT",
+      amountMinor: Number(tx.amountMinor ?? tx.amountNaira != null ? Number(tx.amountNaira) * 100 : 0),
+      label: tx.type ? String(tx.type).replace(/_/g, " ") : "Wallet transaction",
+      narration: tx.description || tx.narration,
+      referenceId: tx.reference || tx.txRef || tx.transactionId,
+      createdAt: tx.createdAt || new Date().toISOString(),
+      balanceAfterMinor: tx.balanceAfterMinor != null ? Number(tx.balanceAfterMinor) : undefined,
+      raw: tx,
+    });
+  });
+  (data.investments || []).forEach((inv: any, i: number) => {
+    out.push({
+      id: String(inv.id || `inv-${i}`),
+      kind: "INVESTMENT",
+      direction: "DEBIT",
+      amountMinor: Number(inv.amountMinor ?? inv.amountNaira != null ? Number(inv.amountNaira) * 100 : 0),
+      label: inv.planSnapshot?.name ? `Investment: ${inv.planSnapshot.name}` : "New investment",
+      narration: `Investment created · Status: ${inv.status || "PENDING"}`,
+      referenceId: inv.id,
+      createdAt: inv.createdAt || new Date().toISOString(),
+      raw: inv,
+    });
+  });
+  (data.payouts || []).forEach((p: any, i: number) => {
+    out.push({
+      id: String(p.id || `payout-${i}`),
+      kind: "PAYOUT",
+      direction: "CREDIT",
+      amountMinor: Number(p.amountMinor ?? p.amountNaira != null ? Number(p.amountNaira) * 100 : 0),
+      label: "Investment payout",
+      narration: `Payout status: ${p.status || "PENDING"}`,
+      referenceId: p.referenceId || p.id,
+      createdAt: p.createdAt || new Date().toISOString(),
+      raw: p,
+    });
+  });
+  return out.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+type InvestorTransactionsProps = { transactions: TransactionData | null; selectedTx: UnifiedTx | null; setSelectedTx: (t: UnifiedTx | null) => void };
 function InvestorTransactions(props: InvestorTransactionsProps) {
-  const { transactions } = props;
-  const payouts = transactions?.payouts ?? [];
-  const invs = transactions?.investments ?? [];
+  const { transactions, selectedTx, setSelectedTx } = props;
+  const all = buildUnifiedTxs(transactions);
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Transactions</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Ledger &amp; history</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">Payouts and investment records.</p>
+          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Transactions &amp; history</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">All wallet credits, debits, investments, and payouts.</p>
         </div>
       </div>
       <section className="velo-card p-4 sm:p-5 lg:p-6">
-        <h2 className="section-heading">Payouts</h2>
-        {payouts.length ? (
+        <h2 className="section-heading">All transactions</h2>
+        {all.length ? (
           <div className="mt-5 space-y-2">
-            {payouts.map((p: any, i: number) => (
-              <div key={p.id || i} className="flex justify-between items-center p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <div><div className="text-sm font-semibold dark:text-white">Investment payout #{String(i + 1).padStart(3, "0")}</div><div className="text-xs text-slate-500">{p.createdAt ? new Date(p.createdAt).toLocaleString() : "—"}</div></div>
-                <div className="text-right"><div className="font-bold text-emerald-600">{money.format(Number(p.amountNaira ?? 0))}</div><span className={`badge ${p.status === "SUCCESSFUL" ? "badge-completed" : p.status === "FAILED" ? "badge-pending" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{p.status || "PENDING"}</span></div>
-              </div>
+            {all.map((tx) => (
+              <button
+                key={tx.id}
+                type="button"
+                onClick={() => setSelectedTx(tx)}
+                className="w-full text-left flex items-center gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-velo-200 dark:hover:border-velo-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition cursor-pointer"
+              >
+                <div className={`mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-lg flex-shrink-0 ${tx.direction === "CREDIT" ? "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400" : "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400"}`}>
+                  {tx.direction === "CREDIT" ? "▲" : "▼"}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="font-bold text-sm text-velo-900 dark:text-white truncate">{tx.label}</div>
+                    <div className={`font-black text-sm whitespace-nowrap ${tx.direction === "CREDIT" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                      {tx.direction === "CREDIT" ? "+" : "-"}₦{Math.round(tx.amountMinor / 100).toLocaleString("en-NG")}
+                    </div>
+                  </div>
+                  {tx.narration && <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{tx.narration}</div>}
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <div className="text-[10px] text-slate-400 dark:text-slate-500">{new Date(tx.createdAt).toLocaleString()}</div>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                      <ReceiptDownload transaction={{ ...tx.raw, label: tx.label, direction: tx.direction, amountMinor: tx.amountMinor, narration: tx.narration, referenceId: tx.referenceId, createdAt: tx.createdAt, balanceAfterMinor: tx.balanceAfterMinor, id: tx.id }} balanceBeforeMinor={tx.balanceAfterMinor != null ? tx.balanceAfterMinor - tx.amountMinor * (tx.direction === "CREDIT" ? 1 : -1) : undefined} balanceAfterMinor={tx.balanceAfterMinor} />
+                    </span>
+                  </div>
+                </div>
+              </button>
             ))}
           </div>
-        ) : <Empty text="No payout history yet." />}
+        ) : <Empty text="No transactions yet. Fund your wallet or create your first investment to get started." />}
       </section>
-      <section className="velo-card p-4 sm:p-5 lg:p-6">
-        <h2 className="section-heading">Investment records</h2>
-        {invs.length ? (
-          <div className="mt-5 space-y-2">
-            {invs.map((inv: any, i: number) => (
-              <div key={inv.id || i} className="flex justify-between items-center p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <div><div className="text-sm font-semibold dark:text-white">{inv.planSnapshot?.name || `Investment ${i + 1}`}</div><div className="text-xs text-slate-500">{inv.createdAt ? new Date(inv.createdAt).toLocaleDateString() : "—"}</div></div>
-                <div className="font-bold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div>
+      {selectedTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm px-4 animate-fade-in">
+          <div className="velo-card w-full max-w-lg p-6 shadow-2xl animate-slide-in-left max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-velo-900 dark:text-white">Transaction details</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Reference · {selectedTx.referenceId || selectedTx.id.slice(0, 10)}</p>
               </div>
-            ))}
+              <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setSelectedTx(null)} aria-label="Close">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+              </button>
+            </div>
+            <div className={`mt-5 rounded-2xl p-5 ${selectedTx.direction === "CREDIT" ? "bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 border border-emerald-100 dark:border-emerald-900/30" : "bg-red-50 dark:bg-red-900/20 dark:border-red-900/30 border border-red-100 dark:border-red-900/30"}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">
+                    {selectedTx.direction === "CREDIT" ? "Wallet credit" : "Wallet debit"}
+                  </div>
+                  <div className="mt-1 text-2xl font-black text-velo-900 dark:text-white">{selectedTx.label}</div>
+                </div>
+                <div className={`text-3xl font-black ${selectedTx.direction === "CREDIT" ? "text-emerald-600" : "text-red-600"}`}>
+                  {selectedTx.direction === "CREDIT" ? "+" : "-"}₦{Math.round(selectedTx.amountMinor / 100).toLocaleString("en-NG")}
+                </div>
+              </div>
+            </div>
+            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
+                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Date &amp; time</div>
+                <div className="mt-1 font-semibold text-velo-900 dark:text-white">{new Date(selectedTx.createdAt).toLocaleString()}</div>
+              </div>
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
+                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Type</div>
+                <div className="mt-1 font-semibold text-velo-900 dark:text-white">{selectedTx.kind.replace(/_/g, " ")}</div>
+              </div>
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
+                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Reference ID</div>
+                <div className="mt-1 font-mono text-xs font-semibold text-velo-900 dark:text-white break-all">{selectedTx.referenceId || "—"}</div>
+              </div>
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
+                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Wallet balance after</div>
+                <div className="mt-1 font-semibold text-velo-900 dark:text-white">{selectedTx.balanceAfterMinor != null ? money.format(selectedTx.balanceAfterMinor / 100) : "—"}</div>
+              </div>
+              {selectedTx.narration && (
+                <div className="sm:col-span-2 rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
+                  <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Narration</div>
+                  <div className="mt-1 font-semibold text-velo-900 dark:text-white">{selectedTx.narration}</div>
+                </div>
+              )}
+            </div>
+            <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setSelectedTx(null)}>Close</button>
+              <ReceiptDownload transaction={{ ...selectedTx.raw, label: selectedTx.label, direction: selectedTx.direction, amountMinor: selectedTx.amountMinor, narration: selectedTx.narration, referenceId: selectedTx.referenceId, createdAt: selectedTx.createdAt, balanceAfterMinor: selectedTx.balanceAfterMinor, id: selectedTx.id }} balanceBeforeMinor={selectedTx.balanceAfterMinor != null ? selectedTx.balanceAfterMinor - selectedTx.amountMinor * (selectedTx.direction === "CREDIT" ? 1 : -1) : undefined} balanceAfterMinor={selectedTx.balanceAfterMinor} />
+            </div>
           </div>
-        ) : <Empty text="No investments yet." />}
-      </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -1187,9 +1500,15 @@ function InvestorPayoutSection(props: any) {
     if (banks.length) return;
     setBusy("banks");
     try {
-      const res = await fetch("/api/v1/providers/flutterwave/banks").then(r => r.json());
-      if (res.ok) setBanks(res.banks || []);
-      else setError(res.error || "Could not load banks");
+      const res = await fetch(`${config.apiUrl}/api/v1/providers/flutterwave/banks`, {
+        headers: { Authorization: `Bearer ${getAccessToken()}` },
+      });
+      if (!res.headers.get("content-type")?.includes("application/json")) {
+        throw new Error("Server returned non-JSON response when loading banks");
+      }
+      const body = await res.json();
+      if (body.ok) setBanks(body.banks || []);
+      else setError(body.error || "Could not load banks");
     } catch (err) { setError(err instanceof Error ? err.message : "Unable to load banks"); }
     finally { setBusy(""); }
   }
@@ -1197,28 +1516,36 @@ function InvestorPayoutSection(props: any) {
   async function reloadAccounts() {
     if (!userId) return;
     try {
-      const res = await fetch(`/api/v1/investor/payout-accounts`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("velo:token")}` } }).then(r => r.json());
-      if (res.ok) {
-        setAccounts(res.accounts || []);
-        setDefaultId(res.defaultId || null);
-        setPendingRequest(res.pendingRequest || null);
+      const res = await fetch(`${config.apiUrl}/api/v1/investor/payout-accounts`, {
+        headers: { Authorization: `Bearer ${getAccessToken()}` },
+      });
+      if (!res.headers.get("content-type")?.includes("application/json")) return;
+      const body = await res.json();
+      if (body.ok) {
+        setAccounts(body.accounts || []);
+        setDefaultId(body.defaultId || null);
+        setPendingRequest(body.pendingRequest || null);
       }
     } catch (_e) { /* ignore */ }
   }
 
-  useEffect(() => { loadBanks(); reloadAccounts(); }, [userId]);
+  useEffect(() => { void loadBanks(); void reloadAccounts(); }, [userId]);
 
   async function resolveAccount() {
     if (!selectedBank || accountNumber.length < 10) return;
     setResolveError(""); setResolvedName(null); setBusy("resolve");
     try {
-      const res = await fetch("/api/v1/investor/payout-accounts/resolve", {
+      const res = await fetch(`${config.apiUrl}/api/v1/investor/payout-accounts/resolve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStorage.getItem("velo:token")}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getAccessToken()}` },
         body: JSON.stringify({ bankCode: selectedBank, accountNumber }),
-      }).then(r => r.json());
-      if (res.ok) setResolvedName(res.accountName);
-      else setResolveError(res.error || "Could not resolve account");
+      });
+      if (!res.headers.get("content-type")?.includes("application/json")) {
+        throw new Error("Server returned non-JSON response when resolving account");
+      }
+      const body = await res.json();
+      if (body.ok) setResolvedName(body.accountName);
+      else setResolveError(body.error || "Could not resolve account");
     } catch (err) { setResolveError(err instanceof Error ? err.message : "Resolution failed"); }
     finally { setBusy(""); }
   }
@@ -1229,21 +1556,25 @@ function InvestorPayoutSection(props: any) {
     setBusy("save"); setMessage(""); setError("");
     try {
       const bankName = banks.find(b => b.code === selectedBank)?.name;
-      const res = await fetch("/api/v1/investor/payout-accounts", {
+      const res = await fetch(`${config.apiUrl}/api/v1/investor/payout-accounts`, {
         method: accounts.length ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStorage.getItem("velo:token")}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getAccessToken()}` },
         body: JSON.stringify({ bankCode: selectedBank, bankName, accountNumber, accountName: resolvedName }),
-      }).then(r => r.json());
-      if (res.ok) {
-        if (res.pendingApproval) {
-          setMessage(res.message || "Update submitted. Awaiting admin approval.");
-          setPendingRequest(res.request || null);
+      });
+      if (!res.headers.get("content-type")?.includes("application/json")) {
+        throw new Error("Server returned non-JSON response when saving account");
+      }
+      const body = await res.json();
+      if (body.ok) {
+        if (body.pendingApproval) {
+          setMessage(body.message || "Update submitted. Awaiting admin approval.");
+          setPendingRequest(body.request || null);
         } else {
           setMessage("Payout account saved.");
-          reloadAccounts();
+          void reloadAccounts();
         }
         setSelectedBank(""); setAccountNumber(""); setResolvedName(null);
-      } else setError(res.error || "Save failed");
+      } else setError(body.error || "Save failed");
     } catch (err) { setError(err instanceof Error ? err.message : "Save failed"); }
     finally { setBusy(""); }
   }
@@ -1251,12 +1582,16 @@ function InvestorPayoutSection(props: any) {
   async function setDefault(accId: string) {
     setBusy("default");
     try {
-      const res = await fetch(`/api/v1/investor/payout-accounts/${accId}/default`, {
+      const res = await fetch(`${config.apiUrl}/api/v1/investor/payout-accounts/${encodeURIComponent(accId)}/default`, {
         method: "PUT",
-        headers: { Authorization: `Bearer ${sessionStorage.getItem("velo:token")}` },
-      }).then(r => r.json());
-      if (res.ok) { setDefaultId(accId); setMessage("Default payout account updated."); reloadAccounts(); }
-      else setError(res.error || "Could not update");
+        headers: { Authorization: `Bearer ${getAccessToken()}` },
+      });
+      if (!res.headers.get("content-type")?.includes("application/json")) {
+        throw new Error("Server returned non-JSON response");
+      }
+      const body = await res.json();
+      if (body.ok) { setDefaultId(accId); setMessage("Default payout account updated."); void reloadAccounts(); }
+      else setError(body.error || "Could not update");
     } catch (err) { setError(err instanceof Error ? err.message : "Update failed"); }
     finally { setBusy(""); }
   }

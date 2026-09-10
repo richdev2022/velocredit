@@ -269,12 +269,46 @@ export async function adminRejectAccountRequest(requestId: string, input?: { rej
   return request(`/api/v1/admin/account-requests/${encodeURIComponent(requestId)}/reject`, { method: "PUT", body: JSON.stringify(input ?? {}) });
 }
 
+export interface AdminAuditLogEntry {
+  id: string;
+  action: string;
+  resourceType?: string;
+  resourceId?: string;
+  userId?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+export async function adminListAuditLogs(opts: { limit?: number; offset?: number } = {}): Promise<{ ok: true; logs: AdminAuditLogEntry[] }> {
+  const params = new URLSearchParams();
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.offset) params.set("offset", String(opts.offset));
+  return request(`/api/v1/admin/audit-logs?${params.toString()}`);
+}
+
+export async function adminCreateUser(input: { email: string; fullName: string; phone: string; password: string; roles?: Array<"INVESTOR" | "BORROWER"> }): Promise<{ ok: true; user: { id: string; email: string; fullName: string; phone: string; roles: string[]; isActive?: boolean; createdAt: string } }> {
+  return request("/api/v1/admin/users", { method: "POST", body: JSON.stringify(input) });
+}
+export async function adminPatchUserRoles(userId: string, roles: Array<"INVESTOR" | "BORROWER">): Promise<{ ok: true; user: { id: string; email: string; fullName: string; phone: string; roles: string[] } }> {
+  return request(`/api/v1/admin/users/${encodeURIComponent(userId)}/roles`, { method: "PATCH", body: JSON.stringify({ roles }) });
+}
+export async function adminPatchUserStatus(userId: string, isActive: boolean): Promise<{ ok: true; user: { id: string; email: string; fullName: string; isActive: boolean } }> {
+  return request(`/api/v1/admin/users/${encodeURIComponent(userId)}/status`, { method: "PATCH", body: JSON.stringify({ isActive }) });
+}
+export async function adminEditUser(userId: string, input: { fullName?: string; phone?: string }): Promise<{ ok: true; user: { id: string; email: string; fullName: string; phone: string; roles: string[] } }> {
+  return request(`/api/v1/admin/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
 export const adminApi = {
   approveAccountRequest: async (id: string, _opts?: unknown) => adminApproveAccountRequest(id),
   rejectAccountRequest: async (id: string, opts?: { rejectionReason?: string }) => adminRejectAccountRequest(id, opts),
   listAccountRequests: adminListAccountRequests,
   retryDisbursement: adminRetryDisbursement,
   listDisbursements: adminListDisbursements,
+  listAuditLogs: adminListAuditLogs,
+  createUser: adminCreateUser,
+  patchUserRoles: adminPatchUserRoles,
+  patchUserStatus: adminPatchUserStatus,
+  editUser: adminEditUser,
   retryPayout: async (id: string) => {
     // Existing wrapper for consistency if called
     const { adminRetryPayout } = await import("./apiClient");

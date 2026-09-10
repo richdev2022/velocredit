@@ -132,7 +132,7 @@ const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
 });
-const adminOtpChannelSchema = z.enum(["SMS", "WHATSAPP", "EMAIL"]);
+const adminOtpChannelSchema = z.enum(["EMAIL"]).default("EMAIL");
 const amountSchema = z.object({ amountNaira: z.number().positive().finite() });
 function paginate<T>(items: T[], query: Record<string, unknown>): { items: T[]; meta: { total: number; limit: number; offset: number; hasMore: boolean } } {
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 50));
@@ -2068,6 +2068,76 @@ router.get("/admin/users", requireAuth, requireRole("ADMIN"), (req, res) => {
     users: page.items.map(({ passwordHash: _passwordHash, ...user }) => user),
     meta: page.meta,
   });
+});
+
+router.post("/admin/users", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  const parsed = z.object({
+    email: z.string().email(),
+    fullName: z.string().min(2).max(120),
+    phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")),
+    password: z.string().min(12),
+    roles: z.array(z.enum(["INVESTOR", "BORROWER"])).min(1).default(["INVESTOR", "BORROWER"]),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  if (findUserByEmail(parsed.data.email)) { res.status(409).json({ ok: false, error: "An account with this email already exists" }); return; }
+  const now = new Date().toISOString();
+  const user = {
+    id: randomUUID(),
+    email: parsed.data.email.toLowerCase(),
+    phone: parsed.data.phone,
+    fullName: parsed.data.fullName,
+    passwordHash: await bcrypt.hash(parsed.data.password, 12),
+    roles: parsed.data.roles as Role[],
+    kycStatus: "NOT_STARTED" as KycStatus,
+    createdAt: now,
+    updatedAt: now,
+    isActive: true,
+  };
+  users.push(user);
+  void createWallet(user.id, "NGN");
+  recordAdminAudit(req, "USER_CREATED", "USER", user.id, { email: user.email, roles: user.roles });
+  const { passwordHash: _passwordHash, ...safeUser } = user;
+  res.status(201).json({ ok: true, user: safeUser });
+});
+
+router.patch("/admin/users/:id/roles", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+  const parsed = z.object({ roles: z.array(z.enum(["INVESTOR", "BORROWER"])).min(1) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const user = users.find((u) => u.id === req.params.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  user.roles = parsed.data.roles as Role[];
+  user.updatedAt = new Date().toISOString();
+  recordAdminAudit(req, "USER_ROLES_UPDATED", "USER", user.id, { roles: user.roles });
+  const { passwordHash: _passwordHash, ...safeUser } = user;
+  res.json({ ok: true, user: safeUser });
+});
+
+router.patch("/admin/users/:id/status", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+  const parsed = z.object({ isActive: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const user = users.find((u) => u.id === req.params.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  user.isActive = parsed.data.isActive;
+  user.updatedAt = new Date().toISOString();
+  recordAdminAudit(req, parsed.data.isActive ? "USER_ACTIVATED" : "USER_DEACTIVATED", "USER", user.id, { isActive: user.isActive });
+  const { passwordHash: _passwordHash, ...safeUser } = user;
+  res.json({ ok: true, user: safeUser });
+});
+
+router.patch("/admin/users/:id", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+  const parsed = z.object({
+    fullName: z.string().min(2).max(120).optional(),
+    phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const user = users.find((u) => u.id === req.params.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  if (parsed.data.fullName != null) user.fullName = parsed.data.fullName;
+  if (parsed.data.phone != null) user.phone = parsed.data.phone;
+  user.updatedAt = new Date().toISOString();
+  recordAdminAudit(req, "USER_UPDATED", "USER", user.id, { fullName: user.fullName, phone: user.phone });
+  const { passwordHash: _passwordHash, ...safeUser } = user;
+  res.json({ ok: true, user: safeUser });
 });
 
 router.get("/admin/loan-managers", requireAuth, requireRole("ADMIN"), (_req, res) => {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAccessToken } from "../services/apiClient";
+import { config } from "../utils/config";
 
 type DisbursementAccount = {
   id?: string;
@@ -48,7 +49,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
     if (banks.length) return;
     setBusy("banks");
     try {
-      const res = await fetch("/api/v1/providers/flutterwave/banks", {
+      const res = await fetch(`${config.apiUrl}/api/v1/providers/flutterwave/banks`, {
         headers: { Authorization: `Bearer ${getAccessToken()}` },
       }).then((r) => r.json());
       if (res.ok) setBanks(res.banks || []);
@@ -68,7 +69,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
   async function reloadAccount() {
     if (!userId) return;
     try {
-      const res = await fetch("/api/v1/borrower/disbursement-account", {
+      const res = await fetch(`${config.apiUrl}/api/v1/borrower/disbursement-account`, {
         headers: { Authorization: `Bearer ${getAccessToken()}` },
       }).then((r) => r.json());
       if (res.ok) {
@@ -91,7 +92,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
     setResolvedName(null);
     setBusy("resolve");
     try {
-      const res = await fetch("/api/v1/borrower/disbursement-account/resolve", {
+      const res = await fetch(`${config.apiUrl}/api/v1/borrower/disbursement-account/resolve`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -116,7 +117,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
     setLocalError("");
     try {
       const bankName = banks.find((b) => b.code === selectedBank)?.name;
-      const res = await fetch("/api/v1/borrower/disbursement-account", {
+      const res = await fetch(`${config.apiUrl}/api/v1/borrower/disbursement-account`, {
         method: account ? "PUT" : "POST",
         headers: {
           "Content-Type": "application/json",

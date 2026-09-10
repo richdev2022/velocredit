@@ -910,7 +910,7 @@ export default function StartApplication() {
                 </div>
                 <div>
                   <div className="text-xs text-slate-500">Email us</div>
-                  <div className="text-sm font-semibold text-velo-900">loans@velofinance.co</div>
+                  <a href="mailto:support@velocredit.ng" className="text-sm font-semibold text-velo-900 hover:text-velo-600">support@velocredit.ng</a>
                 </div>
               </div>
               <div className="flex items-center gap-3 p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-100 hover:border-velo-200 hover:shadow-sm transition-all duration-300 group">

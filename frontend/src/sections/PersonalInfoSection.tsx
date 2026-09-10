@@ -3,6 +3,7 @@
 // Section 1 for Personal Loan applicants.
 // ============================================================================
 
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import FormInput from "../components/FormInput";
@@ -11,6 +12,8 @@ import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
 import { disbursementAccountSchema, personalInfoSchema, type DisbursementAccountForm, type PersonalInfoForm } from "../utils/validation";
 import { NIGERIAN_STATES, lgasForState, STATE_NAMES } from "../utils/nigerianStates";
+import { getAccessToken } from "../services/apiClient";
+import { config } from "../utils/config";
 
 export default function PersonalInfoSection() {
   const { application, patchPersonalInfo, patchDisbursementAccount, markSectionStatus, next } = useApplication();
@@ -45,6 +48,71 @@ export default function PersonalInfoSection() {
   const stateValue = watch("state");
   const lgaOptions = stateValue ? lgasForState(stateValue) : ["Other"];
   const identityVerified = application.kyc.bvnVerified === true || application.kyc.ninVerified === true;
+
+  const [banks, setBanks] = useState<Array<{ id: number; name: string; code: string }>>([]);
+  const [selectedBank, setSelectedBank] = useState(application.disbursementAccount?.bankCode ?? "");
+  const [resolvedName, setResolvedName] = useState<string | null>(application.disbursementAccount?.accountName ?? null);
+  const [resolveError, setResolveError] = useState("");
+  const [busy, setBusy] = useState("");
+
+  useEffect(() => {
+    if (selectedBank) {
+      const bank = banks.find((b) => b.code === selectedBank);
+      if (bank) {
+        accountForm.setValue("bankCode", selectedBank, { shouldValidate: true });
+        accountForm.setValue("bankName", bank.name, { shouldValidate: true });
+      }
+    }
+  }, [selectedBank, banks]);
+
+  useEffect(() => {
+    void loadBanks();
+  }, []);
+
+  async function loadBanks() {
+    if (banks.length) return;
+    setBusy("banks");
+    try {
+      const res = await fetch(`${config.apiUrl}/api/v1/providers/flutterwave/banks`, {
+        headers: { Authorization: `Bearer ${getAccessToken()}` },
+      }).then((r) => r.json());
+      if (res.ok) setBanks(res.banks || []);
+    } catch (_e) {
+      /* ignore */
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function resolveAccount() {
+    if (!selectedBank) return;
+    const accountNumber = accountForm.watch("accountNumber") || "";
+    if (accountNumber.length < 10) return;
+    setResolveError("");
+    setResolvedName(null);
+    setBusy("resolve");
+    try {
+      const res = await fetch(`${config.apiUrl}/api/v1/borrower/disbursement-account/resolve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${getAccessToken()}`,
+        },
+        body: JSON.stringify({ bankCode: selectedBank, accountNumber }),
+      }).then((r) => r.json());
+      if (res.ok) {
+        setResolvedName(res.accountName);
+        accountForm.setValue("accountName", res.accountName, { shouldValidate: true });
+        patchDisbursementAccount({ accountName: res.accountName });
+      } else {
+        setResolveError(res.error || "Could not resolve account");
+      }
+    } catch (_e) {
+      setResolveError("Resolution failed");
+    } finally {
+      setBusy("");
+    }
+  }
 
   // Sync every change back to the global application state (autosave source)
   function sync<K extends keyof PersonalInfoForm>(key: K, value: PersonalInfoForm[K]) {
@@ -111,16 +179,89 @@ export default function PersonalInfoSection() {
           />
         </div>
 
+        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-900/30 p-4 text-sm text-amber-800 dark:text-amber-300">
+          <div className="font-semibold">💡 Highly recommended</div>
+          <p className="mt-1 leading-6">
+            Use your Velo account details for loan disbursement for the fastest loan processing.
+            You can add or change your disbursement bank to any Nigerian bank later from your borrower dashboard.
+          </p>
+        </div>
+
         <div className="rounded-2xl border border-velo-100 bg-velo-50/50 p-4 sm:p-5 space-y-5">
           <div>
-            <h3 className="text-sm font-bold text-velo-900">Velo Account Information</h3>
+            <h3 className="text-sm font-bold text-velo-900">Disbursement Account Information</h3>
             <p className="mt-1 text-xs text-slate-500">Your approved loan will be disbursed into this account.</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            <FormInput label="Account Name" required placeholder="Name on the account" error={accountForm.formState.errors.accountName?.message} {...accountForm.register("accountName")} onChange={(e) => { accountForm.register("accountName").onChange(e); patchDisbursementAccount({ accountName: e.target.value }); }} />
-            <FormInput label="Bank Name" required placeholder="e.g. Access Bank" error={accountForm.formState.errors.bankName?.message} {...accountForm.register("bankName")} onChange={(e) => { accountForm.register("bankName").onChange(e); patchDisbursementAccount({ bankName: e.target.value }); }} />
+            <FormInput label="Account Name" required placeholder="Name on the account" error={accountForm.formState.errors.accountName?.message} readOnly={!!resolvedName} {...accountForm.register("accountName")} onChange={(e) => { accountForm.register("accountName").onChange(e); patchDisbursementAccount({ accountName: e.target.value }); }} />
+            <label className="flex flex-col">
+              <span className="mb-1 text-sm font-semibold text-velo-900">
+                Bank <span className="text-red-500">*</span>
+              </span>
+              <select
+                className="mt-1 w-full rounded-xl border border-velo-200 bg-white px-3 py-2.5 text-sm text-velo-900 shadow-sm focus:border-velo-500 focus:outline-none focus:ring-2 focus:ring-velo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                value={selectedBank}
+                onChange={(e) => {
+                  const code = e.target.value;
+                  setSelectedBank(code);
+                  setResolvedName(null);
+                  setResolveError("");
+                  const bank = banks.find((b) => b.code === code);
+                  if (bank) {
+                    accountForm.setValue("bankName", bank.name, { shouldValidate: true });
+                    patchDisbursementAccount({ bankCode: code, bankName: bank.name });
+                  }
+                }}
+                required
+                disabled={busy === "banks"}
+              >
+                <option value="">
+                  {busy === "banks" ? "Loading banks…" : "Select your bank"}
+                </option>
+                {banks.map((b) => (
+                  <option key={b.code} value={b.code}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+              {accountForm.formState.errors.bankName?.message && (
+                <span className="mt-1 text-xs text-red-600">{accountForm.formState.errors.bankName.message}</span>
+              )}
+            </label>
           </div>
-          <FormInput label="Account Number" required inputMode="numeric" maxLength={10} placeholder="10-digit account number" error={accountForm.formState.errors.accountNumber?.message} {...accountForm.register("accountNumber")} onChange={(e) => { const accountNumber = e.target.value.replace(/\D/g, ""); accountForm.setValue("accountNumber", accountNumber, { shouldValidate: true }); patchDisbursementAccount({ accountNumber }); }} />
+          <FormInput
+            label="Account Number"
+            required
+            inputMode="numeric"
+            maxLength={10}
+            placeholder="10-digit account number"
+            error={accountForm.formState.errors.accountNumber?.message}
+            {...accountForm.register("accountNumber")}
+            onChange={(e) => {
+              const accountNumber = e.target.value.replace(/\D/g, "");
+              accountForm.setValue("accountNumber", accountNumber, { shouldValidate: true });
+              patchDisbursementAccount({ accountNumber });
+              setResolvedName(null);
+              setResolveError("");
+            }}
+            onBlur={() => {
+              const accNo = accountForm.watch("accountNumber") || "";
+              if (selectedBank && accNo.length === 10) void resolveAccount();
+            }}
+          />
+          {busy === "resolve" && (
+            <div className="text-xs text-slate-500">Resolving account name…</div>
+          )}
+          {resolvedName && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 p-3 text-sm text-emerald-700 dark:text-emerald-400">
+              <span className="font-semibold">Verified account name:</span> {resolvedName}
+            </div>
+          )}
+          {resolveError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-900/30 p-3 text-sm text-red-700 dark:text-red-400">
+              {resolveError}
+            </div>
+          )}
         </div>
 
         <FormInput

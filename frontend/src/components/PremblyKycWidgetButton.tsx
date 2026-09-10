@@ -29,11 +29,11 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
         status: success ? "SUCCESS" : "FAILED",
         providerReference: typeof response.data?.reference === "string" ? response.data.reference : undefined,
         rawResponse: response.data,
-      }).then(() => onResult({ success, message: success ? "Prembly verification completed." : response.message ?? "Prembly verification was not completed." }))
-        .catch((error) => onResult({ success: false, message: error instanceof Error ? error.message : "Unable to save Prembly verification." }));
+      }).then(() => onResult({ success, message: success ? "Identity verification completed." : response.message ?? "Identity verification was not completed." }))
+        .catch((error) => onResult({ success: false, message: error instanceof Error ? error.message : "Unable to save identity verification." }));
     },
   }), [email, firstName, idNumber, idType, lastNames, phone, widgetId, widgetKey]));
 
   if (!widgetId || !widgetKey || !/^\d{11}$/.test(idNumber)) return null;
-  return <button type="button" className="btn-secondary text-xs" onClick={verifyWithPrembly}>Verify identity with Prembly camera</button>;
+  return <button type="button" className="btn-secondary text-xs" onClick={verifyWithPrembly}>Open camera widget</button>;
 }

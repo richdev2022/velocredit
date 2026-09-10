@@ -53,6 +53,7 @@ export default function BusinessInfoSection() {
   function onSubmit(data: BusinessInfoForm) {
     patchBusinessInfo(data);
     markSectionStatus("info", "completed");
+    next();
   }
 
   return (

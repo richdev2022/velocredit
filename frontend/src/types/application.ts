@@ -59,6 +59,7 @@ export interface DisbursementAccount {
   accountName: string;
   bankName: string;
   accountNumber: string;
+  bankCode?: string;
 }
 
 export interface PersonalFinancialInfo {
