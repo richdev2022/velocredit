@@ -97,7 +97,14 @@ export function requireRole(...roles: User["roles"][number][]) {
     const isFullAdmin = req.user?.roles.includes("ADMIN");
     const requiredPermission = adminPermissionForPath(req.path);
     const hasManagerPermission = req.user?.roles.includes("LOAN_MANAGER") && Boolean(requiredPermission && (req.user.adminPermissions ?? []).includes(requiredPermission));
-    if (!req.user || !roles.some((role) => req.user?.roles.includes(role)) && !(roles.includes("ADMIN") && (isFullAdmin || hasManagerPermission))) {
+    const borrowerInvestorUnion = new Set(roles.filter((r) => r === "BORROWER" || r === "INVESTOR"));
+    const hasEitherBorrowerInvestor = (req.user?.roles.includes("BORROWER") || req.user?.roles.includes("INVESTOR")) ?? false;
+    const unionMatches = borrowerInvestorUnion.size > 0 && hasEitherBorrowerInvestor;
+    const adminMatches = roles.includes("ADMIN") && (isFullAdmin || hasManagerPermission);
+    const otherRoles = roles.filter((r) => r !== "BORROWER" && r !== "INVESTOR" && r !== "ADMIN");
+    const otherMatches = otherRoles.length > 0 && otherRoles.some((r) => req.user?.roles.includes(r));
+    const directMatches = !borrowerInvestorUnion.size && !adminMatches && roles.some((r) => req.user?.roles.includes(r));
+    if (!req.user || !(unionMatches || adminMatches || otherMatches || directMatches)) {
       res.status(403).json({ ok: false, error: "Insufficient permissions" });
       return;
     }
@@ -134,7 +141,7 @@ export async function createOtpChallenge(
   phone?: string,
   email?: string,
   channel: "SMS" | "WHATSAPP" | "EMAIL" = "SMS"
-): Promise<{ id: string; expiresAt: string; resendAvailableAt: string; resendSecondsRemaining: number }> {
+): Promise<{ id: string; expiresAt: string; resendAvailableAt: string; resendSecondsRemaining: number; channel: "SMS"|"WHATSAPP"|"EMAIL"; phone?: string; email?: string; }> {
   const now = new Date();
   const latest = otpChallenges
     .filter((challenge) => challenge.userId === userId && challenge.action === action && !challenge.consumedAt)
@@ -157,6 +164,8 @@ export async function createOtpChallenge(
     maxAttempts: env.OTP_MAX_ATTEMPTS,
     createdAt: now.toISOString(),
     deliveryChannel: channel,
+    phone,
+    email,
   };
   otpChallenges.push(challenge);
   const ttlMinutes = Math.max(1, Math.round(env.OTP_TTL_SECONDS / 60));
@@ -236,7 +245,14 @@ export async function createOtpChallenge(
     expiresAt,
     resendAvailableAt,
     resendSecondsRemaining: env.OTP_RESEND_COOLDOWN_SECONDS,
+    channel,
+    phone,
+    email,
   };
+}
+
+export function findOtpChallenge(challengeId: string): (undefined | { id: string; userId: string; action: OtpAction; expiresAt: string; attempts: number; maxAttempts: number; createdAt: string; deliveryChannel: "SMS"|"WHATSAPP"|"EMAIL"; phone?: string; email?: string; consumedAt?: string }) {
+  return otpChallenges.find((c) => c.id === challengeId) as any;
 }
 
 export async function verifyOtpChallenge(challengeId: string, inputCode: string): Promise<{ ok: boolean; userId?: string; action?: OtpAction; error?: string }> {
@@ -309,10 +325,18 @@ export async function confirmPasswordReset(resetId: string, rawToken: string, ne
 export function markKycChecklistComplete(userId: string): void {
   const kyc = findOrCreateKycCase(userId);
   const allDone = Object.values(kyc.checklist).every(Boolean);
-  if (allDone && kyc.status === "NOT_STARTED") {
-    kyc.status = "PENDING_VERIFICATION";
-    kyc.submittedAt = new Date().toISOString();
+  const anyDone = Object.values(kyc.checklist).some(Boolean);
+  const now = new Date().toISOString();
+  if (allDone) {
+    if (kyc.status === "NOT_STARTED" || kyc.status === "IN_PROGRESS" || kyc.status === "PENDING_VERIFICATION" || kyc.status === "ACTION_REQUIRED") {
+      kyc.status = "VERIFIED";
+      kyc.verifiedAt = now;
+      if (!kyc.submittedAt) kyc.submittedAt = now;
+    }
+  } else if (anyDone) {
+    if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
   }
+  kyc.updatedAt = now;
   const user = users.find((u) => u.id === userId);
   if (user) user.kycStatus = kyc.status;
 }

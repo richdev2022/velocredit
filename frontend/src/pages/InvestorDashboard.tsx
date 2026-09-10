@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
 import { useAuth } from "../context/AuthContext";
@@ -14,6 +14,10 @@ import {
   verifyMyNin,
   verifyMyLiveness,
   updateMyKyc,
+  verifyWalletFunding,
+  confirmKycOwnershipOtp,
+  resendKycOwnershipOtp,
+  type KycOtpChallenge,
 } from "../services/apiClient";
 
 const money = new Intl.NumberFormat("en-NG", {
@@ -41,6 +45,7 @@ type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: n
 export default function InvestorDashboard() {
   const { user, addUserRole, refreshUser } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<DashboardData | null>(null);
   const [transactions, setTransactions] = useState<TransactionData | null>(null);
   const [error, setError] = useState("");
@@ -56,6 +61,68 @@ export default function InvestorDashboard() {
   const [action, setAction] = useState<"fund" | "plans" | "transactions" | "">("");
   const [fundingAmount, setFundingAmount] = useState("100000");
   const [plans, setPlans] = useState<Plan[]>([]);
+  const [fundingBanner, setFundingBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const [view, setView] = useState<"overview" | "wallet" | "investments" | "kyc" | "transactions" | "payout" | "profile">("overview");
+  const investorMenu: Array<{ key: typeof view; label: string; icon: string; hint?: string }> = [
+    { key: "overview", label: "Overview", icon: "🏠", hint: "Summary & KPIs" },
+    { key: "wallet", label: "Wallet", icon: "💳", hint: "Fund & withdraw" },
+    { key: "investments", label: "Investments", icon: "📈", hint: "Plans & positions" },
+    { key: "kyc", label: "Verification", icon: "✅", hint: "BVN / NIN / Liveness" },
+    { key: "transactions", label: "Transactions", icon: "🧾", hint: "Ledger & history" },
+    { key: "payout", label: "Payout account", icon: "🏦", hint: "Bank details" },
+    { key: "profile", label: "Profile", icon: "👤", hint: "Personal information" },
+  ];
+  const [otpMethodPickerFor, setOtpMethodPickerFor] = useState<"BVN" | "NIN" | null>(null);
+  const [activeOtpChallenge, setActiveOtpChallenge] = useState<
+    null | {
+      idType: "BVN" | "NIN";
+      challenge: KycOtpChallenge;
+      otpCode: string;
+      cooldown: number;
+      error?: string;
+      busy?: boolean;
+    }
+  >(null);
+  const countdownRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const fundingStatus = searchParams.get("funding");
+    const txRef = searchParams.get("tx_ref");
+    const qMessage = searchParams.get("message");
+    if (fundingStatus) {
+      if (fundingStatus === "success") {
+        setFundingBanner({ ok: true, text: qMessage?.trim() || "Wallet was credited successfully. Your balance below reflects the update." });
+      } else if (fundingStatus === "failed") {
+        setFundingBanner({ ok: false, text: qMessage?.trim() || "Funding was not completed. Try again or contact support." });
+      }
+      const transactionId = searchParams.get("transaction_id");
+      if (transactionId) {
+        verifyWalletFunding(transactionId).then((res) => {
+          if (res.ok) {
+            setFundingBanner({ ok: true, text: "Wallet funding confirmed. Your balance was refreshed." });
+          } else if (!fundingBanner) {
+            setFundingBanner({ ok: false, text: res.reason || "Funding could not be confirmed at this time. Your balance will update once the provider confirms." });
+          }
+          Promise.all([getInvestorDashboard(), getInvestorTransactions(), getMyKyc()])
+            .then(([dashboard, history, kycResponse]) => {
+              setData(dashboard as DashboardData);
+              setTransactions(history as TransactionData);
+              setKyc(kycResponse as unknown as KycData);
+            })
+            .catch(() => undefined);
+        }).catch(() => undefined);
+      }
+      const clean = new URLSearchParams(searchParams);
+      clean.delete("funding");
+      clean.delete("tx_ref");
+      clean.delete("message");
+      clean.delete("transaction_id");
+      clean.delete("status");
+      clean.delete("flw_ref");
+      setSearchParams(clean, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -70,26 +137,91 @@ export default function InvestorDashboard() {
       );
   }, [user]);
 
+  useEffect(() => {
+    if (!activeOtpChallenge) return;
+    if (countdownRef.current) window.clearInterval(countdownRef.current);
+    countdownRef.current = window.setInterval(() => {
+      setActiveOtpChallenge((current) => {
+        if (!current) return current;
+        if (current.cooldown <= 1) {
+          if (countdownRef.current) window.clearInterval(countdownRef.current);
+          return { ...current, cooldown: 0 };
+        }
+        return { ...current, cooldown: current.cooldown - 1 };
+      });
+    }, 1000);
+    return () => {
+      if (countdownRef.current) window.clearInterval(countdownRef.current);
+    };
+  }, [activeOtpChallenge?.challenge?.challengeId]);
+
   async function verifyIdentity(type: "BVN" | "NIN") {
     const value = type === "BVN" ? bvn : nin;
     if (!/^\d{11}$/.test(value)) {
       setKycError(`${type} must be exactly 11 digits.`);
       return;
     }
+    setOtpMethodPickerFor(type);
+  }
+
+  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS" | "WHATSAPP") {
+    const value = type === "BVN" ? bvn : nin;
+    setOtpMethodPickerFor(null);
     setKycBusy(type);
     setKycError("");
+    setActiveOtpChallenge(null);
     try {
       const names = (user?.fullName ?? "").trim().split(/\s+/);
       const response = type === "BVN"
-        ? await verifyMyBvn(value, names[0], names.slice(1).join(" "))
-        : await verifyMyNin(value, names[0], names.slice(1).join(" "));
+        ? await verifyMyBvn(value, names[0], names.slice(1).join(" "), undefined, channel)
+        : await verifyMyNin(value, names[0], names.slice(1).join(" "), undefined, channel);
+      const challenge = (response as any)?.otpChallenge as KycOtpChallenge | undefined;
+      if (challenge && challenge.requiresPhoneVerification) {
+        setActiveOtpChallenge({ idType: type, challenge, otpCode: "", cooldown: challenge.resendSecondsRemaining });
+        setKycError(`A verification code was sent to the phone number ending in ${type} records ending in ···${challenge.phoneLastFour}. Enter the code to confirm ownership.`);
+        setKycBusy("");
+        return;
+      }
       setKyc((current) => ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"] }));
       await refreshUser();
-      setMessage(`${type} verification request completed.`);
+      setMessage(`${type} verification completed successfully.`);
     } catch (err) {
       setKycError(err instanceof Error ? err.message : `Unable to verify ${type}`);
     } finally {
-      setKycBusy("");
+      if (!activeOtpChallenge) setKycBusy("");
+    }
+  }
+
+  async function submitActiveKycOtp() {
+    if (!activeOtpChallenge || activeOtpChallenge.otpCode.length !== 6) return;
+    setActiveOtpChallenge((current) => current ? { ...current, busy: true, error: undefined } : current);
+    try {
+      const confirmed = await confirmKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, code: activeOtpChallenge.otpCode });
+      setKyc((current) => ({ ...current, status: confirmed.status ?? current?.status, checklist: confirmed.checklist as unknown as KycData["checklist"] }));
+      await refreshUser();
+      setMessage(`${activeOtpChallenge.idType} ownership verified. Thank you.`);
+      setKycError("");
+      setActiveOtpChallenge(null);
+    } catch (err) {
+        const reason = err instanceof Error ? err.message : "Unable to verify code";
+        setActiveOtpChallenge((current) => current ? { ...current, busy: false, error: reason, otpCode: "" } : current);
+        setKycError(reason);
+    }
+  }
+
+  async function resendActiveKycOtp(newChannel?: "SMS"|"WHATSAPP") {
+    if (!activeOtpChallenge) return;
+    try {
+      const res = await resendKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, channel: newChannel });
+      setActiveOtpChallenge((current) => current ? {
+        ...current,
+        challenge: { ...current.challenge, challengeId: res.challengeId, expiresAt: res.expiresAt, channel: res.channel, resendAvailableAt: res.resendAvailableAt, resendSecondsRemaining: res.resendSecondsRemaining },
+        otpCode: "",
+        cooldown: res.resendSecondsRemaining,
+        error: undefined,
+      } : current);
+    } catch (err) {
+      setActiveOtpChallenge((current) => current ? { ...current, error: err instanceof Error ? err.message : "Unable to resend code" } : current);
     }
   }
 
@@ -142,12 +274,22 @@ export default function InvestorDashboard() {
 
   async function onPremblyLivenessResult(result: { success: boolean; message: string }) {
     if (result.success) {
-      try {
-        const updated = await getMyKyc();
-        setKyc(updated as unknown as KycData);
-        await refreshUser();
-      } catch { /* ignore */ }
-      setMessage(result.message);
+      setMessage("Liveness scan submitted. Syncing with the provider — your KYC status will update within 60 seconds.");
+      let attempts = 0;
+      const maxAttempts = 12;
+      const poll = window.setInterval(async () => {
+        attempts += 1;
+        try {
+          const updated = await getMyKyc();
+          const checklist = (updated as any)?.checklist ?? {};
+          setKyc(updated as unknown as KycData);
+          await refreshUser();
+          if (checklist.liveness || checklist.selfieUploaded || attempts >= maxAttempts) {
+            window.clearInterval(poll);
+            setMessage(checklist.liveness ? "Liveness verified. Thank you." : "Liveness processing complete. If status hasn't updated yet, refresh in a minute.");
+          }
+        } catch { /* ignore */ }
+      }, 5000);
     } else {
       setKycError(result.message);
     }
@@ -212,6 +354,78 @@ export default function InvestorDashboard() {
 
   return (
     <Layout>
+      <div className="flex flex-col lg:flex-row gap-6 min-h-[calc(100vh-12rem)]">
+        <aside className="lg:w-72 shrink-0">
+          <div className="velo-card p-5 rounded-2xl border-0 dark:border-slate-800 shadow-[0_20px_60px_-20px_rgba(16,185,129,0.12)] dark:shadow-none sticky top-4 overflow-hidden bg-gradient-to-br from-emerald-50 via-white to-white dark:from-slate-900 dark:via-slate-900 dark:to-slate-900 relative">
+            <div className="absolute -top-12 -right-12 w-40 h-40 rounded-full bg-emerald-400/20 blur-3xl pointer-events-none" />
+            <div className="absolute bottom-0 left-0 w-32 h-32 rounded-full bg-velo-400/10 blur-3xl pointer-events-none" />
+            <div className="relative">
+              <div className="flex items-center gap-3 p-3 rounded-2xl bg-white/60 dark:bg-slate-800/60 border border-emerald-100/70 dark:border-slate-700/60 backdrop-blur">
+                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white font-black text-lg shadow-md shadow-emerald-500/30">
+                  {user?.fullName?.charAt(0)?.toUpperCase() || "V"}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-bold text-velo-900 dark:text-white truncate">
+                    {user?.fullName || "Investor"}
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    {user?.email || "Welcome aboard"}
+                  </div>
+                </div>
+              </div>
+
+              <nav className="mt-6 space-y-1">
+                {investorMenu.map((item) => {
+                  const active = view === item.key;
+                  return (
+                    <button
+                      key={item.key}
+                      onClick={() => setView(item.key)}
+                      className={`w-full group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-200 text-left ${
+                        active
+                          ? "bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-md shadow-emerald-500/25 hover:shadow-lg hover:shadow-emerald-500/30"
+                          : "text-slate-600 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-slate-800/60 hover:text-velo-900 dark:hover:text-white"
+                      }`}
+                    >
+                      <span className={`text-xl shrink-0 ${active ? "" : "opacity-90"}`}>{item.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-sm font-bold ${active ? "" : "group-hover:font-extrabold"}`}>{item.label}</div>
+                        {item.hint && (
+                          <div className={`text-[10px] truncate ${active ? "text-emerald-50/90" : "text-slate-500 dark:text-slate-400"}`}>{item.hint}</div>
+                        )}
+                      </div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className={`shrink-0 transition-transform ${active ? "text-white translate-x-0.5" : "text-slate-400 group-hover:translate-x-0.5"}`}>
+                        <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  );
+                })}
+              </nav>
+
+              <div className="mt-8 pt-5 border-t border-emerald-100/80 dark:border-slate-800">
+                <div className="rounded-2xl bg-gradient-to-br from-emerald-600 to-emerald-700 text-white p-4 shadow-lg shadow-emerald-600/20">
+                  <div className="text-[11px] uppercase tracking-wider font-bold text-emerald-100/85">KYC status</div>
+                  <div className="mt-1 text-lg font-black">
+                    {user?.kycStatus === "VERIFIED" ? "✅ Verified" : user?.kycStatus === "PENDING_VERIFICATION" ? "⏳ Reviewing" : "🔒 Action needed"}
+                  </div>
+                  <div className="mt-1 text-[11px] text-emerald-100/80">
+                    {user?.kycStatus === "VERIFIED"
+                      ? "You're ready to invest!"
+                      : view !== "kyc"
+                      ? (
+                        <button type="button" onClick={() => setView("kyc")} className="underline underline-offset-2 font-semibold hover:text-white">
+                          Tap here to complete →
+                        </button>
+                      )
+                      : "Complete BVN, NIN, and liveness to verify."}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <main className="flex-1 min-w-0 space-y-6">
       <div className="space-y-6">
         {/* Role switcher / enable borrower banner */}
         {user && (
@@ -314,6 +528,17 @@ export default function InvestorDashboard() {
           </div>
         )}
 
+        {fundingBanner && (
+          <div className={`rounded-xl border p-4 text-sm flex items-start gap-2.5 ${fundingBanner.ok ? "border-emerald-100 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 text-emerald-700 dark:text-emerald-400" : "border-amber-100 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-900/30 text-amber-700 dark:text-amber-400"}`}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className={`shrink-0 mt-0.5 ${fundingBanner.ok ? "text-emerald-500" : "text-amber-500"}`}>
+              {fundingBanner.ok
+                ? <path d="M22 11.08V12a10 10 0 11-5.93-9.14M22 4L12 14.01l-3-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                : <><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" /><path d="M12 8v4M12 16h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></>}
+            </svg>
+            {fundingBanner.text}
+          </div>
+        )}
+
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">
@@ -341,6 +566,37 @@ export default function InvestorDashboard() {
         {message && (
           <div className="rounded-xl border border-emerald-100 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 p-4 text-sm text-emerald-700 dark:text-emerald-400">
             {message}
+          </div>
+        )}
+
+        {otpMethodPickerFor && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 backdrop-blur-sm px-4">
+            <div className="velo-card w-full max-w-md p-6 shadow-2xl">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-velo-900 dark:text-white">Verify {otpMethodPickerFor} ownership</h3>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                    Choose how to send a one-time code to the phone number on file with your {otpMethodPickerFor}.
+                  </p>
+                </div>
+                <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setOtpMethodPickerFor(null)} aria-label="Close">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                </button>
+              </div>
+              <div className="mt-5 grid grid-cols-2 gap-3">
+                <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-velo-500 hover:bg-velo-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-velo-400 dark:hover:bg-velo-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 group-hover:bg-velo-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></svg></div>
+                  <div className="text-left"><div className="text-sm font-semibold text-velo-900 dark:text-white">SMS</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Text to identity phone</div></div>
+                </button>
+                <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 group-hover:bg-emerald-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 11-3.2-6.4L20 4l-1.6 3.2A7.9 7.9 0 0120 12zM8.3 15.4c-.2-.5-1-1-1.5-1.1l-.5-.2c-.6-.2-1.3.2-1.3.9 0 1.4 1.8 2.8 4.1 2.8 2 0 3.6-.8 4.6-2.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></div>
+                  <div className="text-left"><div className="text-sm font-semibold text-velo-900 dark:text-white">WhatsApp</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Message on WhatsApp</div></div>
+                </button>
+              </div>
+              <p className="mt-4 text-[11px] leading-5 text-slate-500 dark:text-slate-400">
+                After verifying your {otpMethodPickerFor} details with the provider, we send an OTP to the phone number linked to that identity record. Standard messaging rates may apply.
+              </p>
+            </div>
           </div>
         )}
 
@@ -445,6 +701,50 @@ export default function InvestorDashboard() {
                     </div>
                   </label>
                 </div>
+
+                {activeOtpChallenge && (
+                  <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-800/50 dark:bg-sky-950/20">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-sky-800 dark:text-sky-300">Confirm {activeOtpChallenge.idType} ownership — enter OTP</h3>
+                        <p className="mt-1 text-xs text-sky-700/80 dark:text-sky-300/70">
+                          Sent via <span className="font-semibold">{activeOtpChallenge.challenge.channel}</span> to the {activeOtpChallenge.idType}-linked phone number ending in ···{activeOtpChallenge.challenge.phoneLastFour}.
+                        </p>
+                      </div>
+                      <button type="button" className="rounded-md p-1.5 text-sky-700/70 hover:bg-sky-100/70 dark:text-sky-300 dark:hover:bg-sky-900/40" onClick={() => setActiveOtpChallenge(null)} aria-label="Dismiss"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg></button>
+                    </div>
+                    <label className="velo-label mt-3 block">
+                      One-time code (6 digits)
+                      <input
+                        className="velo-input mt-1 tracking-[0.5em] text-center font-semibold text-lg"
+                        inputMode="numeric"
+                        maxLength={6}
+                        autoFocus
+                        value={activeOtpChallenge.otpCode}
+                        onChange={(event) => setActiveOtpChallenge((c) => c ? { ...c, otpCode: event.target.value.replace(/\D/g, ""), error: undefined } : c)}
+                        placeholder="• • • • • •"
+                      />
+                    </label>
+                    {activeOtpChallenge.error && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{activeOtpChallenge.error}</p>}
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-sky-800 hover:bg-sky-100 disabled:opacity-60 disabled:cursor-not-allowed dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/30"
+                          disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy}
+                          onClick={() => void resendActiveKycOtp("SMS")}
+                        >{activeOtpChallenge.cooldown > 0 ? `Resend SMS (${activeOtpChallenge.cooldown}s)` : "Resend via SMS"}</button>
+                        <button
+                          type="button"
+                          className="rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-emerald-800 hover:bg-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
+                          disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy}
+                          onClick={() => void resendActiveKycOtp("WHATSAPP")}
+                        >{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
+                      </div>
+                      <button type="button" className="btn-primary disabled:cursor-not-allowed disabled:opacity-50" disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-800/50 dark:bg-emerald-900/10">
                   <h3 className="mb-2 text-sm font-semibold text-emerald-800 dark:text-emerald-300">Liveness verification <span className="text-red-500">*</span></h3>
@@ -574,6 +874,8 @@ export default function InvestorDashboard() {
             {action === "transactions" && <div className="mt-4 space-y-2 text-sm text-slate-600 dark:text-slate-300">{transactions?.payouts?.length ? transactions.payouts.map((payout, index) => <div key={index} className="flex justify-between"><span>{payout.status ?? "Payout"}</span><span>{money.format(Number(payout.amountNaira ?? 0))}</span></div>) : <p>No payout transactions yet.</p>}</div>}
           </section>
         </div>
+      </div>
+        </main>
       </div>
     </Layout>
   );

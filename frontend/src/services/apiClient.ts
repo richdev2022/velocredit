@@ -57,8 +57,8 @@ export async function register(input: RegisterInput): Promise<RegistrationRespon
   return request("/api/v1/auth/register", { method: "POST", body: JSON.stringify(input) });
 }
 
-export async function resendRegistrationOtp(userId: string): Promise<RegistrationVerification> {
-  const response = await request<{ ok: true } & RegistrationVerification>("/api/v1/auth/register/resend-otp", { method: "POST", body: JSON.stringify({ userId }) });
+export async function resendRegistrationOtp(userId: string, channel?: OtpChannel): Promise<RegistrationVerification> {
+  const response = await request<{ ok: true } & RegistrationVerification>("/api/v1/auth/register/resend-otp", { method: "POST", body: JSON.stringify(channel ? { userId, channel } : { userId }) });
   return response;
 }
 
@@ -68,10 +68,24 @@ export async function verifyRegistrationOtp(input: { userId: string; challengeId
   return response;
 }
 
-export async function login(input: { email: string; password: string }): Promise<AuthResponse> {
-  const response = await request<AuthResponse>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) });
-  setAccessToken(response.accessToken);
-  return response;
+export interface LoginOtpRequired { ok: false; requiresOtp: true; code: "OTP_REQUIRED"; userId: string; email: string; fullName?: string; channels: OtpChannel[]; error: string; }
+export interface LoginSuccess { ok: true; accessToken: string; user: SessionUser; }
+
+export async function login(input: { email: string; password: string }): Promise<LoginSuccess | LoginOtpRequired> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const adminToken = sessionStorage.getItem("velo:admin-token");
+  const token = getAccessToken() || adminToken;
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${API_URL}/api/v1/auth/login`, { method: "POST", body: JSON.stringify(input), headers });
+  const body = await response.json().catch(() => ({}));
+  if (response.ok) {
+    setAccessToken(body.accessToken);
+    return body as LoginSuccess;
+  }
+  if (response.status === 403 && body.code === "OTP_REQUIRED") {
+    return { ok: false, requiresOtp: true, code: "OTP_REQUIRED", userId: body.userId, email: body.email, fullName: body.fullName, channels: body.channels ?? ["EMAIL"], error: body.error ?? "Account verification required" };
+  }
+  throw new Error(body.error || body.message || `Request failed (${response.status})`);
 }
 
 export async function adminLogin(input: { email: string; password: string }): Promise<AuthResponse> {
@@ -136,12 +150,29 @@ export async function submitKyc(): Promise<KycResponse> {
   return updateMyKyc({ statusOverride: "PENDING_VERIFICATION" });
 }
 
-export async function verifyMyBvn(bvn: string, firstName?: string, lastName?: string, dateOfBirth?: string): Promise<KycResponse> {
-  return request("/api/v1/me/kyc/bvn/verify", { method: "POST", body: JSON.stringify({ bvn, firstName, lastName, dateOfBirth }) });
+export async function verifyMyBvn(bvn: string, firstName?: string, lastName?: string, dateOfBirth?: string, otpChannel?: "SMS"|"WHATSAPP"): Promise<KycResponse> {
+  return request("/api/v1/me/kyc/bvn/verify", { method: "POST", body: JSON.stringify({ bvn, firstName, lastName, dateOfBirth, otpChannel }) });
 }
 
-export async function verifyMyNin(nin: string, firstName?: string, lastName?: string, dateOfBirth?: string): Promise<KycResponse> {
-  return request("/api/v1/me/kyc/nin/verify", { method: "POST", body: JSON.stringify({ nin, firstName, lastName, dateOfBirth }) });
+export async function verifyMyNin(nin: string, firstName?: string, lastName?: string, dateOfBirth?: string, otpChannel?: "SMS"|"WHATSAPP"): Promise<KycResponse> {
+  return request("/api/v1/me/kyc/nin/verify", { method: "POST", body: JSON.stringify({ nin, firstName, lastName, dateOfBirth, otpChannel }) });
+}
+
+export type KycOtpChallenge = {
+  requiresPhoneVerification: true;
+  challengeId: string;
+  expiresAt: string;
+  channel: "SMS"|"WHATSAPP"|"EMAIL";
+  phoneLastFour: string;
+  resendAvailableAt: string;
+  resendSecondsRemaining: number;
+};
+export interface KycOtpConfirmResponse { ok: true; idType: "BVN"|"NIN"; checklist: Record<string, unknown>; status?: string; message: string; }
+export async function confirmKycOwnershipOtp(params: { idType: "BVN"|"NIN"; challengeId: string; code: string }): Promise<KycOtpConfirmResponse> {
+  return request("/api/v1/me/kyc/verify-confirm-otp", { method: "POST", body: JSON.stringify(params) });
+}
+export async function resendKycOwnershipOtp(params: { idType: "BVN"|"NIN"; challengeId: string; channel?: "SMS"|"WHATSAPP" }): Promise<{ ok: true; challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; resendAvailableAt: string; resendSecondsRemaining: number; }> {
+  return request("/api/v1/me/kyc/verify-resend-otp", { method: "POST", body: JSON.stringify(params) });
 }
 export async function verifyMyLiveness(file: File, input?: { idType?: "BVN" | "NIN"; idNumber?: string; dateOfBirth?: string }): Promise<KycResponse> {
   const form = new FormData();
@@ -194,6 +225,10 @@ export async function getInvestmentPlans(): Promise<{ ok: true; plans: Investmen
 export interface WalletFundingResponse { ok: true; txRef: string; amountNaira: number; checkout?: { status?: string; data?: { link?: string }; message?: string; error?: string }; message: string; }
 export async function fundWallet(amountNaira: number): Promise<WalletFundingResponse> {
   return request("/api/v1/investor/wallet/funding", { method: "POST", body: JSON.stringify({ amountNaira }) });
+}
+
+export async function verifyWalletFunding(transactionId: string): Promise<{ ok: boolean; txRef?: string; reason?: string; settled?: unknown; }> {
+  return request("/api/v1/investor/wallet/funding/verify", { method: "POST", body: JSON.stringify({ transactionId }) });
 }
 
 export interface InvestmentListResponse { ok: true; investments: unknown[]; meta?: PaginationMeta; }

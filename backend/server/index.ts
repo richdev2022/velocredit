@@ -32,8 +32,11 @@ import {
   seedAdminLedgerOpeningBalance,
   getPlatformSettings,
   notifications,
+  settleWalletDeposit,
 } from "./store.js";
-import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts } from "./store.js";
+import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
+import type { IdentityVerificationEvent } from "./store.js";
+import { markKycChecklistComplete } from "./auth.js";
 import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } from "./email.js";
 
 assertProductionSecrets();
@@ -113,74 +116,39 @@ app.post(
         if (walletTx) {
           if (walletTx.status !== "COMPLETED" && walletTx.status !== "SUCCESSFUL") {
             if (currency === "NGN" && amount > 0) {
-              const wallet = wallets.find((w) => w.id === walletTx.walletId);
-              if (wallet) {
-                const amountMinor = Math.round(amount * 100);
-                wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - amountMinor);
-                appendAdminLedger({
-                  entryType: "INVESTOR_FUNDING",
-                  referenceId: walletTx.id,
-                  investorId: wallet.userId,
-                  amountMinor,
-                  direction: "DEBIT",
-                  description: `Admin ledger debit for investor wallet funding - txRef: ${txRef}`,
-                  metadata: {
-                    provider: "flutterwave",
-                    providerReference,
-                    txRef,
-                    eventType: event.event,
-                  },
+              const settled = settleWalletDeposit({ txRef, providerReference, providerTransactionId: String(data.id ?? providerReference) });
+              if (settled.ok && settled.user && settled.wallet && settled.reason !== "already_settled") {
+                const balanceNaira = Math.round(settled.wallet.availableMinor) / 100;
+                const emailTemplate = investorWalletFundedEmail({
+                  investorName: settled.user.fullName,
+                  amountNaira: amount,
+                  balanceNaira,
+                  reference: providerReference,
                 });
-                appendLedger(wallet, {
-                  entryType: "FUNDING",
-                  referenceId: walletTx.id,
-                  amountMinor,
-                  direction: "CREDIT",
-                  description: `Wallet funding via Flutterwave ${providerReference}`,
-                  metadata: {
-                    provider: "flutterwave",
-                    providerReference,
-                    txRef,
-                    eventType: event.event,
-                  },
-                });
-                const investor = users.find((u) => u.id === wallet.userId);
-                if (investor) {
-                  const balanceNaira = Math.round(wallet.availableMinor) / 100;
-                  const emailTemplate = investorWalletFundedEmail({
-                    investorName: investor.fullName,
-                    amountNaira: amount,
-                    balanceNaira,
-                    reference: providerReference,
-                  });
-                  void sendEmail({
-                    to: investor.email,
-                    name: investor.fullName,
+                void sendEmail({
+                  to: settled.user.email,
+                  name: settled.user.fullName,
+                  subject: emailTemplate.subject,
+                  html: emailTemplate.html,
+                }).then((emailResult) => {
+                  notifications.push({
+                    id: randomUUID(),
+                    userId: settled.user!.id,
+                    channel: "EMAIL",
+                    kind: "WALLET_FUNDED",
                     subject: emailTemplate.subject,
-                    html: emailTemplate.html,
-                  }).then((emailResult) => {
-                    notifications.push({
-                      id: randomUUID(),
-                      userId: investor.id,
-                      channel: "EMAIL",
-                      kind: "WALLET_FUNDED",
-                      subject: emailTemplate.subject,
-                      recipientMasked: investor.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
-                      status: emailResult.sent ? "SENT" : "NOT_CONFIGURED",
-                      providerMessageId: emailResult.providerReference,
-                      retryCount: 0,
-                      relatedEntityType: "WALLET_TRANSACTION",
-                      relatedEntityId: walletTx.id,
-                      createdAt: new Date().toISOString(),
-                      sentAt: emailResult.sent ? new Date().toISOString() : undefined,
-                    });
-                  }).catch(() => undefined);
-                }
+                    recipientMasked: settled.user!.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+                    status: emailResult.sent ? "SENT" : "NOT_CONFIGURED",
+                    providerMessageId: emailResult.providerReference,
+                    retryCount: 0,
+                    relatedEntityType: "WALLET_TRANSACTION",
+                    relatedEntityId: walletTx.id,
+                    createdAt: new Date().toISOString(),
+                    sentAt: emailResult.sent ? new Date().toISOString() : undefined,
+                  });
+                }).catch(() => undefined);
               }
             }
-            walletTx.status = "SUCCESSFUL";
-            walletTx.providerReference = providerReference;
-            walletTx.updatedAt = new Date().toISOString();
           }
         }
 
@@ -394,7 +362,48 @@ app.post(
       event,
       receivedAt: new Date().toISOString(),
     });
-    res.status(202).json({ ok: true, accepted: true });
+    const status = String(event.status ?? event.event ?? "").toLowerCase();
+    const success = ["success", "successful", "passed", "verified", "complete", "completed"].includes(status) || (event.data && typeof (event.data as any).status === "string" && ["success", "verified"].includes((event.data as any).status.toLowerCase()));
+    const providerRef = String(
+      event.reference ?? event.id ?? (event.data as any)?.reference ?? (event.data as any)?.id ?? (event.metadata as any)?.reference ?? ""
+    );
+    const verificationTypeRaw = String(event.verification_type ?? event.type ?? (event.data as any)?.type ?? (event.data as any)?.verification_type ?? "").toUpperCase();
+    let verificationType: IdentityVerificationEvent["verificationType"] | null = null;
+    if (verificationTypeRaw.includes("LIVENESS") || verificationTypeRaw.includes("FACE") || verificationTypeRaw.includes("SELFIE")) verificationType = "LIVENESS";
+    else if (verificationTypeRaw.includes("BVN")) verificationType = "BVN";
+    else if (verificationTypeRaw.includes("NIN")) verificationType = "NIN";
+    else if (verificationTypeRaw.includes("PASSPORT")) verificationType = "PASSPORT";
+    else if (verificationTypeRaw.includes("ADDRESS")) verificationType = "ADDRESS";
+    const matches = providerRef
+      ? identityVerificationEvents.filter((e) => e.provider === "prembly" && e.providerReference === providerRef)
+      : [];
+    if (matches.length === 0 && verificationType) {
+      const recent = [...identityVerificationEvents]
+        .filter((e) => e.provider === "prembly" && (!verificationType || e.verificationType === verificationType))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (recent) matches.push(recent);
+    }
+    for (const match of matches) {
+      match.status = success ? "SUCCESS" : "FAILED";
+      match.rawResponse = { ...(match.rawResponse ?? {}), webhook: event };
+      const kyc = kycCases.find((k) => k.id === match.kycCaseId);
+      if (kyc) {
+        const effType = verificationType ?? match.verificationType;
+        const now = new Date().toISOString();
+        if (success) {
+          if (effType === "LIVENESS") { kyc.checklist.liveness = true; kyc.livenessVerifiedAt = kyc.livenessVerifiedAt ?? now; }
+          else if (effType === "BVN") { kyc.checklist.bvn = true; kyc.bvnVerifiedAt = kyc.bvnVerifiedAt ?? now; }
+          else if (effType === "NIN") { kyc.checklist.nin = true; kyc.ninVerifiedAt = kyc.ninVerifiedAt ?? now; }
+          else if (effType === "PASSPORT") { kyc.checklist.passport = true; }
+          else if (effType === "ADDRESS") { kyc.checklist.proofOfAddress = true; }
+          else if (effType === "SIGNATURE") { kyc.checklist.signature = true; }
+        }
+        kyc.updatedAt = now;
+        const user = users.find((u) => u.id === kyc.userId);
+        if (user) markKycChecklistComplete(user.id);
+      }
+    }
+    res.status(202).json({ ok: true, accepted: true, matches: matches.length });
   }
 );
 

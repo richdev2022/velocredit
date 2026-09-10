@@ -84,7 +84,9 @@ export interface WalletTransaction {
   status: PaymentStatus | "PENDING" | "COMPLETED";
   provider?: "flutterwave" | "manual";
   providerReference?: string;
+  providerTransactionId?: string;
   txRef?: string;
+  verifiedAt?: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt?: string;
@@ -98,11 +100,13 @@ export interface KycCase {
   nin?: string;
   bvnVerifiedAt?: string;
   ninVerifiedAt?: string;
+  livenessVerifiedAt?: string;
   providerRequestId?: string;
   providerRaw?: Record<string, unknown>;
   submittedAt?: string;
   reviewedBy?: string;
   reviewedAt?: string;
+  verifiedAt?: string;
   rejectionReason?: string;
   checklist: {
     bvn: boolean;
@@ -206,6 +210,23 @@ export interface Investment {
   updatedAt?: string;
 }
 
+export type StageStatus = "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "PENDING_REVIEW" | "APPROVED" | "REJECTED";
+export const LOAN_STAGES = [
+  { key: "profile", label: "Profile Information" },
+  { key: "employment", label: "Employment & Income" },
+  { key: "bvn_nin", label: "BVN / NIN Verification" },
+  { key: "address", label: "Proof of Address" },
+  { key: "liveness", label: "Liveness Check" },
+  { key: "loan_details", label: "Loan Terms" },
+  { key: "documents", label: "Document Uploads" },
+  { key: "disbursement_account", label: "Disbursement Account" },
+  { key: "consent", label: "Consent & T&Cs" },
+  { key: "credit_review", label: "Credit Review" },
+  { key: "risk_review", label: "Risk Assessment" },
+  { key: "approval", label: "Final Approval" },
+] as const;
+export type LoanStageKey = typeof LOAN_STAGES[number]["key"];
+
 export interface LoanApplication {
   id: string;
   applicationId: string;
@@ -216,6 +237,8 @@ export interface LoanApplication {
   amountNaira?: number;
   tenureDays?: number;
   status: LoanStatus;
+  stageStatuses: Partial<Record<LoanStageKey, StageStatus>>;
+  stageRejectionNotes: Partial<Record<LoanStageKey, string>>;
   systemDecision?: Record<string, unknown>;
   manualDecision?: "PENDING" | "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED";
   manualNote?: string;
@@ -227,6 +250,18 @@ export interface LoanApplication {
   submittedAt?: string;
   approvedAt?: string;
 }
+
+export function seedLoanStageStatuses(app: LoanApplication): LoanApplication {
+  if (!app.stageStatuses) app.stageStatuses = {};
+  if (!app.stageRejectionNotes) app.stageRejectionNotes = {};
+  for (const stage of LOAN_STAGES) {
+    if (!app.stageStatuses[stage.key]) {
+      app.stageStatuses[stage.key] = "NOT_STARTED";
+    }
+  }
+  return app;
+}
+
 
 export interface Loan {
   id: string;
@@ -615,6 +650,9 @@ export async function initializeStore(): Promise<void> {
   } else {
     await persistStore();
   }
+  for (const app of loanApplications) {
+    seedLoanStageStatuses(app);
+  }
 }
 
 export function createWallet(userId: string): Wallet {
@@ -686,6 +724,55 @@ export function appendLedger(wallet: Wallet, entry: Omit<LedgerEntry, "id" | "wa
   };
   ledgerEntries.push(record);
   return record;
+}
+
+export function settleWalletDeposit(params: {
+  txRef: string;
+  providerReference?: string;
+  providerTransactionId?: string;
+}): { ok: boolean; tx?: WalletTransaction; wallet?: Wallet; user?: User; reason?: string } {
+  const idx = walletTransactions.findIndex((t) => t.txRef === params.txRef && t.type === "DEPOSIT");
+  if (idx < 0) return { ok: false, reason: `No pending deposit found for txRef=${params.txRef}` };
+  const tx = walletTransactions[idx];
+  if (tx.status === "SUCCESSFUL") {
+    return { ok: true, tx, reason: "already_settled" };
+  }
+  if (!["PENDING", "PENDING_PROVIDER_CONFIRMATION", "PROVIDER_NOT_CONFIGURED"].includes(tx.status)) {
+    return { ok: false, reason: `Deposit status=${tx.status} is not settleable` };
+  }
+  const user = users.find((u) => u.id === tx.userId);
+  const wallet = findWallet(tx.userId);
+  const now = new Date().toISOString();
+  wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - tx.amountMinor);
+  appendAdminLedger({
+    entryType: "INVESTOR_FUNDING",
+    referenceId: tx.id,
+    investorId: tx.userId,
+    amountMinor: tx.amountMinor,
+    direction: "DEBIT",
+    description: `Admin ledger debit for investor wallet funding - txRef: ${params.txRef}`,
+    metadata: {
+      provider: tx.provider ?? "provider",
+      providerReference: params.providerReference,
+      providerTransactionId: params.providerTransactionId,
+      txRef: params.txRef,
+    },
+  });
+  appendLedger(wallet, {
+    entryType: "FUNDING",
+    referenceId: tx.id,
+    amountMinor: tx.amountMinor,
+    direction: "CREDIT",
+    description: `Wallet funding via ${tx.provider ?? "provider"}${params.providerTransactionId ? ` (${params.providerTransactionId})` : ""}`,
+    metadata: { txRef: params.txRef, providerReference: params.providerReference, providerTransactionId: params.providerTransactionId },
+  });
+  tx.status = "SUCCESSFUL";
+  tx.providerReference = params.providerReference ?? tx.providerReference;
+  tx.providerTransactionId = params.providerTransactionId ?? tx.providerTransactionId;
+  tx.verifiedAt = now;
+  tx.updatedAt = now;
+  walletTransactions[idx] = tx;
+  return { ok: true, tx, wallet, user };
 }
 
 export function hashToken(value: string): string {

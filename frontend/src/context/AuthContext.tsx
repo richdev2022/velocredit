@@ -13,12 +13,15 @@ import {
   type RegistrationResponse,
   type SessionUser,
   verifyRegistrationOtp as apiVerifyRegistrationOtp,
+  type LoginOtpRequired,
 } from "../services/apiClient";
+
+type LoginResult = SessionUser | (LoginOtpRequired & { user?: undefined });
 
 interface AuthContextValue {
   user: SessionUser | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<SessionUser>;
+  login: (email: string, password: string) => Promise<LoginResult>;
   register: (input: Omit<RegisterInput, "consents"> & { consents?: RegisterInput["consents"] }) => Promise<RegistrationResponse>;
   verifyRegistrationOtp: (input: { userId: string; challengeId: string; code: string }) => Promise<SessionUser>;
   logout: () => void;
@@ -62,8 +65,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       async login(email, password) {
         const response = await apiLogin({ email, password });
-        setUser(response.user);
-        return response.user;
+        if (!("ok" in response) || response.ok !== false) {
+          const success = response as { user: SessionUser };
+          setUser(success.user);
+          return success.user;
+        }
+        return response as LoginOtpRequired & { user?: undefined };
       },
       async register(input) {
         const consents = input.consents ?? {

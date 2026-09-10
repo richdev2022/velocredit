@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { Router } from "express";
 import multer from "multer";
 import bcrypt from "bcryptjs";
@@ -11,6 +11,7 @@ import {
   createOtpChallenge,
   verifyOtpChallenge,
   OtpRateLimitError,
+  findOtpChallenge,
   requestPasswordReset,
   confirmPasswordReset,
   getAdminPasswordHashOverride,
@@ -57,7 +58,12 @@ import {
   setInvestorEarningRateOverride,
   getEffectiveInvestorRate,
   investorWithdrawals,
-  appendAdminLedger
+  appendAdminLedger,
+  settleWalletDeposit,
+  LOAN_STAGES,
+  seedLoanStageStatuses,
+  type StageStatus,
+  type LoanStageKey,
 } from "./store.js";
 import { env } from "./config.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
@@ -147,8 +153,8 @@ const passwordResetConfirmSchema = z.object({
   token: z.string().min(1),
   newPassword: z.string().min(8),
 });
-const bvnVerifySchema = z.object({ bvn: z.string().regex(/^\d{11}$/, "BVN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional() });
-const ninVerifySchema = z.object({ nin: z.string().regex(/^\d{11}$/, "NIN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional() });
+const bvnVerifySchema = z.object({ bvn: z.string().regex(/^\d{11}$/, "BVN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS","WHATSAPP"]).optional() });
+const ninVerifySchema = z.object({ nin: z.string().regex(/^\d{11}$/, "NIN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS","WHATSAPP"]).optional() });
 const payoutAccountSchema = z.object({ accountName: z.string().min(2), accountNumber: z.string().regex(/^\d{10}$/, "Account number must be 10 digits"), bankCode: z.string().min(2), bankName: z.string().optional() });
 const borrowerDisbursementAccountSchema = z.object({
   accountName: z.string().min(2),
@@ -192,13 +198,14 @@ router.post("/auth/register", async (req, res) => {
     return;
   }
   const now = new Date().toISOString();
+  const userRoles: Role[] = ["INVESTOR", "BORROWER"];
   const user = {
     id: randomUUID(),
     email: input.email.toLowerCase(),
     phone: input.phone,
     fullName: input.fullName,
     passwordHash: await bcrypt.hash(input.password, 12),
-    roles: [input.role] as Role[],
+    roles: userRoles,
     kycStatus: "NOT_STARTED" as KycStatus,
     createdAt: now,
     updatedAt: now,
@@ -210,7 +217,7 @@ router.post("/auth/register", async (req, res) => {
     sourceOfFunds: input.sourceOfFunds,
   };
   users.push(user);
-  if (input.role === "INVESTOR") createWallet(user.id);
+  createWallet(user.id);
   findOrCreateKycCase(user.id);
   if (input.consents.terms) recordConsent(user.id, "TERMS");
   if (input.consents.privacy) recordConsent(user.id, "PRIVACY");
@@ -261,13 +268,19 @@ router.post("/auth/login", async (req, res) => {
     return;
   }
   if (user.isActive === false) {
-    res.status(403).json({ ok: false, error: "Verify your OTP before signing in", code: "OTP_REQUIRED" });
+    res.status(403).json({
+      ok: false,
+      error: "Verify your OTP before signing in",
+      code: "OTP_REQUIRED",
+      userId: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      channels: ["SMS", "WHATSAPP", "EMAIL"] as const,
+    });
     return;
   }
-  if (!user.isActive) {
-    res.status(403).json({ ok: false, error: "Account is suspended" });
-    return;
-  }
+  // Suspended / disabled accounts can be added here when a dedicated flag exists
+  // if (user.suspendedAt) { res.status(403).json({ ok: false, error: "Account is suspended" }); return; }
   user.lastLoginAt = new Date().toISOString();
   res.json({
     ok: true,
@@ -425,9 +438,9 @@ router.post("/auth/otp/request", requireAuth, async (req: AuthRequest, res) => {
 });
 
 router.post("/auth/register/resend-otp", async (req, res) => {
-  const parsed = z.object({ userId: z.string().uuid() }).safeParse(req.body);
+  const parsed = z.object({ userId: z.string().uuid(), channel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).optional() }).safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ ok: false, error: "A valid registration userId is required" });
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
   const user = users.find((item) => item.id === parsed.data.userId);
@@ -435,14 +448,15 @@ router.post("/auth/register/resend-otp", async (req, res) => {
     res.status(404).json({ ok: false, error: "Registration not found or already verified" });
     return;
   }
+  const chosenChannel = parsed.data.channel ?? user.preferredOtpChannel ?? "EMAIL";
   try {
-    const challenge = await createOtpChallenge(user.id, "SIGNUP_VERIFY", user.phone, user.email, user.preferredOtpChannel ?? "EMAIL");
+    const challenge = await createOtpChallenge(user.id, "SIGNUP_VERIFY", user.phone, user.email, chosenChannel);
     res.status(201).json({
       ok: true,
       userId: user.id,
       challengeId: challenge.id,
       expiresAt: challenge.expiresAt,
-      channel: user.preferredOtpChannel ?? "EMAIL",
+      channel: chosenChannel,
       resendAvailableAt: challenge.resendAvailableAt,
       resendSecondsRemaining: challenge.resendSecondsRemaining,
     });
@@ -745,56 +759,68 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
   };
   identityVerificationEvents.push(event);
   kyc.bvn = parsed.data.bvn;
-  let otpChallengeForPhone = undefined;
+  let otpChallengeForPhone: undefined | {
+    challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; phoneLastFour: string; resendAvailableAt: string; resendSecondsRemaining: number; requiresPhoneVerification: true;
+  } = undefined;
   if (result.status === "SUCCESS") {
-    kyc.checklist.bvn = true;
-    kyc.bvnVerifiedAt = new Date().toISOString();
+    kyc.providerRequestId = result.providerReference;
+    kyc.providerRaw = result.rawResponse;
+    let identityPhone: string | undefined;
     if (user) {
       const details = result.normalizedFields ?? {};
       const idPhoneKeys = ["phone_number", "phoneNumber", "phone", "mobile", "telephoneno"];
-      let identityPhone = undefined;
       for (const key of idPhoneKeys) {
         if (typeof details[key] === "string" && String(details[key]).trim()) {
           identityPhone = String(details[key]).trim();
           break;
         }
       }
-      if (identityPhone) {
-        const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
-        let normalized = digitsOnly;
-        if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
-        if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user.phone) {
-          try {
-            const channel = user.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS";
-            const challenge = await createOtpChallenge(
-              user.id,
-              "KYC_VERIFICATION",
-              normalized,
-              user.email,
-              channel
-            );
-            otpChallengeForPhone = {
-              challengeId: challenge.id,
-              expiresAt: challenge.expiresAt,
-              channel,
-              phoneLastFour: normalized.slice(-4),
-              resendAvailableAt: challenge.resendAvailableAt,
-              resendSecondsRemaining: challenge.resendSecondsRemaining,
-              requiresPhoneVerification: true,
-            };
-          } catch (otpError) {
-            // ignore OTP rate limit errors for now, user can request later
-          }
-        }
+    }
+    let phoneRequiresOwnershipProof = false;
+    let normalizedPhone: string | undefined;
+    if (identityPhone) {
+      const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
+      let normalized = digitsOnly;
+      if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
+      normalizedPhone = normalized;
+      if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user?.phone) {
+        phoneRequiresOwnershipProof = true;
       }
+    }
+    if (phoneRequiresOwnershipProof && normalizedPhone) {
+      const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";
+      try {
+        const challenge = await createOtpChallenge(
+          req.user!.id,
+          "KYC_VERIFICATION",
+          normalizedPhone,
+          user?.email,
+          channel
+        );
+        otpChallengeForPhone = {
+          challengeId: challenge.id,
+          expiresAt: challenge.expiresAt,
+          channel,
+          phoneLastFour: normalizedPhone.slice(-4),
+          resendAvailableAt: challenge.resendAvailableAt,
+          resendSecondsRemaining: challenge.resendSecondsRemaining,
+          requiresPhoneVerification: true,
+        };
+      } catch (_otpError) {
+        // Ignore rate-limit on first attempt; user can resend
+      }
+    } else {
+      // Phone matches (or no identity phone) — ownership already considered proven
+      kyc.checklist.bvn = true;
+      kyc.bvnVerifiedAt = new Date().toISOString();
     }
   }
   if (user) {
     if (result.status === "SUCCESS" && !user.fullName.includes(parsed.data.firstName ?? "") && parsed.data.firstName) {
-      // Name matched: nothing to override yet — manual review can confirm      
+      // Names compared at manual review stage
     }
   }
-if (Object.values(kyc.checklist).every(Boolean)) {
+  if (Object.values(kyc.checklist).every(Boolean)) {
     kyc.status = "PENDING_VERIFICATION";
     kyc.submittedAt = kyc.submittedAt ?? new Date().toISOString();
   } else if (kyc.status === "NOT_STARTED") {
@@ -880,48 +906,59 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
   };
   identityVerificationEvents.push(event);
   kyc.nin = parsed.data.nin;
-  let ninOtpChallenge = undefined;
+  let ninOtpChallenge: undefined | {
+    challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; phoneLastFour: string; resendAvailableAt: string; resendSecondsRemaining: number; requiresPhoneVerification: true;
+  } = undefined;
   if (result.status === "SUCCESS") {
-    kyc.checklist.nin = true;
-    kyc.ninVerifiedAt = new Date().toISOString();
+    kyc.providerRequestId = result.providerReference;
+    kyc.providerRaw = result.rawResponse;
+    let identityPhone: string | undefined;
     if (user) {
       const details = result.normalizedFields ?? {};
       const idPhoneKeys = ["phone_number", "phoneNumber", "phone", "mobile", "telephoneno"];
-      let identityPhone = undefined;
       for (const key of idPhoneKeys) {
         if (typeof details[key] === "string" && String(details[key]).trim()) {
           identityPhone = String(details[key]).trim();
           break;
         }
       }
-      if (identityPhone) {
-        const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
-        let normalized = digitsOnly;
-        if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
-        if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user.phone) {
-          try {
-            const channel = user.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS";
-            const challenge = await createOtpChallenge(
-              user.id,
-              "KYC_VERIFICATION",
-              normalized,
-              user.email,
-              channel
-            );
-            ninOtpChallenge = {
-              challengeId: challenge.id,
-              expiresAt: challenge.expiresAt,
-              channel,
-              phoneLastFour: normalized.slice(-4),
-              resendAvailableAt: challenge.resendAvailableAt,
-              resendSecondsRemaining: challenge.resendSecondsRemaining,
-              requiresPhoneVerification: true,
-            };
-          } catch (otpError) {
-            // ignore
-          }
-        }
+    }
+    let phoneRequiresOwnershipProof = false;
+    let normalizedPhone: string | undefined;
+    if (identityPhone) {
+      const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
+      let normalized = digitsOnly;
+      if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
+      normalizedPhone = normalized;
+      if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user?.phone) {
+        phoneRequiresOwnershipProof = true;
       }
+    }
+    if (phoneRequiresOwnershipProof && normalizedPhone) {
+      const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";
+      try {
+        const challenge = await createOtpChallenge(
+          req.user!.id,
+          "KYC_VERIFICATION",
+          normalizedPhone,
+          user?.email,
+          channel
+        );
+        ninOtpChallenge = {
+          challengeId: challenge.id,
+          expiresAt: challenge.expiresAt,
+          channel,
+          phoneLastFour: normalizedPhone.slice(-4),
+          resendAvailableAt: challenge.resendAvailableAt,
+          resendSecondsRemaining: challenge.resendSecondsRemaining,
+          requiresPhoneVerification: true,
+        };
+      } catch (_otpError) {
+        // Ignore rate-limit on first attempt
+      }
+    } else {
+      kyc.checklist.nin = true;
+      kyc.ninVerifiedAt = new Date().toISOString();
     }
   }
   if (Object.values(kyc.checklist).every(Boolean)) {
@@ -942,6 +979,76 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     verifiedDetails: result.status === "SUCCESS" ? result.normalizedFields : undefined,
     otpChallenge: ninOtpChallenge,
   });
+});
+
+const kycConfirmOtpSchema = z.object({ idType: z.enum(["BVN","NIN"]), challengeId: z.string().min(1), code: z.string().regex(/^\d{6}$/, "6-digit OTP code is required"), channel: z.enum(["SMS","WHATSAPP"]).optional() });
+
+router.post("/me/kyc/verify-confirm-otp", requireAuth, async (req: AuthRequest, res) => {
+  const parsed = kycConfirmOtpSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const kyc = findOrCreateKycCase(req.user!.id);
+  const user = users.find((u) => u.id === req.user?.id);
+  try {
+    const verified = await verifyOtpChallenge(parsed.data.challengeId, parsed.data.code);
+    if (!verified || verified.action !== "KYC_VERIFICATION") {
+      res.status(400).json({ ok: false, error: "Invalid or expired OTP. Try resending." });
+      return;
+    }
+    const now = new Date().toISOString();
+    if (parsed.data.idType === "BVN") {
+      kyc.checklist.bvn = true;
+      if (!kyc.bvnVerifiedAt) kyc.bvnVerifiedAt = now;
+      kyc.updatedAt = now;
+    } else {
+      kyc.checklist.nin = true;
+      if (!kyc.ninVerifiedAt) kyc.ninVerifiedAt = now;
+      kyc.updatedAt = now;
+    }
+    markKycChecklistComplete(req.user!.id);
+    res.json({
+      ok: true,
+      idType: parsed.data.idType,
+      checklist: kyc.checklist,
+      status: kyc.status,
+      message: `${parsed.data.idType} ownership verified.`,
+    });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err instanceof Error ? err.message : "Unable to verify OTP" });
+  } finally {
+    if (user) user.kycStatus = kyc.status;
+  }
+});
+
+router.post("/me/kyc/verify-resend-otp", requireAuth, async (req: AuthRequest, res) => {
+  const schema = z.object({ idType: z.enum(["BVN","NIN"]), challengeId: z.string().min(1), channel: z.enum(["SMS","WHATSAPP"]).optional() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const found = findOtpChallenge(parsed.data.challengeId);
+  if (!found || found.userId !== req.user?.id || found.action !== "KYC_VERIFICATION") {
+    res.status(404).json({ ok: false, error: "Challenge not found. Start a new verification request." });
+    return;
+  }
+  const user = users.find((u) => u.id === req.user?.id);
+  try {
+    const channel = (parsed.data.channel ?? (found.deliveryChannel === "EMAIL" ? "SMS" : found.deliveryChannel)) as "SMS"|"WHATSAPP";
+    const challenge = await createOtpChallenge(found.userId, "KYC_VERIFICATION", found.phone ?? user?.phone, found.email ?? user?.email, channel);
+    res.json({
+      ok: true,
+      challengeId: challenge.id,
+      expiresAt: challenge.expiresAt,
+      channel: challenge.channel,
+      resendAvailableAt: challenge.resendAvailableAt,
+      resendSecondsRemaining: challenge.resendSecondsRemaining,
+    });
+  } catch (err) {
+    res.status(429).json({ ok: false, error: err instanceof Error ? err.message : "Unable to resend OTP right now." });
+  }
 });
 
 router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"), async (req: AuthRequest, res) => {
@@ -1141,6 +1248,125 @@ router.post("/investor/wallet/funding", requireAuth, requireRole("INVESTOR"), as
         "Funding intent created locally. Configure Flutterwave to produce a checkout link; otherwise verify manually.",
       error: error instanceof Error ? error.message : "Flutterwave unavailable",
     });
+  }
+});
+
+router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
+  const parsed = z.object({ transactionId: z.string().min(1) }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: "transactionId is required" });
+    return;
+  }
+  try {
+    const verification = await verifyTransaction(parsed.data.transactionId);
+    const fwData = (verification.data ?? {}) as Record<string, unknown>;
+    const txRef = (fwData.tx_ref as string) ?? undefined;
+    const flwRef = (fwData.flw_ref as string) ?? undefined;
+    const amount = Number(fwData.amount);
+    const chargeAmount = Number(fwData.charged_amount ?? fwData.amount);
+    const status = String(fwData.status ?? verification.status ?? "").toLowerCase();
+    const currency = String(fwData.currency ?? "NGN").toUpperCase();
+    if (!txRef) {
+      res.status(422).json({ ok: false, error: "Transaction reference missing from Flutterwave response" });
+      return;
+    }
+    if (status !== "successful" || currency !== "NGN") {
+      const pending = walletTransactions.find((t) => t.txRef === txRef);
+      if (pending && pending.status === "PENDING_PROVIDER_CONFIRMATION") {
+        pending.status = "FAILED";
+        pending.updatedAt = new Date().toISOString();
+        const wallet = findWallet(pending.userId);
+        wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
+      }
+      res.status(402).json({ ok: false, error: `Payment status=${status} currency=${currency}, wallet not credited`, txRef });
+      return;
+    }
+    const settled = settleWalletDeposit({ txRef, providerReference: flwRef, providerTransactionId: parsed.data.transactionId });
+    if (!settled.ok) {
+      res.status(409).json({ ok: false, error: settled.reason ?? "Unable to settle deposit", txRef });
+      return;
+    }
+    if (settled.user && settled.wallet && settled.reason !== "already_settled") {
+      try {
+        const email = investorWalletFundedEmail({
+          investorName: settled.user.fullName,
+          amountNaira: Number((settled.tx?.amountMinor ?? 0) / 100),
+          balanceNaira: Number(settled.wallet.availableMinor / 100),
+          reference: txRef,
+        });
+        await sendEmail({ to: settled.user.email, name: settled.user.fullName, subject: email.subject, html: email.html });
+      } catch (_emailErr) {
+        // Email failure is not fatal to funding settlement
+      }
+    }
+    res.json({ ok: true, settled: settled.tx, txRef, amount, chargeAmount, reason: settled.reason ?? "settled" });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err instanceof Error ? err.message : "Unable to reach Flutterwave" });
+  }
+});
+
+router.get("/payments/flutterwave/return", async (req, res) => {
+  const { status, tx_ref, transaction_id, flw_ref } = req.query as Record<string, string | undefined>;
+  let txRef = tx_ref;
+  let providerTxId = transaction_id;
+  let providerRef = flw_ref;
+  const safeRedirect = (ok: boolean, message: string) => {
+    const base = `${env.API_ORIGIN}/investor`;
+    const params = new URLSearchParams();
+    params.set("funding", ok ? "success" : "failed");
+    if (txRef) params.set("tx_ref", txRef);
+    if (message) params.set("message", message.slice(0, 200));
+    res.redirect(302, `${base}?${params.toString()}`);
+  };
+  try {
+    if (providerTxId) {
+      try {
+        const verification = await verifyTransaction(providerTxId);
+        const fwData = (verification.data ?? {}) as Record<string, unknown>;
+        txRef = (fwData.tx_ref as string) ?? txRef;
+        providerRef = (fwData.flw_ref as string) ?? providerRef;
+        const fwStatus = String(fwData.status ?? verification.status ?? "").toLowerCase();
+        const currency = String(fwData.currency ?? "NGN").toUpperCase();
+        if (fwStatus !== "successful" || currency !== "NGN") {
+          if (txRef) {
+            const pending = walletTransactions.find((t) => t.txRef === txRef);
+            if (pending && pending.status === "PENDING_PROVIDER_CONFIRMATION") {
+              pending.status = "FAILED";
+              pending.updatedAt = new Date().toISOString();
+              const wallet = findWallet(pending.userId);
+              wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
+            }
+          }
+          safeRedirect(false, `Payment status=${fwStatus || status || "unknown"}`);
+          return;
+        }
+      } catch (_verr) {
+        // If verify fails but tx_ref exists, continue; webhook may settle later
+      }
+    }
+    if (!txRef) {
+      safeRedirect(false, "No transaction reference in redirect");
+      return;
+    }
+    const settled = settleWalletDeposit({ txRef, providerReference: providerRef, providerTransactionId: providerTxId });
+    if (settled.user && settled.wallet && settled.reason !== "already_settled") {
+      try {
+        const email = investorWalletFundedEmail({
+          investorName: settled.user.fullName,
+          amountNaira: Number((settled.tx?.amountMinor ?? 0) / 100),
+          balanceNaira: Number(settled.wallet.availableMinor / 100),
+          reference: txRef,
+        });
+        await sendEmail({ to: settled.user.email, name: settled.user.fullName, subject: email.subject, html: email.html });
+      } catch (_emailErr) {
+        // Non-fatal
+      }
+    }
+    safeRedirect(settled.ok, settled.ok ? "Wallet has been credited successfully" : (settled.reason ?? "Unable to credit wallet"));
+    return;
+  } catch (err) {
+    safeRedirect(false, err instanceof Error ? err.message : "Server error while verifying payment");
+    return;
   }
 });
 
@@ -1467,7 +1693,7 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), (req
     factors: internalCredit.factors,
     createdAt: internalCredit.calculatedAt,
   });
-  const application: (typeof loanApplications)[number] = {
+  const application: (typeof loanApplications)[number] = seedLoanStageStatuses({
     id: randomUUID(),
     applicationId: input.applicationId ?? randomUUID(),
     borrowerId: req.user!.id,
@@ -1477,6 +1703,8 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), (req
     amountNaira,
     tenureDays: input.loanRequest?.tenure,
     status: "UNDER_REVIEW",
+    stageStatuses: { profile: "COMPLETED", employment: "COMPLETED", bvn_nin: "COMPLETED", address: "COMPLETED", liveness: "COMPLETED", loan_details: "COMPLETED", documents: "COMPLETED", disbursement_account: "COMPLETED", consent: "COMPLETED", credit_review: "PENDING_REVIEW", risk_review: "PENDING_REVIEW", approval: "PENDING_REVIEW" },
+    stageRejectionNotes: {},
     systemDecision: eligibility as unknown as Record<string, unknown>,
     manualDecision: "PENDING",
     disbursementInstitution: "VELO",
@@ -1484,7 +1712,7 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), (req
     createdAt: now,
     updatedAt: now,
     submittedAt: now,
-  };
+  });
   loanApplications.push(application);
   creditHistory.push({
     id: randomUUID(),
@@ -1957,9 +2185,11 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
   kyc.status = parsed.data.decision as KycStatus;
   kyc.reviewedBy = (req as AuthRequest).user?.id ?? "unknown-admin";
   kyc.reviewedAt = new Date().toISOString();
+  if (parsed.data.decision === "VERIFIED" && !kyc.verifiedAt) kyc.verifiedAt = kyc.reviewedAt;
   if (parsed.data.decision === "REJECTED") kyc.rejectionReason = parsed.data.note || "Admin rejected KYC";
   if (parsed.data.checklistOverride) Object.assign(kyc.checklist, parsed.data.checklistOverride);
   kyc.updatedAt = new Date().toISOString();
+  if (parsed.data.checklistOverride) markKycChecklistComplete(kyc.userId);
   const user = users.find((u) => u.id === kyc.userId);
   if (user) user.kycStatus = kyc.status;
   res.json({ ok: true, case: kyc, before });
@@ -1975,13 +2205,14 @@ router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
     const applicantType = business?.businessName ? "BUSINESS" : "PERSONAL";
     const searchable = JSON.stringify({ application, snapshot }).toLowerCase();
     return (!status || application.status === status) && (!type || applicantType === type) && (!search || searchable.includes(search));
-  });
+  }).map((a) => seedLoanStageStatuses(a));
   const page = paginate(filtered, req.query as Record<string, unknown>);
-  res.json({ ok: true, loans: page.items, disbursedLoans: loans, meta: page.meta });
+  res.json({ ok: true, loans: page.items, disbursedLoans: loans, meta: page.meta, stages: LOAN_STAGES });
 });
 
 router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), (req, res) => {
   const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
+  if (application) seedLoanStageStatuses(application);
   const loan = loans.find((l) => l.applicationId === req.params.loanId || l.id === req.params.loanId);
   if (!application && !loan) {
     res.status(404).json({ ok: false, error: "Loan not found" });
@@ -1991,6 +2222,7 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), (req, res)
     ok: true,
     application,
     loan,
+    stages: LOAN_STAGES,
     schedule: loan ? loanSchedules.filter((s) => s.loanId === loan.id) : [],
     repayments: loan ? repayments.filter((r) => r.loanId === loan.id) : [],
     creditHistory: application ? creditHistory.filter((c) => c.userId === application.borrowerId) : [],
@@ -2073,6 +2305,119 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
     application.status = "REJECTED";
   } else {
     application.status = "MORE_INFORMATION_REQUIRED";
+  }
+  application.updatedAt = new Date().toISOString();
+  res.json({ ok: true, application });
+});
+
+router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const parsed = z.object({
+    decision: z.enum(["APPROVED", "REJECTED"]),
+    note: z.string().max(2000).default(""),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
+  if (!application) {
+    res.status(404).json({ ok: false, error: "Loan application not found" });
+    return;
+  }
+  const stageKey = req.params.stageKey as LoanStageKey;
+  const valid = LOAN_STAGES.some((s) => s.key === stageKey);
+  if (!valid) {
+    res.status(400).json({ ok: false, error: `Unknown stage key ${stageKey}` });
+    return;
+  }
+  seedLoanStageStatuses(application);
+  const now = new Date().toISOString();
+  application.stageStatuses[stageKey] = parsed.data.decision;
+  if (parsed.data.decision === "REJECTED") {
+    application.stageRejectionNotes[stageKey] = parsed.data.note;
+  } else {
+    delete application.stageRejectionNotes[stageKey];
+  }
+  application.updatedAt = now;
+  const allApproved = LOAN_STAGES.every((s) => application.stageStatuses[s.key] === "APPROVED");
+  if (allApproved && parsed.data.decision === "APPROVED") {
+    application.status = "APPROVED";
+    application.approvedAt = application.approvedAt ?? now;
+    application.manualDecision = "APPROVED";
+  }
+  res.json({ ok: true, application, allStagesApproved: allApproved });
+});
+
+router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const parsed = z.object({ note: z.string().max(2000).default("") }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
+  if (!application) {
+    res.status(404).json({ ok: false, error: "Loan application not found" });
+    return;
+  }
+  seedLoanStageStatuses(application);
+  const now = new Date().toISOString();
+  for (const stage of LOAN_STAGES) application.stageStatuses[stage.key] = "APPROVED";
+  application.stageRejectionNotes = {};
+  application.updatedAt = now;
+  application.status = "APPROVED";
+  application.approvedAt = application.approvedAt ?? now;
+  application.manualDecision = "APPROVED";
+  application.manualNote = parsed.data.note || application.manualNote;
+  if (!loans.some((l) => l.applicationId === application.id)) {
+    const product = loanProducts[0];
+    const principal = Number(application.amountNaira ?? 0);
+    const tenure = application.tenureDays ?? product?.defaultTenureDays ?? 90;
+    const rate = (product?.interestRatePercent ?? 18) / 100;
+    const processing = principal * ((product?.processingFeePercent ?? 2) / 100);
+    const interest = principal * rate * (tenure / 365);
+    const totalRepayment = principal + interest + processing;
+    const dueAt = new Date(Date.now() + tenure * 86400000).toISOString();
+    const loanRecord: (typeof loans)[number] = {
+      id: randomUUID(),
+      applicationId: application.id,
+      borrowerId: application.borrowerId,
+      principalNaira: principal,
+      totalInterestNaira: Math.round(interest * 100) / 100,
+      totalFeesNaira: Math.round(processing * 100) / 100,
+      totalRepaymentNaira: Math.round(totalRepayment * 100) / 100,
+      outstandingNaira: Math.round(totalRepayment * 100) / 100,
+      tenureDays: tenure,
+      status: "DISBURSEMENT_PENDING",
+      dueAt,
+      createdAt: now,
+      updatedAt: now,
+    };
+    loans.push(loanRecord);
+    const scheduleCount = Math.max(1, Math.round(tenure / 30));
+    for (let i = 1; i <= scheduleCount; i++) {
+      loanSchedules.push({
+        id: randomUUID(),
+        loanId: loanRecord.id,
+        installmentNumber: i,
+        dueDate: new Date(Date.now() + (tenure / scheduleCount) * i * 86400000).toISOString().slice(0, 10),
+        principalNaira: Math.round((principal / scheduleCount) * 100) / 100,
+        interestNaira: Math.round((interest / scheduleCount) * 100) / 100,
+        feesNaira: i === 1 ? Math.round(processing * 100) / 100 : 0,
+        totalDueNaira: Math.round((totalRepayment / scheduleCount) * 100) / 100,
+        totalPaidNaira: 0,
+        status: "PENDING",
+        createdAt: now,
+      });
+    }
+    creditHistory.push({
+      id: randomUUID(),
+      userId: application.borrowerId,
+      loanId: null as unknown as string,
+      eventType: "LOAN_APPROVED",
+      detail: `Loan application ${application.applicationId} approved via one-click stage approval`,
+      occurredAt: now,
+      createdAt: now,
+    });
   }
   res.json({ ok: true, application });
 });

@@ -26,6 +26,16 @@ export default function BorrowerDashboard() {
   const [accountName, setAccountName] = useState("");
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountMsg, setAccountMsg] = useState("");
+  const [view, setView] = useState<"overview" | "applications" | "repayments" | "kyc" | "account" | "credit" | "profile">("overview");
+  const borrowerMenu: Array<{ key: typeof view; label: string; icon: string; hint?: string }> = [
+    { key: "overview", label: "Overview", icon: "🏠", hint: "Summary & KPIs" },
+    { key: "applications", label: "Applications", icon: "📝", hint: "Loan requests" },
+    { key: "repayments", label: "Repayments", icon: "💸", hint: "Schedules & history" },
+    { key: "credit", label: "Credit score", icon: "⭐", hint: "Score & factors" },
+    { key: "kyc", label: "Verification", icon: "✅", hint: "Identity checks" },
+    { key: "account", label: "Disbursement", icon: "🏦", hint: "Bank account" },
+    { key: "profile", label: "Profile", icon: "👤", hint: "Personal information" },
+  ];
 
   useEffect(() => {
     if (!user) return;
@@ -88,6 +98,76 @@ export default function BorrowerDashboard() {
 
   return (
     <Layout>
+      <div className="flex flex-col lg:flex-row gap-6 min-h-[calc(100vh-12rem)]">
+        <aside className="lg:w-72 shrink-0">
+          <div className="velo-card p-5 rounded-2xl border-0 dark:border-slate-800 shadow-[0_20px_60px_-20px_rgba(79,70,229,0.12)] dark:shadow-none sticky top-4 overflow-hidden bg-gradient-to-br from-indigo-50 via-white to-white dark:from-slate-900 dark:via-slate-900 dark:to-slate-900 relative">
+            <div className="absolute -top-12 -right-12 w-40 h-40 rounded-full bg-indigo-400/20 blur-3xl pointer-events-none" />
+            <div className="absolute bottom-0 left-0 w-32 h-32 rounded-full bg-velo-400/10 blur-3xl pointer-events-none" />
+            <div className="relative">
+              <div className="flex items-center gap-3 p-3 rounded-2xl bg-white/60 dark:bg-slate-800/60 border border-indigo-100/70 dark:border-slate-700/60 backdrop-blur">
+                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-velo-500 to-indigo-600 text-white font-black text-lg shadow-md shadow-indigo-500/30">
+                  {user?.fullName?.charAt(0)?.toUpperCase() || "V"}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-bold text-velo-900 dark:text-white truncate">
+                    {user?.fullName || "Borrower"}
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    {user?.email || "Welcome aboard"}
+                  </div>
+                </div>
+              </div>
+
+              <nav className="mt-6 space-y-1">
+                {borrowerMenu.map((item) => {
+                  const active = view === item.key;
+                  return (
+                    <button
+                      key={item.key}
+                      onClick={() => setView(item.key)}
+                      className={`w-full group flex items-center gap-3 px-3.5 py-3 rounded-xl transition-all duration-200 text-left ${
+                        active
+                          ? "bg-gradient-to-r from-velo-600 to-velo-500 text-white shadow-md shadow-velo-500/25 hover:shadow-lg hover:shadow-velo-500/30"
+                          : "text-slate-600 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-slate-800/60 hover:text-velo-900 dark:hover:text-white"
+                      }`}
+                    >
+                      <span className={`text-xl shrink-0 ${active ? "" : "opacity-90"}`}>{item.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-sm font-bold ${active ? "" : "group-hover:font-extrabold"}`}>{item.label}</div>
+                        {item.hint && (
+                          <div className={`text-[10px] truncate ${active ? "text-indigo-50/90" : "text-slate-500 dark:text-slate-400"}`}>{item.hint}</div>
+                        )}
+                      </div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className={`shrink-0 transition-transform ${active ? "text-white translate-x-0.5" : "text-slate-400 group-hover:translate-x-0.5"}`}>
+                        <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  );
+                })}
+              </nav>
+
+              <div className="mt-8 pt-5 border-t border-indigo-100/80 dark:border-slate-800">
+                <div className="rounded-2xl bg-gradient-to-br from-velo-600 via-velo-700 to-indigo-700 text-white p-4 shadow-lg shadow-velo-600/20">
+                  <div className="text-[11px] uppercase tracking-wider font-bold text-indigo-100/85">Account status</div>
+                  <div className="mt-1 text-lg font-black">
+                    {hasSubmittedApplication ? "📋 Application started" : user?.kycStatus === "VERIFIED" ? "✅ Verified — apply now" : "🔒 Complete KYC first"}
+                  </div>
+                  <div className="mt-1 text-[11px] text-indigo-100/80">
+                    {!hasSubmittedApplication ? (
+                      <Link to="/apply" className="underline underline-offset-2 font-semibold hover:text-white">
+                        Start a new loan application →
+                      </Link>
+                    ) : (
+                      "You can track every stage of your request here."
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <main className="flex-1 min-w-0 space-y-6">
       <div className="space-y-6">
         {/* Role switcher / enable investor banner */}
         {user && (
@@ -387,6 +467,8 @@ export default function BorrowerDashboard() {
             </form>
           )}
         </section>
+      </div>
+        </main>
       </div>
     </Layout>
   );

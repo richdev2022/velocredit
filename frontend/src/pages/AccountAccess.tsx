@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import { useAuth } from "../context/AuthContext";
-import { resendRegistrationOtp, type OtpChannel, type RegistrationVerification } from "../services/apiClient";
+import { resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired } from "../services/apiClient";
 
 type Mode = "login" | "register" | "forgot";
 
@@ -29,6 +29,7 @@ export default function AccountAccess() {
   const [newPassword, setNewPassword] = useState("");
   const [preferredOtpChannel, setPreferredOtpChannel] = useState<OtpChannel>("EMAIL");
   const [signupVerification, setSignupVerification] = useState<RegistrationVerification | null>(null);
+  const [loginOtpUser, setLoginOtpUser] = useState<LoginOtpRequired | null>(null);
   const [otpCode, setOtpCode] = useState("");
   const [otpRemaining, setOtpRemaining] = useState(0);
 
@@ -66,6 +67,9 @@ export default function AccountAccess() {
     setMode(next);
     setError("");
     setSuccess("");
+    setLoginOtpUser(null);
+    setSignupVerification(null);
+    setOtpCode("");
   }
 
   async function submit(event: React.FormEvent) {
@@ -76,8 +80,20 @@ export default function AccountAccess() {
 
     try {
       if (mode === "login") {
-        const loggedInUser = await login(email, password);
-        navigate(loggedInUser.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
+        if (signupVerification) {
+          const verifiedUser = await verifyRegistrationOtp({ userId: signupVerification.userId, challengeId: signupVerification.challengeId, code: otpCode });
+          navigate(verifiedUser.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
+          return;
+        }
+        const result = await login(email, password);
+        if ("requiresOtp" in result && result.requiresOtp) {
+          setLoginOtpUser(result);
+          setError("");
+          setSuccess(result.error || "Your account needs verification. Choose how we send your one-time code.");
+          return;
+        }
+        const loggedIn = result as { roles: string[] };
+        navigate(loggedIn.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
       } else if (mode === "register") {
         if (signupVerification) {
           const verifiedUser = await verifyRegistrationOtp({ userId: signupVerification.userId, challengeId: signupVerification.challengeId, code: otpCode });
@@ -125,6 +141,22 @@ export default function AccountAccess() {
       setSuccess(`A new OTP was sent via ${next.channel.toLowerCase()}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to resend OTP");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseLoginOtpChannel(channel: OtpChannel) {
+    if (!loginOtpUser) return;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await resendRegistrationOtp(loginOtpUser.userId, channel);
+      setSignupVerification(next);
+      setOtpRemaining(next.resendSecondsRemaining);
+      setSuccess(`We've sent a 6-digit code to you via ${channel.toLowerCase()}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to send OTP. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -664,7 +696,35 @@ export default function AccountAccess() {
                       </label>
                     )}
 
-                    {mode === "register" && signupVerification && (
+                    {mode === "login" && loginOtpUser && !signupVerification && (
+                      <div className="space-y-3 rounded-2xl border border-velo-100 bg-velo-50/70 p-4 dark:border-velo-900/40 dark:bg-velo-900/20">
+                        <div>
+                          <p className="text-sm font-semibold text-velo-900 dark:text-white">Account not yet verified</p>
+                          <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                            Your account needs a one-time verification code before you can sign in. How should we send your 6-digit code?
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          {(loginOtpUser.channels).map((channel) => {
+                          const label = channel === "SMS" ? { title: "Text message (SMS)", svg: "📱" } : channel === "WHATSAPP" ? { title: "WhatsApp", svg: "💬" } : { title: "Email", svg: "✉️" };
+                          return (
+                            <button
+                              key={channel}
+                              type="button"
+                              disabled={busy}
+                              onClick={() => chooseLoginOtpChannel(channel)}
+                              className="group flex flex-col items-center justify-center gap-2 py-4 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-velo-400 dark:hover:border-velo-500 hover:shadow-md transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                              <span className="text-2xl">{label.svg}</span>
+                              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-400">{label.title}</span>
+                            </button>
+                          );
+                        })}
+                        </div>
+                      </div>
+                    )}
+
+                    {signupVerification && (
                       <div className="space-y-4 rounded-2xl border border-velo-100 bg-velo-50/70 p-4 dark:border-velo-900/40 dark:bg-velo-900/20">
                         <div>
                           <p className="text-sm font-semibold text-velo-900 dark:text-white">Verify your account</p>
@@ -703,7 +763,11 @@ export default function AccountAccess() {
                           ? "bg-gradient-to-r from-emerald-600 to-emerald-500 shadow-emerald-500/25 hover:shadow-emerald-500/40"
                           : "bg-gradient-to-r from-velo-600 to-velo-500 shadow-velo-500/25 hover:shadow-velo-500/40"
                       }`}
-                      disabled={busy || (mode === "register" && (signupVerification ? otpCode.length !== 6 : (!passwordMatch || !passwordStrong)))}
+                      disabled={
+                        busy ||
+                        (mode === "login" && signupVerification ? otpCode.length !== 6 : false) ||
+                        (mode === "register" && (signupVerification ? otpCode.length !== 6 : (!passwordMatch || !passwordStrong)))
+                      }
                     >
                       {busy ? (
                         <span className="inline-flex items-center gap-2 justify-center">
@@ -714,7 +778,7 @@ export default function AccountAccess() {
                           Please wait…
                         </span>
                       ) : mode === "login" ? (
-                        "Sign in"
+                        signupVerification ? "Verify code and sign in" : "Sign in"
                       ) : mode === "forgot" ? (
                         resetId && resetToken ? "Confirm new password" : "Send reset link"
                       ) : (
