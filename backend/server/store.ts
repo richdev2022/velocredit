@@ -158,9 +158,66 @@ export interface PayoutAccount {
   accountNumber: string;
   accountName?: string;
   accountNameEnquiryResult?: string;
+  isDefault?: boolean;
   status: "PENDING_VERIFICATION" | "VERIFIED" | "REJECTED" | "EXPIRED";
   verifiedAt?: string;
   verificationReference?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+export type DisbursementAccountStatus = "ACTIVE" | "PENDING_APPROVAL" | "REJECTED";
+export interface DisbursementAccount {
+  id: string;
+  borrowerId: string;
+  bankName?: string;
+  bankCode: string;
+  accountNumber: string;
+  accountName?: string;
+  accountNameEnquiryResult?: string;
+  status: DisbursementAccountStatus;
+  verifiedAt?: string;
+  verificationReference?: string;
+  rejectionReason?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+export type DisbursementStatus = "PENDING" | "PROCESSING" | "SUCCESSFUL" | "FAILED" | "PENDING_APPROVAL";
+export interface LoanDisbursement {
+  id: string;
+  loanId: string;
+  applicationId?: string;
+  borrowerId: string;
+  amountNaira: number;
+  currency: "NGN";
+  bankCode?: string;
+  bankName?: string;
+  accountNumber?: string;
+  accountName?: string;
+  status: DisbursementStatus;
+  narration?: string;
+  providerTransfer?: Record<string, unknown> | null;
+  providerReference?: string | null;
+  error?: string | null;
+  adminNote?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  processedAt?: string;
+  retryOfId?: string | null;
+  retryCount?: number;
+}
+export type AccountChangeRequestType = "INVESTOR_PAYOUT_ACCOUNT" | "BORROWER_DISBURSEMENT_ACCOUNT";
+export type AccountChangeRequestStatus = "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
+export interface AccountChangeRequest {
+  id: string;
+  userId: string;
+  type: AccountChangeRequestType;
+  status: AccountChangeRequestStatus;
+  existingSnapshot?: Record<string, unknown> | null;
+  newSnapshot: Record<string, unknown>;
+  reason?: string | null;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  rejectionReason?: string | null;
   createdAt: string;
   updatedAt?: string;
 }
@@ -272,6 +329,8 @@ export interface Loan {
   totalFeesNaira: number;
   totalRepaymentNaira: number;
   outstandingNaira: number;
+  outstandingPrincipalNaira?: number;
+  outstandingInterestNaira?: number;
   tenureDays: number;
   status: LoanStatus;
   disbursedAt?: string;
@@ -471,9 +530,11 @@ export interface Consent {
 
 export interface AdminLedgerEntry {
   id: string;
-  entryType: "INVESTOR_FUNDING" | "INVESTMENT_PAYOUT" | "INVESTMENT_RETURN_CREDIT" | "WITHDRAWAL_FEE" | "PLATFORM_EARNING" | "MANUAL_ADJUSTMENT" | "REVERSAL";
+  entryType: "INVESTOR_FUNDING" | "INVESTMENT_PAYOUT" | "INVESTMENT_RETURN_CREDIT" | "WITHDRAWAL_FEE" | "PLATFORM_EARNING" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "FUNDING_IN" | "WALLET_CREDIT" | "LOAN_DISBURSEMENT" | "LOAN_REPAYMENT_IN" | "INVESTMENT_RETURN";
   referenceId?: string;
   investorId?: string;
+  borrowerId?: string;
+  loanId?: string;
   amountMinor: number;
   direction: "DEBIT" | "CREDIT";
   balanceAfterMinor: number;
@@ -518,7 +579,8 @@ type StoreKey =
   | "investments" | "loanApplications" | "loans" | "loanSchedules" | "repayments"
   | "payouts" | "creditHistory" | "creditScores" | "creditReports" | "otpChallenges"
   | "passwordResetTokens" | "notifications" | "providerEvents" | "consents" | "loanProducts" | "auditLogs"
-  | "adminLedger" | "platformSettings" | "investorWithdrawals";
+  | "adminLedger" | "platformSettings" | "investorWithdrawals"
+  | "disbursementAccounts" | "loanDisbursements" | "accountChangeRequests";
 
 const storeKeys: StoreKey[] = [
   "users", "wallets", "ledgerEntries", "walletTransactions", "kycCases",
@@ -527,6 +589,7 @@ const storeKeys: StoreKey[] = [
   "creditHistory", "creditScores", "creditReports", "otpChallenges", "passwordResetTokens",
   "notifications", "providerEvents", "consents", "loanProducts", "auditLogs",
   "adminLedger", "platformSettings", "investorWithdrawals",
+  "disbursementAccounts", "loanDisbursements", "accountChangeRequests",
 ];
 
 const rawState = {} as Record<StoreKey, unknown[]>;
@@ -614,6 +677,9 @@ export const auditLogs = createPersistentArray<AuditLog>("auditLogs");
 export const adminLedger = createPersistentArray<AdminLedgerEntry>("adminLedger");
 export const platformSettings = createPersistentArray<PlatformSettings>("platformSettings");
 export const investorWithdrawals = createPersistentArray<InvestorWithdrawal>("investorWithdrawals");
+export const disbursementAccounts = createPersistentArray<DisbursementAccount>("disbursementAccounts");
+export const loanDisbursements = createPersistentArray<LoanDisbursement>("loanDisbursements");
+export const accountChangeRequests = createPersistentArray<AccountChangeRequest>("accountChangeRequests");
 
 const collections: Record<StoreKey, unknown[]> = {
   users, wallets, ledgerEntries, walletTransactions, kycCases, identityVerificationEvents,
@@ -621,6 +687,7 @@ const collections: Record<StoreKey, unknown[]> = {
   loanSchedules, repayments, payouts, creditHistory, creditScores, creditReports,
   otpChallenges, passwordResetTokens, notifications, providerEvents, consents, loanProducts, auditLogs,
   adminLedger, platformSettings, investorWithdrawals,
+  disbursementAccounts, loanDisbursements, accountChangeRequests,
 };
 
 function snapshotStore(): Record<StoreKey, unknown[]> {
@@ -745,12 +812,26 @@ export function settleWalletDeposit(params: {
   const now = new Date().toISOString();
   wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - tx.amountMinor);
   appendAdminLedger({
-    entryType: "INVESTOR_FUNDING",
+    entryType: "FUNDING_IN",
+    referenceId: tx.id,
+    investorId: tx.userId,
+    amountMinor: tx.amountMinor,
+    direction: "CREDIT",
+    description: `Admin ledger credit for investor float funding received - txRef: ${params.txRef}`,
+    metadata: {
+      provider: tx.provider ?? "provider",
+      providerReference: params.providerReference,
+      providerTransactionId: params.providerTransactionId,
+      txRef: params.txRef,
+    },
+  });
+  appendAdminLedger({
+    entryType: "WALLET_CREDIT",
     referenceId: tx.id,
     investorId: tx.userId,
     amountMinor: tx.amountMinor,
     direction: "DEBIT",
-    description: `Admin ledger debit for investor wallet funding - txRef: ${params.txRef}`,
+    description: `Admin ledger debit to credit investor wallet - txRef: ${params.txRef}`,
     metadata: {
       provider: tx.provider ?? "provider",
       providerReference: params.providerReference,

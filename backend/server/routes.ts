@@ -64,6 +64,9 @@ import {
   seedLoanStageStatuses,
   type StageStatus,
   type LoanStageKey,
+  loanDisbursements,
+  disbursementAccounts,
+  accountChangeRequests,
 } from "./store.js";
 import { env } from "./config.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
@@ -76,6 +79,7 @@ import {
   initializeWalletFunding,
   verifyTransaction,
   resolveBankAccount,
+  listBanks,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
 import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail } from "./email.js";
@@ -1881,22 +1885,58 @@ router.post("/borrower/loans/:loanId/repayments", requireAuth, requireRole("BORR
     res.status(404).json({ ok: false, error: "Loan not found" });
     return;
   }
+  if (loan.status === "REPAID" || loan.status === "CANCELLED" || loan.status === "WRITTEN_OFF") {
+    res.status(400).json({ ok: false, error: `No repayment needed for a loan in ${loan.status} status` });
+    return;
+  }
   const parsed = amountSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: "amountNaira must be a positive number" });
     return;
   }
+  const maxAllowed = Number(loan.outstandingNaira ?? loan.totalRepaymentNaira ?? loan.principalNaira ?? 0);
+  const minAllowed = 50;
+  const desired = Number(parsed.data.amountNaira);
+  if (maxAllowed <= 0) {
+    res.status(400).json({ ok: false, error: "This loan has no outstanding balance" });
+    return;
+  }
+  if (desired < minAllowed) {
+    res.status(400).json({
+      ok: false,
+      error: `Minimum repayment amount is ₦${minAllowed.toLocaleString("en-NG")}`,
+      minAllowedNaira: minAllowed,
+      maxAllowedNaira: maxAllowed,
+    });
+    return;
+  }
+  if (desired > maxAllowed + 0.01) {
+    res.status(400).json({
+      ok: false,
+      error: `You cannot repay more than the outstanding ₦${maxAllowed.toLocaleString("en-NG")}`,
+      minAllowedNaira: minAllowed,
+      maxAllowedNaira: maxAllowed,
+    });
+    return;
+  }
+  const roundedAmount = Math.round(desired * 100) / 100;
   const user = users.find((item) => item.id === req.user!.id);
   const txRef = `VELO-REPAY-${randomUUID()}`;
   const now = new Date().toISOString();
   const dueAt = loan.dueAt ? new Date(loan.dueAt) : null;
   const onTime = dueAt ? new Date(now) <= dueAt : true;
+  const isFullPayoff = roundedAmount >= maxAllowed - 0.01;
+  const estimatedPrincipal = Math.min(
+    Number(loan.outstandingPrincipalNaira ?? loan.principalNaira ?? maxAllowed),
+    roundedAmount
+  );
+  const estimatedInterest = Math.max(0, roundedAmount - estimatedPrincipal);
   const repayment: (typeof repayments)[number] = {
     id: randomUUID(),
     txRef,
     loanId: loan.id,
     borrowerId: req.user!.id,
-    amountNaira: parsed.data.amountNaira,
+    amountNaira: roundedAmount,
     currency: "NGN",
     status: "PENDING_PROVIDER_CONFIRMATION",
     onTime,
@@ -1916,8 +1956,17 @@ router.post("/borrower/loans/:loanId/repayments", requireAuth, requireRole("BORR
       ok: true,
       repayment,
       checkout,
-      message:
-        "Complete Flutterwave checkout. The payment is recorded only after verified webhook settlement.",
+      repaymentContext: {
+        isFullPayoff,
+        minAllowedNaira: minAllowed,
+        maxAllowedNaira: maxAllowed,
+        outstandingNaira: maxAllowed,
+        estimatedPrincipalNaira: Math.round(estimatedPrincipal * 100) / 100,
+        estimatedInterestNaira: Math.round(estimatedInterest * 100) / 100,
+      },
+      message: isFullPayoff
+        ? "Complete Flutterwave checkout to settle the full outstanding balance."
+        : "Complete Flutterwave checkout to record the partial repayment.",
     });
   } catch (error) {
     repayment.status = "PROVIDER_NOT_CONFIGURED";
@@ -2443,6 +2492,45 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     return;
   }
   try {
+    const amountMinor = Math.round(Number(loan.principalNaira) * 100);
+    appendAdminLedger({
+      entryType: "LOAN_DISBURSEMENT",
+      referenceId: loan.id,
+      borrowerId: loan.borrowerId,
+      loanId: loan.id,
+      amountMinor,
+      direction: "DEBIT",
+      description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
+      metadata: {
+        provider: "flutterwave",
+        applicationId: application?.applicationId,
+        accountBank: account.bankCode,
+        accountNumber: account.accountNumber,
+      },
+    });
+    const now = new Date().toISOString();
+    const disbursement: (typeof import("./store.js").loanDisbursements)[number] = {
+      id: randomUUID(),
+      loanId: loan.id,
+      applicationId: application?.id,
+      borrowerId: loan.borrowerId,
+      amountNaira: Number(loan.principalNaira),
+      currency: "NGN",
+      bankCode: account.bankCode,
+      accountNumber: account.accountNumber,
+      accountName: account.accountName ?? snapshot.fullName,
+      bankName: account.bankCode,
+      status: "PROCESSING",
+      narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
+      retryCount: 0,
+      retryOfId: null,
+      createdAt: now,
+      updatedAt: now,
+      providerTransfer: null,
+      providerReference: null,
+      error: null,
+    };
+    loanDisbursements.push(disbursement);
     const transfer = await createLoanDisbursement({
       txRef: `VELO-DISBURSE-${loan.id}`,
       amountNaira: Number(loan.principalNaira),
@@ -2451,9 +2539,13 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       beneficiaryName: account.accountName ?? snapshot.fullName ?? "Borrower",
       narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
     });
+    disbursement.providerTransfer = transfer as unknown as Record<string, unknown>;
+    disbursement.providerReference = (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? disbursement.id);
+    disbursement.status = "PENDING";
+    disbursement.processedAt = now;
+    disbursement.updatedAt = now;
     loan.status = "DISBURSEMENT_PENDING";
     loan.providerTransfer = transfer;
-    const now = new Date().toISOString();
     loan.updatedAt = now;
     creditHistory.push({
       id: randomUUID(),
@@ -2464,11 +2556,18 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       occurredAt: now,
       createdAt: now,
     });
-    res.status(202).json({ ok: true, loan, transfer });
+    res.status(202).json({ ok: true, loan, transfer, disbursement });
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
+    const last = loanDisbursements[loanDisbursements.length - 1];
+    if (last && last.loanId === loan.id && last.status === "PROCESSING") {
+      last.status = "FAILED";
+      last.error = errMsg;
+      last.updatedAt = new Date().toISOString();
+    }
     res.status(503).json({
       ok: false,
-      error: error instanceof Error ? error.message : "Flutterwave transfer unavailable",
+      error: errMsg,
     });
   }
 });
@@ -3131,6 +3230,515 @@ router.put("/admin/withdrawals/:withdrawalId/reject", requireAuth, requireRole("
   w.status = "REJECTED";
   w.updatedAt = new Date().toISOString();
   res.json({ ok: true, withdrawal: w });
+});
+
+router.get("/providers/flutterwave/banks", requireAuth, async (_req, res) => {
+  try {
+    const result = await listBanks("NG");
+    const banks = Array.isArray(result.data)
+      ? result.data
+          .filter((b) => b && b.code && b.name)
+          .map((b) => ({ id: b.id, code: String(b.code), name: String(b.name), is_nuban_bank: b.is_nuban_bank ?? true }))
+      : [];
+    res.json({ ok: true, banks });
+  } catch (error) {
+    res.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Unable to load Flutterwave banks",
+    });
+  }
+});
+
+router.get("/investor/payout-accounts", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  const accounts = payoutAccounts.filter((a) => a.userId === userId);
+  const pendingRequests = accountChangeRequests.filter(
+    (r) => r.userId === userId && r.type === "INVESTOR_PAYOUT_ACCOUNT"
+  );
+  res.json({ ok: true, accounts, pendingRequests });
+});
+
+router.post("/investor/payout-accounts/resolve", requireAuth, requireRole("INVESTOR"), async (req, res) => {
+  const schema = z.object({
+    accountNumber: z.string().regex(/^\d{10}$/, "10-digit account number required"),
+    bankCode: z.string().min(1),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const result = await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode);
+    if (!result.data?.account_name) {
+      res.status(422).json({ ok: false, error: "Unable to resolve account name", result });
+      return;
+    }
+    res.json({
+      ok: true,
+      resolved: {
+        accountName: String(result.data.account_name),
+        accountNumber: String(result.data.account_number ?? parsed.data.accountNumber),
+      },
+    });
+  } catch (error) {
+    res.status(422).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Unable to verify account",
+    });
+  }
+});
+
+router.post("/investor/payout-accounts", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  const parsed = payoutAccountSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const userId = req.user!.id;
+  const now = new Date().toISOString();
+  const existing = payoutAccounts.find((a) => a.userId === userId);
+  if (!existing) {
+    const account = {
+      id: randomUUID(),
+      userId,
+      ...parsed.data,
+      isDefault: true,
+      status: "VERIFIED" as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    payoutAccounts.push(account);
+    res.json({ ok: true, account, message: "Payout account saved successfully" });
+    return;
+  }
+  const request = {
+    id: randomUUID(),
+    userId,
+    type: "INVESTOR_PAYOUT_ACCOUNT" as const,
+    status: "PENDING_APPROVAL" as const,
+    existingSnapshot: JSON.parse(JSON.stringify(existing)),
+    newSnapshot: parsed.data as unknown as Record<string, unknown>,
+    reason: "Investor requested payout account update",
+    reviewedBy: null,
+    reviewedAt: null,
+    rejectionReason: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  accountChangeRequests.push(request);
+  res.status(202).json({
+    ok: true,
+    pendingApproval: true,
+    request,
+    message: "Your payout account update has been submitted and is awaiting admin approval.",
+  });
+});
+
+router.put("/investor/payout-accounts/:accountId", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  const existing = payoutAccounts.find((a) => a.id === req.params.accountId && a.userId === userId);
+  const parsed = payoutAccountSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  if (!existing) {
+    res.status(404).json({ ok: false, error: "Payout account not found" });
+    return;
+  }
+  const now = new Date().toISOString();
+  const request = {
+    id: randomUUID(),
+    userId,
+    type: "INVESTOR_PAYOUT_ACCOUNT" as const,
+    status: "PENDING_APPROVAL" as const,
+    existingSnapshot: JSON.parse(JSON.stringify(existing)),
+    newSnapshot: parsed.data as unknown as Record<string, unknown>,
+    reason: "Investor requested payout account update",
+    reviewedBy: null,
+    reviewedAt: null,
+    rejectionReason: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  accountChangeRequests.push(request);
+  res.status(202).json({
+    ok: true,
+    pendingApproval: true,
+    request,
+    message: "Your payout account update has been submitted and is awaiting admin approval.",
+  });
+});
+
+router.put("/investor/payout-accounts/:accountId/default", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  const target = payoutAccounts.find((a) => a.id === req.params.accountId && a.userId === userId);
+  if (!target) {
+    res.status(404).json({ ok: false, error: "Payout account not found" });
+    return;
+  }
+  for (const account of payoutAccounts) {
+    if (account.userId === userId) account.isDefault = account.id === target.id;
+  }
+  target.updatedAt = new Date().toISOString();
+  res.json({ ok: true, account: target });
+});
+
+router.get("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+  const borrowerId = req.user!.id;
+  const account = disbursementAccounts.find((a) => a.borrowerId === borrowerId);
+  const pendingRequests = accountChangeRequests.filter(
+    (r) => r.userId === borrowerId && r.type === "BORROWER_DISBURSEMENT_ACCOUNT"
+  );
+  res.json({ ok: true, account: account ?? null, pendingRequests });
+});
+
+router.post("/borrower/disbursement-account/resolve", requireAuth, requireRole("BORROWER"), async (req, res) => {
+  const schema = z.object({
+    accountNumber: z.string().regex(/^\d{10}$/, "10-digit account number required"),
+    bankCode: z.string().min(1),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const result = await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode);
+    if (!result.data?.account_name) {
+      res.status(422).json({ ok: false, error: "Unable to resolve account name", result });
+      return;
+    }
+    res.json({
+      ok: true,
+      resolved: {
+        accountName: String(result.data.account_name),
+        accountNumber: String(result.data.account_number ?? parsed.data.accountNumber),
+      },
+    });
+  } catch (error) {
+    res.status(422).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Unable to verify account",
+    });
+  }
+});
+
+router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+  const schema = z.object({
+    accountName: z.string().min(2),
+    accountNumber: z.string().regex(/^\d{10}$/, "10-digit account number required"),
+    bankCode: z.string().min(1),
+    bankName: z.string().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const borrowerId = req.user!.id;
+  const now = new Date().toISOString();
+  const existing = disbursementAccounts.find((a) => a.borrowerId === borrowerId);
+  if (!existing) {
+    const account = {
+      id: randomUUID(),
+      borrowerId,
+      ...parsed.data,
+      status: "ACTIVE" as const,
+      createdAt: now,
+      updatedAt: now,
+      rejectionReason: null,
+    };
+    disbursementAccounts.push(account);
+    res.json({ ok: true, account, message: "Disbursement account saved successfully" });
+    return;
+  }
+  const request = {
+    id: randomUUID(),
+    userId: borrowerId,
+    type: "BORROWER_DISBURSEMENT_ACCOUNT" as const,
+    status: "PENDING_APPROVAL" as const,
+    existingSnapshot: JSON.parse(JSON.stringify(existing)),
+    newSnapshot: parsed.data as unknown as Record<string, unknown>,
+    reason: "Borrower requested disbursement account update",
+    reviewedBy: null,
+    reviewedAt: null,
+    rejectionReason: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  accountChangeRequests.push(request);
+  res.status(202).json({
+    ok: true,
+    pendingApproval: true,
+    request,
+    message: "Your disbursement account update has been submitted and is awaiting admin approval.",
+  });
+});
+
+router.put("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+  const schema = z.object({
+    accountName: z.string().min(2),
+    accountNumber: z.string().regex(/^\d{10}$/, "10-digit account number required"),
+    bankCode: z.string().min(1),
+    bankName: z.string().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const borrowerId = req.user!.id;
+  const existing = disbursementAccounts.find((a) => a.borrowerId === borrowerId);
+  if (!existing) {
+    res.status(404).json({ ok: false, error: "No disbursement account exists. Please create one first." });
+    return;
+  }
+  const now = new Date().toISOString();
+  const request = {
+    id: randomUUID(),
+    userId: borrowerId,
+    type: "BORROWER_DISBURSEMENT_ACCOUNT" as const,
+    status: "PENDING_APPROVAL" as const,
+    existingSnapshot: JSON.parse(JSON.stringify(existing)),
+    newSnapshot: parsed.data as unknown as Record<string, unknown>,
+    reason: "Borrower requested disbursement account update",
+    reviewedBy: null,
+    reviewedAt: null,
+    rejectionReason: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  accountChangeRequests.push(request);
+  res.status(202).json({
+    ok: true,
+    pendingApproval: true,
+    request,
+    message: "Your disbursement account update has been submitted and is awaiting admin approval.",
+  });
+});
+
+router.get("/admin/account-requests", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const statusFilter = typeof req.query.status === "string" ? req.query.status : undefined;
+  const userIdFilter = typeof req.query.userId === "string" ? req.query.userId : undefined;
+  const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? 100)));
+  const offset = Math.max(0, Number(req.query.offset ?? 0));
+  let filtered = accountChangeRequests.slice();
+  if (statusFilter) filtered = filtered.filter((r) => r.status === statusFilter);
+  if (userIdFilter) filtered = filtered.filter((r) => r.userId === userIdFilter);
+  filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const total = filtered.length;
+  const items = filtered.slice(offset, offset + limit).map((r) => {
+    const user = users.find((u) => u.id === r.userId);
+    return {
+      ...r,
+      user: user ? { id: user.id, fullName: user.fullName, email: user.email, phone: user.phone } : undefined,
+    };
+  });
+  res.json({ ok: true, total, requests: items });
+});
+
+function applyAccountChange(request: (typeof accountChangeRequests)[number]): { ok: boolean; reason?: string } {
+  if (request.type === "INVESTOR_PAYOUT_ACCOUNT") {
+    const snapshot = request.newSnapshot as Partial<(typeof payoutAccounts)[number]>;
+    if (!snapshot?.accountNumber || !snapshot?.bankCode) return { ok: false, reason: "Invalid snapshot" };
+    let account = payoutAccounts.find((a) => a.userId === request.userId);
+    const now = new Date().toISOString();
+    if (account) {
+      Object.assign(account, {
+        ...snapshot,
+        updatedAt: now,
+        status: account.status || "VERIFIED",
+      });
+    } else {
+      account = {
+        id: randomUUID(),
+        userId: request.userId,
+        bankCode: snapshot.bankCode,
+        accountNumber: snapshot.accountNumber,
+        bankName: snapshot.bankName,
+        accountName: snapshot.accountName,
+        isDefault: true,
+        status: "VERIFIED",
+        createdAt: now,
+        updatedAt: now,
+      };
+      payoutAccounts.push(account);
+    }
+    return { ok: true };
+  }
+  if (request.type === "BORROWER_DISBURSEMENT_ACCOUNT") {
+    const snapshot = request.newSnapshot as Partial<(typeof disbursementAccounts)[number]>;
+    if (!snapshot?.accountNumber || !snapshot?.bankCode) return { ok: false, reason: "Invalid snapshot" };
+    let account = disbursementAccounts.find((a) => a.borrowerId === request.userId);
+    const now = new Date().toISOString();
+    if (account) {
+      Object.assign(account, {
+        ...snapshot,
+        updatedAt: now,
+        status: "ACTIVE",
+        rejectionReason: null,
+      });
+    } else {
+      account = {
+        id: randomUUID(),
+        borrowerId: request.userId,
+        bankCode: snapshot.bankCode,
+        accountNumber: snapshot.accountNumber,
+        bankName: snapshot.bankName,
+        accountName: snapshot.accountName,
+        status: "ACTIVE",
+        rejectionReason: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      disbursementAccounts.push(account);
+    }
+    return { ok: true };
+  }
+  return { ok: false, reason: `Unknown request type: ${request.type}` };
+}
+
+router.put("/admin/account-requests/:requestId/approve", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+  const request = accountChangeRequests.find((r) => r.id === req.params.requestId);
+  if (!request) {
+    res.status(404).json({ ok: false, error: "Account change request not found" });
+    return;
+  }
+  if (request.status !== "PENDING_APPROVAL") {
+    res.status(409).json({ ok: false, error: `Request is already ${request.status}` });
+    return;
+  }
+  const applied = applyAccountChange(request);
+  if (!applied.ok) {
+    res.status(400).json({ ok: false, error: applied.reason ?? "Unable to apply changes" });
+    return;
+  }
+  const now = new Date().toISOString();
+  request.status = "APPROVED";
+  request.reviewedBy = req.user?.id ?? "admin";
+  request.reviewedAt = now;
+  request.updatedAt = now;
+  res.json({ ok: true, request });
+});
+
+router.put("/admin/account-requests/:requestId/reject", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+  const schema = z.object({ rejectionReason: z.string().max(500).optional() });
+  const parsed = schema.safeParse(req.body);
+  const request = accountChangeRequests.find((r) => r.id === req.params.requestId);
+  if (!request) {
+    res.status(404).json({ ok: false, error: "Account change request not found" });
+    return;
+  }
+  if (request.status !== "PENDING_APPROVAL") {
+    res.status(409).json({ ok: false, error: `Request is already ${request.status}` });
+    return;
+  }
+  const now = new Date().toISOString();
+  request.status = "REJECTED";
+  request.reviewedBy = req.user?.id ?? "admin";
+  request.reviewedAt = now;
+  request.rejectionReason = parsed.data?.rejectionReason ?? "Rejected by admin";
+  request.updatedAt = now;
+  res.json({ ok: true, request });
+});
+
+router.get("/admin/disbursements", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const statusFilter = typeof req.query.status === "string" ? req.query.status : undefined;
+  const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? 100)));
+  const offset = Math.max(0, Number(req.query.offset ?? 0));
+  let items = loanDisbursements.slice();
+  if (statusFilter) items = items.filter((d) => d.status === statusFilter);
+  items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const total = items.length;
+  const disbursements = items.slice(offset, offset + limit).map((d) => {
+    const borrower = users.find((u) => u.id === d.borrowerId);
+    return {
+      ...d,
+      borrowerName: borrower?.fullName,
+    };
+  });
+  res.json({ ok: true, total, disbursements });
+});
+
+router.get("/admin/borrowers/:borrowerId/disbursements", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const statusFilter = typeof req.query.status === "string" ? req.query.status : undefined;
+  let items = loanDisbursements.filter((d) => d.borrowerId === req.params.borrowerId);
+  if (statusFilter) items = items.filter((d) => d.status === statusFilter);
+  items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  res.json({ ok: true, total: items.length, disbursements: items });
+});
+
+router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  const prev = loanDisbursements.find((d) => d.id === req.params.disbursementId);
+  if (!prev) {
+    res.status(404).json({ ok: false, error: "Disbursement record not found" });
+    return;
+  }
+  if (prev.status === "SUCCESSFUL") {
+    res.status(400).json({ ok: false, error: "Cannot retry a successful disbursement" });
+    return;
+  }
+  const loan = loans.find((l) => l.id === prev.loanId);
+  if (!loan) {
+    res.status(404).json({ ok: false, error: "Loan not found" });
+    return;
+  }
+  if (!prev.accountNumber || !prev.bankCode) {
+    res.status(400).json({ ok: false, error: "Previous disbursement is missing bank/account details" });
+    return;
+  }
+  const now = new Date().toISOString();
+  const retryCount = (prev.retryCount ?? 0) + 1;
+  const retry: (typeof loanDisbursements)[number] = {
+    id: randomUUID(),
+    loanId: prev.loanId,
+    applicationId: prev.applicationId,
+    borrowerId: prev.borrowerId,
+    amountNaira: prev.amountNaira,
+    currency: prev.currency,
+    bankCode: prev.bankCode,
+    bankName: prev.bankName,
+    accountNumber: prev.accountNumber,
+    accountName: prev.accountName,
+    status: "PROCESSING",
+    narration: prev.narration ? `${prev.narration} (retry #${retryCount})` : undefined,
+    providerTransfer: null,
+    providerReference: null,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    retryOfId: prev.id,
+    retryCount,
+  };
+  loanDisbursements.push(retry);
+  try {
+    const transfer = await createLoanDisbursement({
+      txRef: `VELO-DISBURSE-${loan.id}-RETRY-${retry.id}`,
+      amountNaira: Number(prev.amountNaira),
+      accountNumber: prev.accountNumber,
+      accountBank: prev.bankCode,
+      beneficiaryName: prev.accountName ?? "Borrower",
+      narration: retry.narration ?? `Velo loan disbursement retry ${loan.id}`,
+    });
+    retry.providerTransfer = transfer as unknown as Record<string, unknown>;
+    retry.providerReference =
+      (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ??
+      String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? retry.id);
+    retry.status = "PENDING";
+    retry.processedAt = now;
+    retry.updatedAt = now;
+    loan.status = "DISBURSEMENT_PENDING";
+    loan.providerTransfer = transfer;
+    loan.updatedAt = now;
+    res.status(202).json({ ok: true, disbursement: retry, providerResponse: transfer });
+  } catch (error) {
+    retry.status = "FAILED";
+    retry.error = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
+    retry.updatedAt = new Date().toISOString();
+    res.status(503).json({ ok: false, disbursement: retry, error: retry.error });
+  }
 });
 
 export default router;

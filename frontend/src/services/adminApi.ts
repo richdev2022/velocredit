@@ -197,3 +197,87 @@ export async function adminRejectWithdrawal(withdrawalId: string, reason?: strin
     body: JSON.stringify({ reason }),
   });
 }
+
+export type DisbursementStatus = "PENDING" | "PROCESSING" | "SUCCESSFUL" | "FAILED" | "PENDING_APPROVAL";
+export interface LoanDisbursement {
+  id: string;
+  loanId: string;
+  borrowerId: string;
+  borrowerName?: string;
+  amountNaira: number;
+  currency: "NGN";
+  bankCode?: string;
+  bankName?: string;
+  accountNumber?: string;
+  accountName?: string;
+  status: DisbursementStatus;
+  narration?: string;
+  applicationId?: string;
+  providerTransfer?: Record<string, unknown>;
+  providerReference?: string;
+  error?: string;
+  adminNote?: string;
+  createdAt: string;
+  updatedAt?: string;
+  processedAt?: string;
+  retryOfId?: string | null;
+  retryCount?: number;
+}
+export async function adminListDisbursements(opts: { borrowerId?: string; status?: string; limit?: number; offset?: number } = {}): Promise<{
+  ok: true;
+  total: number;
+  disbursements: LoanDisbursement[];
+}> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set("status", opts.status);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.offset) params.set("offset", String(opts.offset));
+  const basePath = opts.borrowerId
+    ? `/api/v1/admin/borrowers/${encodeURIComponent(opts.borrowerId)}/disbursements`
+    : "/api/v1/admin/disbursements";
+  return request(`${basePath}?${params.toString()}`);
+}
+export async function adminRetryDisbursement(disbursementId: string): Promise<{ ok: true; disbursement: LoanDisbursement; providerResponse?: unknown }> {
+  return request(`/api/v1/admin/disbursements/${encodeURIComponent(disbursementId)}/retry`, { method: "POST" });
+}
+export interface AccountChangeRequest {
+  id: string;
+  userId: string;
+  type: "INVESTOR_PAYOUT_ACCOUNT" | "BORROWER_DISBURSEMENT_ACCOUNT";
+  status: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
+  existingSnapshot?: Record<string, unknown>;
+  newSnapshot: Record<string, unknown>;
+  reason?: string | null;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  rejectionReason?: string | null;
+  createdAt: string;
+  user?: { fullName?: string; email?: string; phone?: string };
+}
+export async function adminListAccountRequests(opts: { status?: AccountChangeRequest["status"]; userId?: string; limit?: number; offset?: number } = {}): Promise<{ ok: true; total: number; requests: AccountChangeRequest[] }> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set("status", opts.status);
+  if (opts.userId) params.set("userId", opts.userId);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.offset) params.set("offset", String(opts.offset));
+  return request(`/api/v1/admin/account-requests?${params.toString()}`);
+}
+export async function adminApproveAccountRequest(requestId: string): Promise<{ ok: true; request: AccountChangeRequest }> {
+  return request(`/api/v1/admin/account-requests/${encodeURIComponent(requestId)}/approve`, { method: "PUT" });
+}
+export async function adminRejectAccountRequest(requestId: string, input?: { rejectionReason?: string }): Promise<{ ok: true; request: AccountChangeRequest }> {
+  return request(`/api/v1/admin/account-requests/${encodeURIComponent(requestId)}/reject`, { method: "PUT", body: JSON.stringify(input ?? {}) });
+}
+
+export const adminApi = {
+  approveAccountRequest: async (id: string, _opts?: unknown) => adminApproveAccountRequest(id),
+  rejectAccountRequest: async (id: string, opts?: { rejectionReason?: string }) => adminRejectAccountRequest(id, opts),
+  listAccountRequests: adminListAccountRequests,
+  retryDisbursement: adminRetryDisbursement,
+  listDisbursements: adminListDisbursements,
+  retryPayout: async (id: string) => {
+    // Existing wrapper for consistency if called
+    const { adminRetryPayout } = await import("./apiClient");
+    return adminRetryPayout(id);
+  },
+};

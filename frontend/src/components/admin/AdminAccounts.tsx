@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import PasswordInput from "../PasswordInput";
 import { ADMIN_PERMISSIONS, adminCreateAdministrator, adminDeleteAdministrator, adminListAdministrators, adminSetAdministratorStatus, type AdminPermission, type Administrator } from "../../services/adminApi";
 
 export default function AdminAccounts() {
@@ -18,7 +19,26 @@ export default function AdminAccounts() {
   return <div className="space-y-5">
     <div className="velo-card max-w-3xl space-y-4 p-5">
       <div><h2 className="text-lg font-bold text-velo-900">Administrator and staff accounts</h2><p className="mt-1 text-sm text-slate-500">Administrators have full access. Managers receive only the selected permissions.</p></div>
-      <div className="grid gap-3 sm:grid-cols-2">{([["name", "Full name"], ["email", "Email"], ["phone", "Nigerian phone number"], ["password", "Temporary password (12+ characters)"]] as const).map(([key, placeholder]) => <input key={key} className="velo-input" type={key === "password" ? "password" : key === "email" ? "email" : "text"} placeholder={placeholder} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} />)}</div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {([["name", "Full name"], ["email", "Email"], ["phone", "Nigerian phone number"]] as const).map(([key, placeholder]) => (
+          <input
+            key={key}
+            className="velo-input"
+            type={key === "email" ? "email" : "text"}
+            placeholder={placeholder}
+            value={form[key]}
+            onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))}
+          />
+        ))}
+        <PasswordInput
+          label={undefined as any}
+          placeholder="Temporary password (12+ characters)"
+          minLength={12}
+          value={form.password}
+          onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+          className="sm:col-span-2"
+        />
+      </div>
       <div><p className="velo-label">Roles</p><div className="mt-2 flex gap-4">{["ADMIN", "LOAN_MANAGER"].map((role) => <label key={role} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={roles.includes(role)} onChange={() => setRoles((current) => current.includes(role) ? current.filter((item) => item !== role) : [...current, role])} />{role.replace("_", " ")}</label>)}</div></div>
       <div><p className="velo-label">Permissions</p><div className="mt-2 grid gap-2 sm:grid-cols-3">{ADMIN_PERMISSIONS.map((permission) => <label key={permission} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={permissions.includes(permission)} onChange={() => setPermissions((current) => current.includes(permission) ? current.filter((item) => item !== permission) : [...current, permission])} />{permission}</label>)}</div></div>
       {message && <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-sm text-emerald-700">{message}</div>}{error && <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-sm text-red-700">{error}</div>}

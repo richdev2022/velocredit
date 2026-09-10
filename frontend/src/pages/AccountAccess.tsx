@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
+import PasswordInput from "../components/PasswordInput";
 import { useAuth } from "../context/AuthContext";
 import { resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired } from "../services/apiClient";
 
@@ -598,13 +599,10 @@ export default function AccountAccess() {
                         </label>
                         <label className="block">
                           <span className="velo-label">New password</span>
-                          <input
-                            className="velo-input"
-                            type="password"
+                          <PasswordInput
                             minLength={8}
                             value={newPassword}
                             onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="••••••••"
                             required
                           />
                         </label>
@@ -626,13 +624,10 @@ export default function AccountAccess() {
                               </button>
                             )}
                           </span>
-                          <input
-                            className="velo-input"
-                            type="password"
+                          <PasswordInput
                             minLength={8}
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
-                            placeholder="••••••••"
                             required
                           />
                           {mode === "register" && password && (
@@ -655,13 +650,11 @@ export default function AccountAccess() {
                         {mode === "register" && !signupVerification && (
                           <label className="block">
                             <span className="velo-label">Confirm password</span>
-                            <input
-                              className={`velo-input ${confirmPassword && !passwordMatch ? "!border-red-300 !ring-red-100" : ""}`}
-                              type="password"
+                            <PasswordInput
                               minLength={8}
                               value={confirmPassword}
                               onChange={(e) => setConfirmPassword(e.target.value)}
-                              placeholder="••••••••"
+                              className={confirmPassword && !passwordMatch ? "!border-red-300 !ring-red-100" : ""}
                               required
                             />
                             {confirmPassword && !passwordMatch && (

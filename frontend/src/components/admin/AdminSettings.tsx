@@ -444,7 +444,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       {showConfig && (
       <>
       {/* Header */}
-      <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(15,23,42,0.12)] rounded-2xl dark:shadow-none">
+      <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(15,23,42,0.12)] rounded-2xl dark:shadow-none">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3.5">
             <div className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-velo-500 to-velo-600 text-white shadow-md">
@@ -734,7 +734,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
         {/* ===== Right: Live Preview + Info ===== */}
         <div className="space-y-6">
-          <div className="velo-card p-5 sm:p-6 rounded-2xl border-0 shadow-md bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 text-white relative overflow-hidden">
+          <div className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl border-0 shadow-md bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 text-white relative overflow-hidden">
             <div className="absolute -top-16 -right-16 w-48 h-48 bg-velo-300/20 rounded-full blur-2xl animate-float" />
             <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-velo-400/15 rounded-full blur-2xl animate-float-slow" />
 
@@ -781,7 +781,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           </div>
 
-          <div className="velo-card p-5 rounded-2xl border-0">
+          <div className="velo-card p-4 sm:p-5 rounded-2xl border-0">
             <h3 className="font-bold text-velo-900 text-sm mb-2 flex items-center gap-1.5">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-velo-500"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.8"/><path d="M12 8v5M12 16h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
               How this works
@@ -804,7 +804,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           {/* ============ INVESTOR MANAGEMENT ============ */}
           {showInvestorTools && (
           <div className={`space-y-6 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
-            <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(16,185,129,0.12)] rounded-2xl border-l-4 border-emerald-500 dark:bg-slate-900 dark:border-slate-800 dark:shadow-none">
+            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(16,185,129,0.12)] rounded-2xl border-l-4 border-emerald-500 dark:bg-slate-900 dark:border-slate-800 dark:shadow-none">
               <div className="flex items-start justify-between flex-wrap gap-4 mb-5">
                 <div>
                   <h3 className="text-lg font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
@@ -907,7 +907,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(59,130,246,0.12)] rounded-2xl border-t-4 border-blue-500">
+              <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(59,130,246,0.12)] rounded-2xl border-t-4 border-blue-500">
                 <h3 className="text-md font-extrabold text-velo-900 mb-1 flex items-center gap-2">
                   <span className="text-xl">📈</span> Set Custom Earning Rate per Investor
                 </h3>
@@ -955,7 +955,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 </div>
               </div>
               
-              <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(245,158,11,0.12)] rounded-2xl border-t-4 border-amber-500">
+              <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(245,158,11,0.12)] rounded-2xl border-t-4 border-amber-500">
                 <h3 className="text-md font-extrabold text-velo-900 mb-1 flex items-center gap-2">
                   <span className="text-xl">💰</span> Credit Investor Wallet
                 </h3>
@@ -1032,7 +1032,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           {/* ============ PENDING WITHDRAWALS ============ */}
           {showWithdrawals && (
           <div className={`space-y-6 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
-            <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(168,85,247,0.12)] rounded-2xl border-l-4 border-purple-500 dark:bg-slate-900 dark:border-slate-800 dark:shadow-none">
+            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(168,85,247,0.12)] rounded-2xl border-l-4 border-purple-500 dark:bg-slate-900 dark:border-slate-800 dark:shadow-none">
               <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
                 <div>
                   <h3 className="text-md font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
@@ -1123,7 +1123,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           {/* ============ RIGHT SIDEBAR — Admin Ledger ============ */}
           {showLedger && (
           <div className={`space-y-6 ${showInvestorTools || showWithdrawals ? "lg:col-span-1" : "lg:col-span-3"}`}>
-            <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(6,78,59,0.18)] dark:shadow-none rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-800 text-white overflow-hidden relative">
+            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(6,78,59,0.18)] dark:shadow-none rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-800 text-white overflow-hidden relative">
               <div className="absolute -top-10 -right-10 w-36 h-36 rounded-full bg-white/5 blur-xl"></div>
               <div className="absolute bottom-0 right-10 w-24 h-24 rounded-full bg-emerald-400/20 blur-xl"></div>
               <div className="relative">
@@ -1152,7 +1152,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
               </div>
             </div>
 
-            <div className="velo-card p-5 sm:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(15,23,42,0.12)] dark:shadow-none rounded-2xl dark:bg-slate-900 dark:border-slate-800">
+            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(15,23,42,0.12)] dark:shadow-none rounded-2xl dark:bg-slate-900 dark:border-slate-800">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-md font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
@@ -1242,7 +1242,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
 function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon?: string; children: React.ReactNode }) {
   return (
-    <div className="velo-card p-5 sm:p-6 rounded-2xl border-0">
+    <div className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl border-0">
       <div className="mb-4">
         <div className="flex items-center gap-2">
           {icon && <span className="text-xl leading-none">{icon}</span>}

@@ -33,6 +33,7 @@ import {
   getPlatformSettings,
   notifications,
   settleWalletDeposit,
+  loanDisbursements,
 } from "./store.js";
 import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
 import type { IdentityVerificationEvent } from "./store.js";
@@ -154,6 +155,22 @@ app.post(
 
         const repayment = repayments.find((p) => p.txRef === txRef);
         if (repayment && repayment.status !== "SUCCESSFUL") {
+          const repaymentAmountMinor = Math.round(Number(repayment.amountNaira ?? 0) * 100);
+          appendAdminLedger({
+            entryType: "LOAN_REPAYMENT_IN",
+            referenceId: repayment.id,
+            borrowerId: repayment.borrowerId,
+            loanId: repayment.loanId,
+            amountMinor: repaymentAmountMinor,
+            direction: "CREDIT",
+            description: `Admin ledger credit for loan repayment via flutterwave txRef=${txRef}`,
+            metadata: {
+              provider: "flutterwave",
+              providerReference,
+              providerTransactionId: String(data.id ?? providerReference),
+              txRef,
+            },
+          });
           repayment.status = "SUCCESSFUL";
           repayment.providerReference = providerReference;
           repayment.verifiedAt = new Date().toISOString();
@@ -163,8 +180,11 @@ app.post(
             const dueAt = loan.dueAt ? new Date(loan.dueAt) : null;
             const onTime = dueAt ? new Date(repayment.verifiedAt) <= dueAt : true;
             repayment.onTime = onTime;
+            const maxOutstandingPrincipal = Number(
+              loan.outstandingPrincipalNaira ?? loan.principalNaira ?? Number(loan.outstandingNaira ?? loan.totalRepaymentNaira ?? 0)
+            );
             const principalPortion = Math.min(
-              Number(loan.outstandingNaira ?? loan.principalNaira ?? 0),
+              maxOutstandingPrincipal,
               Number(repayment.amountNaira)
             );
             const interestPortion = Math.max(
@@ -181,6 +201,20 @@ app.post(
                     Number(repayment.amountNaira)
                 ) * 100
               ) / 100;
+            loan.outstandingPrincipalNaira = Math.max(
+              0,
+              Math.round(
+                (maxOutstandingPrincipal - repayment.principalNaira) * 100
+              ) / 100
+            );
+            const oldInterest = Number(
+              loan.outstandingInterestNaira ??
+                Math.max(0, Number(loan.totalInterestNaira ?? 0) - (maxOutstandingPrincipal === Number(loan.principalNaira) ? 0 : Number(loan.principalNaira ?? 0) - maxOutstandingPrincipal))
+            );
+            loan.outstandingInterestNaira = Math.max(
+              0,
+              Math.round((oldInterest - repayment.interestNaira) * 100) / 100
+            );
             if (Number(loan.outstandingNaira) <= 0.01) {
               loan.status = "REPAID";
               loan.paidAt = new Date().toISOString();
@@ -223,6 +257,24 @@ app.post(
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
           disbursementLoan.disbursedAt = new Date().toISOString();
           disbursementLoan.updatedAt = disbursementLoan.disbursedAt;
+          const now = disbursementLoan.disbursedAt;
+          const matchingDisbursements = loanDisbursements.filter((d) => d.loanId === disbursementLoan.id);
+          for (const d of matchingDisbursements) {
+            const matchesReference =
+              (d.providerTransfer &&
+                ((d.providerTransfer as { data?: { reference?: string } }).data?.reference === transferRef ||
+                  (d.providerTransfer as { data?: { id?: number | string } }).data?.id === transfer.id ||
+                  (d.providerTransfer as { data?: { id?: number | string } }).data?.id === transfer.flw_ref)) ||
+              d.providerReference === String(transfer.id ?? transfer.flw_ref ?? transferRef);
+            const isLatest = d.id === matchingDisbursements[matchingDisbursements.length - 1].id;
+            if (matchesReference || isLatest) {
+              d.status = "SUCCESSFUL";
+              d.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
+              d.processedAt = now;
+              d.updatedAt = now;
+              d.providerTransfer = { ...(d.providerTransfer ?? {}), webhook: data } as unknown as Record<string, unknown>;
+            }
+          }
           creditHistory.push({
             id: crypto.randomUUID(),
             userId: disbursementLoan.borrowerId,
@@ -522,7 +574,7 @@ async function start(): Promise<void> {
     await initializeStore();
     seedInvestmentPlans();
     seedLoanProducts();
-    seedAdminLedgerOpeningBalance(100_000_000 * 100);
+    // seedAdminLedgerOpeningBalance(100_000_000 * 100);
     getPlatformSettings();
     await persistStore();
     console.log("Database initialization complete.");

@@ -146,3 +146,18 @@ export async function resolveBankAccount(accountNumber: string, bankCode: string
   if (!response.ok) throw new Error(data.message || `Account resolution failed (${response.status})`);
   return data;
 }
+
+export async function listBanks(country = "NG") {
+  if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
+  const response = await fetch(
+    `${env.FLUTTERWAVE_BASE_URL}/banks/${encodeURIComponent(country)}`,
+    { headers: { Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}` } }
+  );
+  const data = (await response.json()) as {
+    status?: string;
+    data?: Array<{ id?: number; name?: string; code?: string; is_nuban_bank?: boolean }>;
+    message?: string;
+  };
+  if (!response.ok) throw new Error(data.message || `Could not load banks (${response.status})`);
+  return data;
+}

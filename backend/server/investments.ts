@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { createInvestorPayout } from "./providers/flutterwave.js";
-import { investments, payoutAccounts, payouts, type Payout } from "./store.js";
+import {
+  investments,
+  payoutAccounts,
+  payouts,
+  type Payout,
+  findWallet,
+  appendLedger,
+  appendAdminLedger,
+} from "./store.js";
 
 export async function runInvestmentMaturitySweep(now = new Date()): Promise<void> {
   for (const investment of investments) {
@@ -10,6 +18,36 @@ export async function runInvestmentMaturitySweep(now = new Date()): Promise<void
     const account = payoutAccounts.find((item) => item.userId === investment.investorId && item.status === "VERIFIED");
     if (!account) { investment.status = "PAYOUT_ACCOUNT_REQUIRED"; continue; }
     const amountNaira = Number(investment.amountNaira ?? 0) + Number(investment.expectedEarningsNaira ?? 0);
+    const amountMinor = Math.round(amountNaira * 100);
+    const principalMinor = Math.round(Number(investment.amountNaira ?? 0) * 100);
+    const earningsMinor = Math.round(Number(investment.expectedEarningsNaira ?? 0) * 100);
+    const wallet = findWallet(investment.investorId);
+    appendAdminLedger({
+      entryType: "INVESTMENT_RETURN",
+      referenceId: investment.id,
+      investorId: investment.investorId,
+      amountMinor,
+      direction: "DEBIT",
+      description: `Admin ledger debit for investment maturity return internal credit - investment ${investment.id}`,
+      metadata: {
+        sweep: true,
+        principalMinor,
+        earningsMinor,
+        maturesAt: investment.maturesAt,
+      },
+    });
+    appendLedger(wallet, {
+      entryType: "INVESTMENT_RETURN",
+      referenceId: investment.id,
+      amountMinor,
+      direction: "CREDIT",
+      description: `Investment maturity sweep credit - principal + earnings for ${investment.id}`,
+      metadata: {
+        principalNaira: investment.amountNaira,
+        earningsNaira: investment.expectedEarningsNaira,
+        maturesAt: investment.maturesAt,
+      },
+    });
     const payout: Payout = {
       id: randomUUID(),
       investmentId: investment.id,

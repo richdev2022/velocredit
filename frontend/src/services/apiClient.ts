@@ -316,7 +316,23 @@ export async function requestCreditReport(otpChallengeId?: string, otpCode?: str
   return request("/api/v1/borrower/credit-report/request", { method: "POST", body: JSON.stringify({ otpChallengeId, otpCode }) });
 }
 
-export interface RepaymentInitResponse { ok: true; repayment: { id: string; loanId: string; amountNaira: number; txRef: string; status: PaymentStatus; }; checkout?: { type: "flutterwave_standard_checkout"; url: string; txRef: string; amountNaira: number; currency: "NGN"; }; }
+export interface RepaymentInitResponse {
+  ok: true;
+  repayment: { id: string; loanId: string; amountNaira: number; txRef: string; status: PaymentStatus; };
+  checkout?: { type: "flutterwave_standard_checkout"; url: string; txRef: string; amountNaira: number; currency: "NGN"; };
+  repaymentContext?: {
+    isFullPayoff: boolean;
+    minAllowedNaira: number;
+    maxAllowedNaira: number;
+    outstandingNaira: number;
+    estimatedPrincipalNaira: number;
+    estimatedInterestNaira: number;
+  };
+  error?: string;
+  message?: string;
+  minAllowedNaira?: number;
+  maxAllowedNaira?: number;
+}
 export async function initializeLoanRepayment(loanId: string, amountNaira: number): Promise<RepaymentInitResponse> {
   return request(`/api/v1/borrower/loans/${encodeURIComponent(loanId)}/repayments`, { method: "POST", body: JSON.stringify({ amountNaira }) });
 }

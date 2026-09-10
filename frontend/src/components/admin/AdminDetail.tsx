@@ -105,7 +105,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
       </button>
 
       {/* Header card */}
-      <div className="velo-card p-5 sm:p-6">
+      <div className="velo-card p-4 sm:p-5 lg:p-6">
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
@@ -259,7 +259,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
 
 function Card({ title, sensitive, children }: { title: string; sensitive?: boolean; children: React.ReactNode }) {
   return (
-    <div className="velo-card p-5">
+    <div className="velo-card p-4 sm:p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-velo-900">{title}</h3>
         {sensitive && (
