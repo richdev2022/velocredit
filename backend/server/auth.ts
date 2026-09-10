@@ -19,7 +19,8 @@ import {
   type User,
   type AdminPermission,
 } from "./store.js";
-import { sendSms, maskPhone, formatOtpMessage } from "./providers/kudi.js";
+import { sendOtpSms, maskPhone, formatOtpMessage } from "./providers/kudi.js";
+// import { sendSms, maskPhone, formatOtpMessage } from "./providers/kudi.js"; // legacy generic SMS, replaced with Kudi Send OTP endpoint
 import { sendEmail } from "./email.js";
 import { sendWhatsAppText, maskPhoneForWa } from "./providers/meta.js";
 
@@ -172,7 +173,13 @@ export async function createOtpChallenge(
   const smsText = formatOtpMessage(code, action, ttlMinutes);
   if (phone && channel === "SMS") {
     try {
-      const result = await sendSms({ to: phone, message: smsText });
+      const result = await sendOtpSms({
+        recipients: phone,
+        otpLength: code.length,
+        otpDurationMinutes: ttlMinutes,
+        otpAttempts: Math.max(1, Math.min(6, Math.round(env.OTP_MAX_ATTEMPTS))),
+        channel: "sms",
+      });
       notifications.push({
         id: randomUUID(),
         userId,

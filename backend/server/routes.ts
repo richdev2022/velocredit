@@ -2094,7 +2094,7 @@ router.post("/admin/users", requireAuth, requireRole("ADMIN"), async (req: AuthR
     isActive: true,
   };
   users.push(user);
-  void createWallet(user.id, "NGN");
+  createWallet(user.id);
   recordAdminAudit(req, "USER_CREATED", "USER", user.id, { email: user.email, roles: user.roles });
   const { passwordHash: _passwordHash, ...safeUser } = user;
   res.status(201).json({ ok: true, user: safeUser });

@@ -380,9 +380,11 @@ export default function PersonalKycSection() {
               )}
               <div className="mt-5 flex items-center justify-between">
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  {activeOtpChallenge.cooldown > 0
-                    ? `Resend available in ${activeOtpChallenge.cooldown}s`
-                    : activeOtpChallenge.cooldown === 0 && "Code expired"
+                  {(function () {
+                    if (activeOtpChallenge.cooldown > 0) return `Resend available in ${activeOtpChallenge.cooldown}s`;
+                    if (activeOtpChallenge.cooldown === 0) return "Code expired";
+                    return "";
+                  })()}
                 </div>
                 <div className="flex gap-2">
                   <button
