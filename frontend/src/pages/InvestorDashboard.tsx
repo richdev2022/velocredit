@@ -1238,6 +1238,17 @@ function InvestorKyc(props: any) {
   const livenessLocked = checklist.liveness === true || checklist.selfieUploaded === true;
   const bvnDisplay = bvnLocked ? maskId(bvn) : bvn;
   const ninDisplay = ninLocked ? maskId(nin) : nin;
+
+  // KYC progress counter (5 steps). Each step maps to the checklist + submission:
+  // 1 = BVN verified, 2 = NIN verified, 3 = identity info retrieved, 4 = liveness verified, 5 = proof of address submitted & pending/verified
+  const completedSteps = [
+    checklist.bvn === true,
+    checklist.nin === true,
+    identityPopulated === true,
+    livenessLocked === true,
+    (checklist.proofOfAddress === true || kyc?.status === "SUBMITTED" || kyc?.status === "PENDING_VERIFICATION" || kyc?.status === "VERIFIED"),
+  ].filter(Boolean).length;
+  const progressPct = Math.min(100, Math.round((completedSteps / 5) * 100));
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -1255,10 +1266,16 @@ function InvestorKyc(props: any) {
             <h2 className="section-heading">Complete your verification</h2>
             <p className="section-subheading">Identity checks and payout setup are required before investment settlement.</p>
           </div>
-          <span className="text-sm font-semibold text-velo-600">{user?.kycStatus === "VERIFIED" ? "5/5" : "0/5"}</span>
+          <div className="text-right shrink-0">
+            <div className="text-sm font-semibold text-velo-600">{completedSteps}/5</div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">{user?.kycStatus === "VERIFIED" ? "All verified" : "Completed steps"}</div>
+          </div>
         </div>
         <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-          <div className={`h-full rounded-full bg-velo-500 ${user?.kycStatus === "VERIFIED" ? "w-full" : "w-0"}`} />
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-velo-400 to-velo-600 transition-[width] duration-700 ease-out"
+            style={{ width: `${progressPct}%` }}
+          />
         </div>
         {user?.kycStatus !== "VERIFIED" && (
           <div className="mt-6 space-y-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
@@ -1282,9 +1299,9 @@ function InvestorKyc(props: any) {
                   </>
                 ) : (
                   <>
-                    <div className="mt-1 flex gap-2">
-                      <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={bvn} onChange={(event) => setBvn(event.target.value.replace(/\D/g, ""))} placeholder="11-digit BVN" />
-                      <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "BVN"} onClick={() => verifyIdentity("BVN")}>{kycBusy === "BVN" ? "Verifying…" : "Verify"}</button>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <input className="velo-input min-w-0 flex-1 sm:flex-auto" inputMode="numeric" maxLength={11} value={bvn} onChange={(event) => setBvn(event.target.value.replace(/\D/g, ""))} placeholder="11-digit BVN" />
+                      <button type="button" className="btn-secondary shrink-0 min-h-[44px]" disabled={kycBusy === "BVN"} onClick={() => verifyIdentity("BVN")}>{kycBusy === "BVN" ? "Verifying…" : "Verify"}</button>
                     </div>
                     <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Dial *565*0# on your registered line to retrieve your BVN.</span>
                   </>
@@ -1308,9 +1325,9 @@ function InvestorKyc(props: any) {
                   </>
                 ) : (
                   <>
-                    <div className="mt-1 flex gap-2">
-                      <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={nin} onChange={(event) => setNin(event.target.value.replace(/\D/g, ""))} placeholder="11-digit NIN" />
-                      <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "NIN"} onClick={() => verifyIdentity("NIN")}>{kycBusy === "NIN" ? "Verifying…" : "Verify"}</button>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <input className="velo-input min-w-0 flex-1 sm:flex-auto" inputMode="numeric" maxLength={11} value={nin} onChange={(event) => setNin(event.target.value.replace(/\D/g, ""))} placeholder="11-digit NIN" />
+                      <button type="button" className="btn-secondary shrink-0 min-h-[44px]" disabled={kycBusy === "NIN"} onClick={() => verifyIdentity("NIN")}>{kycBusy === "NIN" ? "Verifying…" : "Verify"}</button>
                     </div>
                     <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Found on your National Identity Card or via the NIMC app.</span>
                   </>
@@ -1367,7 +1384,7 @@ function InvestorKyc(props: any) {
                   {identityInfo.address && (
                     <div className="sm:col-span-2">
                       <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Residential Address</label>
-                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.address}</div>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2 break-words overflow-hidden">{identityInfo.address}</div>
                     </div>
                   )}
                   {identityInfo.nationality && (
@@ -1381,33 +1398,37 @@ function InvestorKyc(props: any) {
             )}
 
             {activeOtpChallenge && (
-              <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-800/50 dark:bg-sky-950/20">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-sky-800 dark:text-sky-300">Confirm {activeOtpChallenge.idType} ownership — enter OTP</h3>
-                    <p className="mt-1 text-xs text-sky-700/80 dark:text-sky-300/70">
-                      Sent via <span className="font-semibold">{activeOtpChallenge.challenge.channel}</span> to the {activeOtpChallenge.idType}-linked phone number ending in ···{activeOtpChallenge.challenge.phoneLastFour}.
-                    </p>
+              <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/40 backdrop-blur-sm p-0 sm:p-4">
+                <div className="velo-card w-full max-w-md shadow-2xl rounded-none sm:rounded-2xl border-t-2 sm:border-2 border-sky-500 dark:border-sky-400 overflow-hidden">
+                  <div className="bg-gradient-to-r from-sky-500 to-velo-500 px-5 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="text-white">
+                        <h3 className="text-base font-bold">Confirm {activeOtpChallenge.idType} ownership</h3>
+                        <p className="mt-1 text-xs text-sky-100">
+                          Sent via <span className="font-semibold">{activeOtpChallenge.challenge.channel}</span> to ···{activeOtpChallenge.challenge.phoneLastFour}
+                        </p>
+                      </div>
+                      <button type="button" className="rounded-lg p-2 text-white/90 hover:bg-white/15" onClick={() => setActiveOtpChallenge(null)} aria-label="Dismiss"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg></button>
+                    </div>
                   </div>
-                  <button type="button" className="rounded-md p-1.5 text-sky-700/70 hover:bg-sky-100/70 dark:text-sky-300 dark:hover:bg-sky-900/40" onClick={() => setActiveOtpChallenge(null)} aria-label="Dismiss"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg></button>
-                </div>
-                <label className="velo-label mt-3 block">
-                  One-time code (6 digits)
-                  <input className="velo-input mt-1 tracking-[0.5em] text-center font-semibold text-lg" inputMode="numeric" maxLength={6} autoFocus value={activeOtpChallenge.otpCode} onChange={(event) => setActiveOtpChallenge((c: any) => c ? { ...c, otpCode: event.target.value.replace(/\D/g, ""), error: undefined } : c)} placeholder="• • • • • •" />
-                </label>
-                {activeOtpChallenge.error && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{activeOtpChallenge.error}</p>}
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-xs">
-                    <button type="button" className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-sky-800 hover:bg-sky-100 disabled:opacity-60 disabled:cursor-not-allowed dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("SMS")}>{activeOtpChallenge.cooldown > 0 ? `Resend SMS (${activeOtpChallenge.cooldown}s)` : "Resend via SMS"}</button>
-                    <button type="button" className="rounded-lg border border-emerald-200 bg-white px-3 py-1.5 text-emerald-800 hover:bg-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("WHATSAPP")}>{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
+                  <div className="p-5 space-y-4">
+                    <label className="velo-label block">
+                      <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">One-time code (6 digits)</span>
+                      <input className="velo-input mt-2 tracking-[0.6em] text-center font-bold text-2xl" inputMode="numeric" maxLength={6} autoFocus value={activeOtpChallenge.otpCode} onChange={(event) => setActiveOtpChallenge((c: any) => c ? { ...c, otpCode: event.target.value.replace(/\D/g, ""), error: undefined } : c)} placeholder="• • • • • •" />
+                    </label>
+                    {activeOtpChallenge.error && <p className="text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 rounded-lg px-3 py-2">{activeOtpChallenge.error}</p>}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-sky-800 hover:bg-sky-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("SMS")}>{activeOtpChallenge.cooldown > 0 ? `Resend SMS (${activeOtpChallenge.cooldown}s)` : "Resend via SMS"}</button>
+                      <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-emerald-200 bg-white px-3 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("WHATSAPP")}>{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
+                    </div>
+                    <button type="button" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50 min-h-[48px] text-base font-bold" disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
                   </div>
-                  <button type="button" className="btn-primary disabled:cursor-not-allowed disabled:opacity-50" disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
                 </div>
               </div>
             )}
-            <div className={`rounded-xl border p-4 dark:border-emerald-800/50 ${livenessLocked ? "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-900/10" : "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-900/10"}`}>
+            <div className={`rounded-xl border p-4 ${livenessLocked ? "border-emerald-200 bg-emerald-50/60 dark:border-emerald-800/50 dark:bg-emerald-900/10" : "border-slate-200 bg-slate-50/60 dark:border-slate-700 dark:bg-slate-900/30"}`}>
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                <h3 className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">Liveness verification <span className="text-red-500">*</span></h3>
+                <h3 className={`text-sm font-semibold ${livenessLocked ? "text-emerald-800 dark:text-emerald-300" : "text-slate-800 dark:text-slate-200"}`}>Liveness verification <span className="text-red-500">*</span></h3>
                 {livenessLocked && (
                   <span className="text-xs inline-flex items-center gap-1 text-emerald-700 bg-white dark:bg-slate-900/80 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded-md font-bold shadow-sm dark:text-emerald-300">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -1415,7 +1436,7 @@ function InvestorKyc(props: any) {
                   </span>
                 )}
               </div>
-              <p className="mb-3 text-xs text-emerald-700 dark:text-emerald-300/80">Complete a quick in-app selfie scan using our identity verification widget.</p>
+              <p className={`mb-3 text-xs ${livenessLocked ? "text-emerald-700 dark:text-emerald-300/80" : "text-slate-600 dark:text-slate-400"}`}>Complete a quick in-app selfie scan using our identity verification widget.</p>
               {bestPhoto && (
                 <div className="mb-4 flex flex-col sm:flex-row items-start gap-4">
                   <div className="relative w-40 h-40 shrink-0 rounded-xl overflow-hidden border-2 border-emerald-300 dark:border-emerald-700 bg-white shadow-inner">
@@ -1423,8 +1444,8 @@ function InvestorKyc(props: any) {
                     <div className="absolute inset-0 pointer-events-none border-2 border-emerald-400/30 dark:border-emerald-500/30 rounded-xl" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-bold text-emerald-800 dark:text-emerald-200 mb-1">Identity Photo on Record</div>
-                    <p className="text-xs text-emerald-700 dark:text-emerald-300/70 leading-relaxed">
+                    <div className={`text-sm font-bold mb-1 ${livenessLocked ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200"}`}>Identity Photo on Record</div>
+                    <p className={`text-xs leading-relaxed ${livenessLocked ? "text-emerald-700 dark:text-emerald-300/70" : "text-slate-600 dark:text-slate-400"}`}>
                       This image was captured from your {kyc?.identityPhoto ? (bvnLocked ? "BVN" : "NIN") : "liveness scan"} records during verification and will be used to confirm your identity at payout.
                     </p>
                   </div>
@@ -1446,11 +1467,37 @@ function InvestorKyc(props: any) {
                 {!livenessLocked && (checklist.selfieUploaded || checklist.liveness) && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
               </div>
             </div>
-            <label className="velo-label block">
-              Proof of address
-              <input className="velo-input mt-1" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />
-              <span className="mt-1 block text-xs font-normal text-slate-500">Upload a recent utility bill or bank statement.</span>
-            </label>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="velo-label mb-0 block">
+                  <div className="flex items-center gap-2">
+                    <span>Proof of address</span>
+                    <span className="text-red-500">*</span>
+                  </div>
+                </label>
+                {checklist.proofOfAddress && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800/50 px-2.5 py-1 rounded-lg dark:text-emerald-300 shadow-sm">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Uploaded
+                  </span>
+                )}
+              </div>
+              <label className={`group relative flex flex-col items-center justify-center gap-2 w-full min-h-[120px] rounded-2xl border-2 border-dashed cursor-pointer transition-all px-5 py-4 text-center ${kycBusy === "PROOF_OF_ADDRESS" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : checklist.proofOfAddress ? "border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-400 dark:border-emerald-700/60 dark:bg-emerald-900/10 dark:hover:bg-emerald-900/20" : "border-slate-300 bg-slate-50 hover:border-velo-500 hover:bg-velo-50/50 hover:shadow-sm dark:border-slate-600 dark:bg-slate-900/30 dark:hover:border-velo-400 dark:hover:bg-velo-950/20"}`}>
+                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />
+                <div className={`flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${checklist.proofOfAddress ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-200 dark:group-hover:bg-emerald-800/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 group-hover:bg-velo-100 dark:group-hover:bg-velo-900/40 group-hover:text-velo-600 dark:group-hover:text-velo-400"}`}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 16V4m0 0L7 9m5-5l5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </div>
+                <div>
+                  <div className={`text-sm font-semibold ${checklist.proofOfAddress ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-300"}`}>
+                    {kycBusy === "PROOF_OF_ADDRESS" ? "Uploading…" : checklist.proofOfAddress ? "File attached · click to replace" : "Click to upload document"}
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">PDF, JPG, or PNG — recent utility bill or bank statement.</div>
+                </div>
+              </label>
+            </div>
             <button type="button" onClick={submitAddressReview} disabled={!canSubmitAddressReview || busy || kyc?.status === "PENDING_VERIFICATION"} className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50">
               {busy ? "Submitting…" : kyc?.status === "PENDING_VERIFICATION" ? "Address under review" : "Submit proof of address for review"}
             </button>
@@ -1470,7 +1517,7 @@ function InvestorKyc(props: any) {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
               </button>
             </div>
-            <div className="mt-5 grid grid-cols-2 gap-3">
+            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-velo-500 hover:bg-velo-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-velo-400 dark:hover:bg-velo-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}>
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 group-hover:bg-velo-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></svg></div>
                 <div className="text-left"><div className="text-sm font-semibold text-velo-900 dark:text-white">SMS</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Text to identity phone</div></div>
