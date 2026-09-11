@@ -1,15 +1,15 @@
 import { env } from "../config.js";
 
 /* =========================================================================
-   Kudi SMS Provider (per official Postman docs)
-   Endpoint: POST https://my.kudisms.net/api/sms
-   Form fields (application/x-www-form-urlencoded):
+   Kudi SMS Provider (Corporate — per official Postman docs for Corporate Sender IDs)
+   Endpoint: POST https://my.kudisms.net/api/corporate
+   Form fields (multipart/form-data):
      token       = env.KUDI_API_KEY
-     senderID    = env.KUDI_SENDER_ID  (approved promotional Sender ID)
+     senderID    = env.KUDI_SENDER_ID  (approved Corporate Sender ID only)
      recipients  = 2348xxxxxxxx,2349xxxxxxxx  (comma-separated 234 format)
      message     = SMS text content
-     gateway     = 2  (Refunds charge for DND numbers; DND will not deliver)
    Success: error_code == "000" && status == "success"
+   balance + cost + length + page are also returned.
    ========================================================================= */
 
 export interface KudiSmsResponse {
@@ -23,41 +23,71 @@ export interface KudiSmsResponse {
   balance?: string;
 }
 
-async function postSmsForm(params: Record<string, string>): Promise<KudiSmsResponse> {
+export interface KudiPostDebug {
+  url: string;
+  method: "GET" | "POST";
+  maskedForm: Record<string, string>;
+  httpStatus: number;
+  rawBody: string;
+  parsed: KudiSmsResponse | undefined;
+  ok: boolean;
+}
+
+export let lastKudiPostDebug: KudiPostDebug | undefined = undefined;
+
+async function kudiRequest(params: Record<string, string>): Promise<KudiSmsResponse> {
   if (!env.KUDI_API_KEY) throw new Error("KUDI SMS is not configured (KUDI_API_KEY is missing)");
   if (!env.KUDI_SENDER_ID) throw new Error("KUDI SMS is not configured (KUDI_SENDER_ID is missing)");
-  const url = `${env.KUDI_BASE_URL}/sms`;
-  const body = new URLSearchParams();
-  body.set("token", env.KUDI_API_KEY);
-  body.set("senderID", env.KUDI_SENDER_ID);
-  body.set("gateway", "2");
-  for (const [key, value] of Object.entries(params)) {
-    if (value != null && value !== "") body.set(key, value);
+  const base = `${env.KUDI_BASE_URL}/corporate`;
+  const allParams: Record<string, string> = {
+    token: env.KUDI_API_KEY,
+    senderID: env.KUDI_SENDER_ID,
+  };
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== "") allParams[k] = v;
   }
-  const response = await fetch(url, {
+  const maskedForm: Record<string, string> = {};
+  for (const [k, v] of Object.entries(allParams)) {
+    maskedForm[k] = k === "token" ? `${v.slice(0, 6)}...${v.slice(-4)}` : v;
+  }
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(allParams)) fd.append(k, v);
+  const debug: KudiPostDebug = { url: base, method: "POST", maskedForm, httpStatus: 0, rawBody: "", parsed: undefined, ok: false };
+  if (env.NODE_ENV !== "production") {
+    console.log("[KudiSMS] POST", base, "multipart form=", JSON.stringify(maskedForm));
+  }
+  const response = await fetch(base, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    body: fd,
     signal: AbortSignal.timeout(20_000),
   });
+  debug.httpStatus = response.status;
   const text = await response.text();
+  debug.rawBody = text;
   let data: KudiSmsResponse;
   try {
     data = JSON.parse(text) as KudiSmsResponse;
+    debug.parsed = data;
   } catch (_e) {
-    throw new Error(`KUDI returned non-JSON: ${text.slice(0, 160)}`);
+    lastKudiPostDebug = debug;
+    throw new Error(`KUDI returned non-JSON HTTP${response.status}: ${text.slice(0, 160)}`);
   }
   const ok =
     response.ok &&
     String(data.status ?? "").toLowerCase() === "success" &&
     String(data.error_code ?? "000") === "000";
+  debug.ok = ok;
+  lastKudiPostDebug = debug;
+  if (env.NODE_ENV !== "production") {
+    console.log("[KudiSMS] HTTP", response.status, "response=", text.slice(0, 500));
+  }
   if (!ok) {
-    throw new Error(data.msg || `KUDI SMS failed (status=${data.status || response.status}, error_code=${data.error_code || "?"})`);
+    throw new Error(data.msg || (data as unknown as { message?: string }).message || `KUDI SMS failed (HTTP ${response.status}, status=${data.status || "?"}, error_code=${data.error_code || "?"})`);
   }
   return data;
 }
 
-function normalizePhone(input: string): string {
+export function normalizePhone(input: string): string {
   const digits = input.replace(/\D/g, "");
   if (digits.startsWith("0") && digits.length === 11) return "234" + digits.slice(1);
   if (digits.startsWith("234") && digits.length === 13) return digits;
@@ -66,7 +96,20 @@ function normalizePhone(input: string): string {
 }
 
 /* =========================================================================
-   sendOtpSms — delivers a pre-formatted OTP SMS message via Kudi /sms.
+   extractMessageId — Kudi corporate endpoint returns data as plain string:
+      "2348...|98a0ca4c-8609-92a0-9f68-cfaf59c78da6"
+   Older promo endpoint returned a 1-element array of same pipe-encoded strings.
+   We handle both shapes and always return the UUID portion (after |).
+   ========================================================================= */
+function extractMessageId(data: unknown): string | undefined {
+  const raw = Array.isArray(data) ? (data[0] as unknown) : data;
+  const s = typeof raw === "string" ? raw : "";
+  const uuid = s.split("|")[1];
+  return uuid && uuid.length > 4 ? uuid : undefined;
+}
+
+/* =========================================================================
+   sendOtpSms — delivers a pre-formatted OTP SMS message via Kudi /corporate.
    The OTP code is already embedded in the `message` by the caller (via
    formatOtpMessage in auth.ts), so we just forward to the generic endpoint.
    Signature is kept compatible with auth.ts usage (callers pass recipients,
@@ -102,10 +145,8 @@ export async function sendOtpSms(input: KudiSendOtpInput & { message?: string })
     if (input.senderID) {
       params.senderID = input.senderID;
     }
-    const response = await postSmsForm(params);
-    const msgId = Array.isArray(response.data)
-      ? String((response.data[0] as string | undefined) ?? "").split("|")[1]
-      : undefined;
+    const response = await kudiRequest(params);
+    const msgId = extractMessageId(response.data);
     return {
       sent: true,
       providerMessageId: msgId,
@@ -122,7 +163,7 @@ export async function sendOtpSms(input: KudiSendOtpInput & { message?: string })
 }
 
 /* =========================================================================
-   Generic SMS (transactional). Same /sms endpoint.
+   Generic SMS (transactional). Same /corporate endpoint.
    ========================================================================= */
 export interface SmsSendInput {
   to: string;
@@ -137,10 +178,8 @@ export async function sendSms(input: SmsSendInput): Promise<{ sent: boolean; pro
       message: input.message,
     };
     if (input.senderId) params.senderID = input.senderId;
-    const response = await postSmsForm(params);
-    const msgId = Array.isArray(response.data)
-      ? String((response.data[0] as string | undefined) ?? "").split("|")[1]
-      : undefined;
+    const response = await kudiRequest(params);
+    const msgId = extractMessageId(response.data);
     return {
       sent: true,
       providerMessageId: msgId,
@@ -168,7 +207,7 @@ export function formatOtpMessage(otp: string, action: string, ttlMinutes: number
     WITHDRAWAL: "authorize withdrawal",
   };
   const purpose = verbs[action] || "complete this action";
-  return `Velo OTP: ${otp}. Use to ${purpose}. Expires in ${ttlMinutes} min. Never share this code.`;
+  return `Velo: Use ${otp} to ${purpose}. Valid for ${ttlMinutes} minute(s). Please keep this number private and never disclose it to anyone.`;
 }
 
 /* =========================================================================

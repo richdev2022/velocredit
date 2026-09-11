@@ -195,8 +195,26 @@ export async function createOtpChallenge(
         sentAt: result.sent ? now.toISOString() : undefined,
         failedAt: result.error ? now.toISOString() : undefined,
       });
-    } catch {
-      // Still return the challenge ID — local-dev OTPs should be discoverable via logs
+      if (!result.sent && env.NODE_ENV !== "production") {
+        console.warn(`[createOtpChallenge] SMS send failed for action=${action} user=${userId}: ${result.error || "unknown"}`);
+      }
+    } catch (_e) {
+      const msg = _e instanceof Error ? _e.message : String(_e);
+      if (env.NODE_ENV !== "production") {
+        console.warn(`[createOtpChallenge] SMS send threw for action=${action} user=${userId}: ${msg}`);
+      }
+      notifications.push({
+        id: randomUUID(),
+        userId,
+        channel: "SMS",
+        kind: "OTP",
+        recipientMasked: maskPhone(phone),
+        status: "FAILED",
+        error: msg,
+        retryCount: 0,
+        createdAt: now.toISOString(),
+        failedAt: now.toISOString(),
+      });
     }
   }
   if (phone && channel === "WHATSAPP") {
