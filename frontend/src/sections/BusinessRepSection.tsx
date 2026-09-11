@@ -103,9 +103,10 @@ export default function BusinessRepSection() {
         body: JSON.stringify({ bankCode: selectedBank, accountNumber }),
       }).then((r) => r.json());
       if (res.ok) {
-        setResolvedName(res.accountName);
-        accountForm.setValue("accountName", res.accountName, { shouldValidate: true });
-        patchDisbursementAccount({ accountName: res.accountName });
+        const accountName = res.accountName || res.resolved?.accountName || "";
+        setResolvedName(accountName);
+        accountForm.setValue("accountName", accountName, { shouldValidate: true, shouldDirty: true });
+        patchDisbursementAccount({ accountName });
       } else {
         setResolveError(res.error || "Could not resolve account");
       }
@@ -203,7 +204,7 @@ export default function BusinessRepSection() {
             <p className="mt-1 text-xs text-slate-500">Your approved loan will be disbursed into this account.</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            <FormInput label="Account Name" required placeholder="Name on the account" error={accountForm.formState.errors.accountName?.message} readOnly={!!resolvedName} {...accountForm.register("accountName")} onChange={(e) => { accountForm.register("accountName").onChange(e); patchDisbursementAccount({ accountName: e.target.value }); }} />
+            <FormInput label="Account Name" required placeholder="Retrieved after account verification" error={accountForm.formState.errors.accountName?.message} readOnly {...accountForm.register("accountName")} />
             <label className="flex flex-col">
               <span className="mb-1 text-sm font-semibold text-velo-900">
                 Bank <span className="text-red-500">*</span>
@@ -216,6 +217,8 @@ export default function BusinessRepSection() {
                   setSelectedBank(code);
                   setResolvedName(null);
                   setResolveError("");
+                  accountForm.setValue("accountName", "", { shouldValidate: true, shouldDirty: true });
+                  patchDisbursementAccount({ accountName: "" });
                   const bank = banks.find((b) => b.code === code);
                   if (bank) {
                     accountForm.setValue("bankName", bank.name, { shouldValidate: true });
@@ -253,6 +256,8 @@ export default function BusinessRepSection() {
               patchDisbursementAccount({ accountNumber });
               setResolvedName(null);
               setResolveError("");
+              accountForm.setValue("accountName", "", { shouldValidate: true, shouldDirty: true });
+              patchDisbursementAccount({ accountName: "" });
             }}
             onBlur={() => {
               const accNo = accountForm.watch("accountNumber") || "";
