@@ -50,6 +50,7 @@ import {
   auditLogs,
   type KycStatus,
   type Role,
+  type CreditReport,
   ADMIN_PERMISSIONS,
   getAdminLedgerBalanceMinor,
   adminLedger,
@@ -768,7 +769,12 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
   }
   const kyc = findOrCreateKycCase(req.user!.id);
   const user = users.find((u) => u.id === req.user?.id);
-  const result = await verifyBvn(parsed.data);
+  const result = await verifyBvn({
+    number: parsed.data.bvn,
+    firstName: parsed.data.firstName,
+    lastName: parsed.data.lastName,
+    dateOfBirth: parsed.data.dateOfBirth,
+  });
   const event = {
     id: randomUUID(),
     kycCaseId: kyc.id,
@@ -920,7 +926,12 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
   }
   const kyc = findOrCreateKycCase(req.user!.id);
   const user = users.find((u) => u.id === req.user?.id);
-  const result = await verifyNin(parsed.data);
+  const result = await verifyNin({
+    number: parsed.data.nin,
+    firstName: parsed.data.firstName,
+    lastName: parsed.data.lastName,
+    dateOfBirth: parsed.data.dateOfBirth,
+  });
   const event = {
     id: randomUUID(),
     kycCaseId: kyc.id,
@@ -1650,7 +1661,7 @@ router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), (_re
   res.json({ ok: true, products: loanProducts.filter((p) => p.isActive) });
 });
 
-router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const parsed = loanApplicationSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -1663,9 +1674,85 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), (req
     return;
   }
   const user = users.find((item) => item.id === req.user!.id);
-  const latestExternalCredit = creditReports
+  recordConsent(req.user!.id, "CREDIT_REPORT");
+
+  const kycBvnData = (kyc.providerRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data ?? {};
+  const bvnFullName: string | undefined =
+    [kycBvnData.title ? `${String(kycBvnData.title)} ` : "", kycBvnData.firstName, kycBvnData.middleName ? `${String(kycBvnData.middleName)} ` : "", kycBvnData.lastName]
+      .filter(Boolean).join(" ") || undefined;
+  const bvnDob: string | undefined = typeof kycBvnData.dateOfBirth === "string" ? kycBvnData.dateOfBirth : undefined;
+  const now = new Date().toISOString();
+
+  let latestExternalCredit = creditReports
     .filter((item) => item.userId === req.user!.id && item.status === "RECEIVED" && item.score != null)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+
+  const creditBureauPromise: Promise<CreditReport | null> = (async (): Promise<CreditReport | null> => {
+    try {
+      const hasBvn = typeof kyc.bvn === "string" && kyc.bvn.length === 11;
+      const cbResult = await requestCreditReport(
+        hasBvn
+          ? { mode: "ID", number: kyc.bvn, customer_name: bvnFullName ?? user?.fullName, dob: bvnDob ?? user?.dateOfBirth }
+          : { mode: "BIO", customer_name: user?.fullName, dob: user?.dateOfBirth }
+      );
+      const cbRaw = cbResult.rawResponse ?? {};
+      const cbScore: number | undefined =
+        typeof (cbResult.normalizedFields as { score?: unknown } | undefined)?.score === "number"
+          ? ((cbResult.normalizedFields as { score: number }).score as number)
+          : typeof (cbRaw as { score?: unknown }).score === "number"
+          ? (cbRaw as { score: number }).score
+          : undefined;
+      const cbStatus: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED" =
+        cbResult.status === "SUCCESS"
+          ? "RECEIVED"
+          : cbResult.status === "PENDING" || cbResult.status === "MANUAL_REVIEW"
+          ? "PENDING"
+          : "FAILED";
+      const report: CreditReport = {
+        id: randomUUID(),
+        userId: req.user!.id,
+        provider: "prembly" as const,
+        consentGrantedAt: now,
+        requestedAt: now,
+        reportReference: cbResult.providerReference,
+        status: cbStatus,
+        score: cbScore,
+        normalizedFields: cbResult.normalizedFields,
+        redactedRaw: cbRaw,
+        createdAt: now,
+      };
+      creditReports.push(report);
+      return report;
+    } catch (_e) {
+      return null;
+    }
+  })();
+
+  const timeoutPromise: Promise<null> = new Promise((resolve) => setTimeout(() => resolve(null), 4500));
+  const freshlyPulled = await Promise.race([creditBureauPromise, timeoutPromise]);
+  if (freshlyPulled && freshlyPulled.status === "RECEIVED" && freshlyPulled.score != null) {
+    latestExternalCredit = freshlyPulled;
+  } else {
+    void creditBureauPromise.then((report) => {
+      if (report && !latestExternalCredit && report.status === "RECEIVED" && report.score != null) {
+        const idx = creditScores.findIndex((s) => s.userId === req.user!.id);
+        if (idx >= 0) {
+          const recomputed = calculateCreditScore({
+            completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
+            onTimePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true).length,
+            latePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false).length,
+            defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
+            outstandingMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100), 0),
+            totalBorrowedMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100), 0),
+            kycVerified: user?.kycStatus === "VERIFIED",
+            bureauScore: report.score ?? null,
+          });
+          creditScores[idx] = { ...creditScores[idx], score: recomputed.score, band: recomputed.band, factors: recomputed.factors, createdAt: recomputed.calculatedAt };
+        }
+      }
+    });
+  }
+
   const customerSnapshot = {
     userId: req.user!.id,
     fullName: user?.fullName,
@@ -1700,18 +1787,30 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), (req
     kycVerified: user?.kycStatus === "VERIFIED",
     bureauScore: latestExternalCredit?.score ?? null,
   });
-  const externalCreditReport = latestExternalCredit ?? {
-    provider: "prembly" as const,
-    status: "NOT_REQUESTED" as const,
-    score: null,
-    reportReference: null,
-    requestedAt: null,
-    consentRequired: true,
-    reason: "Request and receive an external bureau report before it can influence the internal score.",
-  };
+  const externalCreditReport: Record<string, unknown> = latestExternalCredit
+    ? {
+        provider: latestExternalCredit.provider,
+        status: latestExternalCredit.status,
+        score: latestExternalCredit.score ?? null,
+        reportReference: latestExternalCredit.reportReference ?? null,
+        requestedAt: latestExternalCredit.requestedAt ?? null,
+        consentGrantedAt: latestExternalCredit.consentGrantedAt ?? null,
+        pulledAt: latestExternalCredit.createdAt,
+        normalizedFields: latestExternalCredit.normalizedFields,
+        redactedRaw: latestExternalCredit.redactedRaw,
+      }
+    : {
+        provider: "prembly" as const,
+        status: "PENDING" as const,
+        score: null,
+        reportReference: null,
+        requestedAt: now,
+        consentGrantedAt: now,
+        consentRequired: true,
+        reason: "External credit bureau is being pulled in the background at submission.",
+      };
   const amountNaira = input.loanRequest?.amount ?? 0;
   const eligibility = evaluateLoanEligibility(internalCredit, amountNaira);
-  const now = new Date().toISOString();
   creditScores.push({
     id: randomUUID(),
     userId: req.user!.id,
@@ -1873,25 +1972,51 @@ router.post("/borrower/credit-report/request", requireAuth, requireRole("BORROWE
   }
   const user = users.find((u) => u.id === req.user?.id);
   const now = new Date().toISOString();
-  const result = await requestCreditReport({
-    userId: req.user!.id,
-    bvn: findOrCreateKycCase(req.user!.id).bvn,
-    nin: findOrCreateKycCase(req.user!.id).nin,
-    phone: user?.phone,
-    fullName: user?.fullName,
-    dateOfBirth: user?.dateOfBirth,
-  });
-  const report = {
+  const kycCase = findOrCreateKycCase(req.user!.id);
+  const hasBvn = typeof kycCase.bvn === "string" && kycCase.bvn.length === 11;
+  const kycData = (kycCase.providerRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data ?? {};
+  const bvnFullName: string | undefined =
+    [kycData.title ? `${String(kycData.title)} ` : "", kycData.firstName, kycData.middleName ? `${String(kycData.middleName)} ` : "", kycData.lastName]
+      .filter(Boolean).join(" ") || undefined;
+  const bvnDob: string | undefined = typeof kycData.dateOfBirth === "string" ? kycData.dateOfBirth : undefined;
+  const result = await requestCreditReport(
+    hasBvn
+      ? {
+          mode: "ID",
+          number: kycCase.bvn,
+          customer_name: bvnFullName ?? user?.fullName,
+          dob: bvnDob ?? user?.dateOfBirth,
+        }
+      : {
+          mode: "BIO",
+          customer_name: user?.fullName,
+          dob: user?.dateOfBirth,
+        }
+  );
+  const raw = result.rawResponse ?? {};
+  const extractedScore: number | undefined =
+    typeof (result.normalizedFields as { score?: unknown } | undefined)?.score === "number"
+      ? ((result.normalizedFields as { score: number }).score as number)
+      : typeof (raw as { score?: unknown }).score === "number"
+      ? (raw as { score: number }).score
+      : undefined;
+  const reportStatus: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED" =
+    result.status === "SUCCESS"
+      ? "RECEIVED"
+      : result.status === "PENDING" || result.status === "MANUAL_REVIEW"
+      ? "PENDING"
+      : "FAILED";
+  const report: CreditReport = {
     id: randomUUID(),
     userId: req.user!.id,
     provider: "prembly" as const,
     consentGrantedAt: now,
     requestedAt: now,
     reportReference: result.providerReference,
-    status: result.status,
-    score: result.score,
+    status: reportStatus,
+    score: extractedScore,
     normalizedFields: result.normalizedFields,
-    redactedRaw: result.redactedRaw,
+    redactedRaw: raw,
     createdAt: now,
   };
   creditReports.push(report);

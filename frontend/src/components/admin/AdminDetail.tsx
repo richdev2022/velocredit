@@ -242,6 +242,83 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         )}
       </Card>
 
+      {/* Credit Reports */}
+      <Card title="Credit Report (Internal + External)">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-semibold text-velo-800 uppercase tracking-wide">Internal Score</h4>
+              {app.creditReportSnapshot?.internal?.band && (
+                <span className="badge bg-velo-50 text-velo-700">{app.creditReportSnapshot.internal.band}</span>
+              )}
+            </div>
+            <div className="text-3xl font-bold text-velo-900 mb-2">
+              {app.creditReportSnapshot?.internal?.score ?? "—"}
+            </div>
+            <div className="text-xs text-slate-500 mb-3">
+              Velo internal rating · calculated at submission
+            </div>
+            {app.creditReportSnapshot?.internal?.factors &&
+              Array.isArray(app.creditReportSnapshot.internal.factors) &&
+              app.creditReportSnapshot.internal.factors.length > 0 && (
+                <ul className="space-y-1.5 text-xs text-slate-600">
+                  {app.creditReportSnapshot.internal.factors.slice(0, 6).map((factor: any, idx: number) => (
+                    <li key={idx} className="flex items-start gap-2">
+                      <span className="mt-1 inline-block w-1.5 h-1.5 rounded-full bg-velo-500 flex-shrink-0" />
+                      <span>{factor?.label || factor?.reason || String(factor)}</span>
+                      {typeof factor?.weight === "number" && (
+                        <span className="ml-auto font-mono text-slate-400">{Math.round(factor.weight * 100)} pts</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+          </div>
+
+          <div className="rounded-lg border border-slate-100 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-semibold text-emerald-800 uppercase tracking-wide">External Bureau</h4>
+              <span className={`badge ${
+                app.creditReportSnapshot?.external?.status === "RECEIVED"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : app.creditReportSnapshot?.external?.status === "PENDING"
+                  ? "bg-amber-50 text-amber-700"
+                  : app.creditReportSnapshot?.external?.status === "FAILED"
+                  ? "bg-red-50 text-red-700"
+                  : "bg-slate-50 text-slate-600"
+              }`}>
+                {app.creditReportSnapshot?.external?.status || "NOT_REQUESTED"}
+              </span>
+            </div>
+            <div className="text-3xl font-bold text-emerald-900 mb-2">
+              {app.creditReportSnapshot?.external?.score ?? "—"}
+            </div>
+            <div className="text-xs text-slate-500 mb-3">
+              Provider: {app.creditReportSnapshot?.external?.provider || "Prembly"}
+              {app.creditReportSnapshot?.external?.pulledAt && (
+                <> · Pulled {formatDateLabel(app.creditReportSnapshot.external.pulledAt)}</>
+              )}
+            </div>
+            {app.creditReportSnapshot?.external?.reportReference && (
+              <Row label="Provider Ref" value={app.creditReportSnapshot.external.reportReference} mono />
+            )}
+            {app.creditReportSnapshot?.external?.reason && (
+              <p className="mt-2 text-xs text-slate-500">{app.creditReportSnapshot.external.reason}</p>
+            )}
+            {app.creditReportSnapshot?.external?.normalizedFields && (
+              <details className="mt-3 text-xs">
+                <summary className="cursor-pointer font-medium text-slate-700 select-none">
+                  View raw external details
+                </summary>
+                <pre className="mt-2 p-2 rounded bg-slate-50 border border-slate-100 overflow-auto max-h-64 text-[10px] text-slate-700">
+{JSON.stringify(app.creditReportSnapshot.external.normalizedFields, null, 2)}
+                </pre>
+              </details>
+            )}
+          </div>
+        </div>
+      </Card>
+
       {/* Documents */}
       <Card title="Documents">
         {app.documents.driveFolderUrl ? (

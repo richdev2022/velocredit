@@ -46,6 +46,8 @@ type TransactionData = {
 type KycData = {
   status?: string;
   checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean; selfieUploaded?: boolean; liveness?: boolean };
+  verifiedDetails?: Record<string, unknown>;
+  identityPhoto?: string;
 };
 type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number };
 
@@ -212,7 +214,18 @@ export default function InvestorDashboard() {
         setKycBusy("");
         return;
       }
-      setKyc((current) => ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"] }));
+      const details = (response as any).verifiedDetails ?? {};
+      const photoRaw = details?.identityPhoto || details?.base64Image || details?.photo || undefined;
+      const normalizedPhoto = typeof photoRaw === "string" && photoRaw.length > 20
+        ? photoRaw.startsWith("data:") ? photoRaw : photoRaw.startsWith("http") ? photoRaw : `data:image/jpeg;base64,${photoRaw.replace(/\s/g, "")}`
+        : undefined;
+      setKyc((current) => ({
+        ...current,
+        status: response.status,
+        checklist: response.checklist as unknown as KycData["checklist"],
+        verifiedDetails: Object.keys(details).length ? details : current?.verifiedDetails,
+        identityPhoto: normalizedPhoto || current?.identityPhoto,
+      }));
       await refreshUser();
       setMessage(`${type} verification completed successfully.`);
     } catch (err) {
@@ -1189,6 +1202,42 @@ function InvestorKyc(props: any) {
   const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel } = props;
   const [error, setError] = useState("");
   useEffect(() => { setError(kycError); }, [kycError]);
+
+  const maskId = (value: string) => {
+    if (!value || value.length < 4) return value;
+    return "*".repeat(Math.max(0, value.length - 4)) + value.slice(-4);
+  };
+  const pickStr = (details: Record<string, unknown>, keys: string[]) => {
+    for (const key of keys) {
+      const v = details[key];
+      if (typeof v === "string" && v.trim()) return v;
+    }
+    return undefined;
+  };
+  const details = (kyc?.verifiedDetails ?? {}) as Record<string, unknown>;
+  const identityInfo = {
+    fullName: pickStr(details, ["fullName", "full_name", "name"]) || user?.fullName || "",
+    phone: pickStr(details, ["phone", "phone_number", "phoneNumber1", "phoneNumber2"]) || user?.phone || "",
+    dateOfBirth: pickStr(details, ["dateOfBirth", "date_of_birth", "dob"]) || user?.dateOfBirth || "",
+    address: pickStr(details, ["address", "residentialAddress", "residence_address"]) || "",
+    state: pickStr(details, ["state", "stateOfOrigin"]) || "",
+    lga: pickStr(details, ["lga", "lgaOfOrigin", "local_government"]) || "",
+    gender: pickStr(details, ["gender", "sex"]) || "",
+    nationality: pickStr(details, ["nationality"]) || "",
+  };
+  const anyIdentityPopulated = !!(identityInfo.fullName || identityInfo.phone || identityInfo.dateOfBirth || identityInfo.address || identityInfo.state || identityInfo.lga);
+  const identityPopulated = (checklist.bvn || checklist.nin) && anyIdentityPopulated;
+  const photoRaw = (kyc?.identityPhoto as string | undefined) || pickStr(details, ["base64Image", "identityPhoto", "photo", "photograph"]);
+  const bestPhoto = typeof photoRaw === "string" && photoRaw.length > 20
+    ? photoRaw.startsWith("data:") || photoRaw.startsWith("http")
+      ? photoRaw
+      : `data:image/jpeg;base64,${photoRaw.replace(/\s/g, "")}`
+    : undefined;
+  const bvnLocked = checklist.bvn === true;
+  const ninLocked = checklist.nin === true;
+  const livenessLocked = checklist.liveness === true || checklist.selfieUploaded === true;
+  const bvnDisplay = bvnLocked ? maskId(bvn) : bvn;
+  const ninDisplay = ninLocked ? maskId(nin) : nin;
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -1217,21 +1266,120 @@ function InvestorKyc(props: any) {
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="velo-label">
                 BVN
-                <div className="mt-1 flex gap-2">
-                  <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={bvn} onChange={(event) => setBvn(event.target.value.replace(/\D/g, ""))} placeholder="11-digit BVN" />
-                  <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "BVN"} onClick={() => verifyIdentity("BVN")}>{kycBusy === "BVN" ? "Verifying…" : checklist.bvn ? "Verified" : "Verify"}</button>
-                </div>
-                <span className="mt-1 block text-xs text-slate-500">Dial *565*0# on your registered line to retrieve your BVN.</span>
+                {bvnLocked ? (
+                  <>
+                    <div className="mt-1 velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold tracking-wider font-mono text-slate-900 dark:text-white">{bvnDisplay}</span>
+                        <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded dark:bg-emerald-900/40 dark:border-emerald-800 dark:text-emerald-300">Verified</span>
+                      </div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
+                        <rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                        <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                      </svg>
+                    </div>
+                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">BVN verified and locked for your security.</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="mt-1 flex gap-2">
+                      <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={bvn} onChange={(event) => setBvn(event.target.value.replace(/\D/g, ""))} placeholder="11-digit BVN" />
+                      <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "BVN"} onClick={() => verifyIdentity("BVN")}>{kycBusy === "BVN" ? "Verifying…" : "Verify"}</button>
+                    </div>
+                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Dial *565*0# on your registered line to retrieve your BVN.</span>
+                  </>
+                )}
               </label>
               <label className="velo-label">
                 NIN
-                <div className="mt-1 flex gap-2">
-                  <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={nin} onChange={(event) => setNin(event.target.value.replace(/\D/g, ""))} placeholder="11-digit NIN" />
-                  <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "NIN"} onClick={() => verifyIdentity("NIN")}>{kycBusy === "NIN" ? "Verifying…" : checklist.nin ? "Verified" : "Verify"}</button>
-                </div>
-                <span className="mt-1 block text-xs text-slate-500">Found on your National Identity Card or via the NIMC app.</span>
+                {ninLocked ? (
+                  <>
+                    <div className="mt-1 velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold tracking-wider font-mono text-slate-900 dark:text-white">{ninDisplay}</span>
+                        <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded dark:bg-emerald-900/40 dark:border-emerald-800 dark:text-emerald-300">Verified</span>
+                      </div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
+                        <rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                        <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                      </svg>
+                    </div>
+                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">NIN verified and locked for your security.</span>
+                  </>
+                ) : (
+                  <>
+                    <div className="mt-1 flex gap-2">
+                      <input className="velo-input min-w-0" inputMode="numeric" maxLength={11} value={nin} onChange={(event) => setNin(event.target.value.replace(/\D/g, ""))} placeholder="11-digit NIN" />
+                      <button type="button" className="btn-secondary shrink-0" disabled={kycBusy === "NIN"} onClick={() => verifyIdentity("NIN")}>{kycBusy === "NIN" ? "Verifying…" : "Verify"}</button>
+                    </div>
+                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Found on your National Identity Card or via the NIMC app.</span>
+                  </>
+                )}
               </label>
             </div>
+
+            {identityPopulated && (
+              <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-800/50 dark:bg-sky-950/20">
+                <div className="flex items-center gap-2 mb-3">
+                  <svg className="text-sky-700 dark:text-sky-400" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 12c2.7 0 5-2.3 5-5S14.7 2 12 2 7 4.3 7 7s2.3 5 5 5z" stroke="currentColor" strokeWidth="1.8"/>
+                    <path d="M4 22c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                  </svg>
+                  <h3 className="text-sm font-bold text-sky-900 dark:text-sky-200">Identity Information <span className="text-xs font-medium text-sky-700 dark:text-sky-400">(Retrieved from records · Locked)</span></h3>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-4">
+                  {identityInfo.fullName && (
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Full Name</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.fullName}</div>
+                    </div>
+                  )}
+                  {identityInfo.phone && (
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Phone Number</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.phone}</div>
+                    </div>
+                  )}
+                  {identityInfo.dateOfBirth && (
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Date of Birth</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.dateOfBirth}</div>
+                    </div>
+                  )}
+                  {identityInfo.gender && (
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Gender</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.gender}</div>
+                    </div>
+                  )}
+                  {identityInfo.state && (
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">State of Origin</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.state}</div>
+                    </div>
+                  )}
+                  {identityInfo.lga && (
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Local Government (LGA)</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.lga}</div>
+                    </div>
+                  )}
+                  {identityInfo.address && (
+                    <div className="sm:col-span-2">
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Residential Address</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.address}</div>
+                    </div>
+                  )}
+                  {identityInfo.nationality && (
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-sky-700 dark:text-sky-400 font-semibold">Nationality</label>
+                      <div className="mt-0.5 text-sm text-slate-800 dark:text-slate-200 bg-white/70 dark:bg-slate-900/70 border border-sky-100 dark:border-sky-900 rounded-lg px-3 py-2">{identityInfo.nationality}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {activeOtpChallenge && (
               <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-800/50 dark:bg-sky-950/20">
                 <div className="flex items-start justify-between gap-3">
@@ -1257,12 +1405,45 @@ function InvestorKyc(props: any) {
                 </div>
               </div>
             )}
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-800/50 dark:bg-emerald-900/10">
-              <h3 className="mb-2 text-sm font-semibold text-emerald-800 dark:text-emerald-300">Liveness verification <span className="text-red-500">*</span></h3>
+            <div className={`rounded-xl border p-4 dark:border-emerald-800/50 ${livenessLocked ? "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-900/10" : "border-emerald-200 bg-emerald-50/60 dark:bg-emerald-900/10"}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <h3 className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">Liveness verification <span className="text-red-500">*</span></h3>
+                {livenessLocked && (
+                  <span className="text-xs inline-flex items-center gap-1 text-emerald-700 bg-white dark:bg-slate-900/80 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded-md font-bold shadow-sm dark:text-emerald-300">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Verified &amp; Locked
+                  </span>
+                )}
+              </div>
               <p className="mb-3 text-xs text-emerald-700 dark:text-emerald-300/80">Complete a quick in-app selfie scan using our identity verification widget.</p>
+              {bestPhoto && (
+                <div className="mb-4 flex flex-col sm:flex-row items-start gap-4">
+                  <div className="relative w-40 h-40 shrink-0 rounded-xl overflow-hidden border-2 border-emerald-300 dark:border-emerald-700 bg-white shadow-inner">
+                    <img src={bestPhoto} alt="Verified identity photo" className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 pointer-events-none border-2 border-emerald-400/30 dark:border-emerald-500/30 rounded-xl" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold text-emerald-800 dark:text-emerald-200 mb-1">Identity Photo on Record</div>
+                    <p className="text-xs text-emerald-700 dark:text-emerald-300/70 leading-relaxed">
+                      This image was captured from your {kyc?.identityPhoto ? (bvnLocked ? "BVN" : "NIN") : "liveness scan"} records during verification and will be used to confirm your identity at payout.
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-3">
-                <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} onResult={onPremblyLivenessResult} />
-                {(checklist.selfieUploaded || checklist.liveness) && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
+                {livenessLocked ? (
+                  <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-200 bg-white/80 dark:bg-slate-900/60 border border-emerald-200 dark:border-emerald-800 px-4 py-2 rounded-xl">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                      <rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                      <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                      <circle cx="12" cy="15" r="1.8" fill="currentColor"/>
+                    </svg>
+                    Liveness check completed · cannot retrigger
+                  </div>
+                ) : (
+                  <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} onResult={onPremblyLivenessResult} />
+                )}
+                {!livenessLocked && (checklist.selfieUploaded || checklist.liveness) && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
               </div>
             </div>
             <label className="velo-label block">
