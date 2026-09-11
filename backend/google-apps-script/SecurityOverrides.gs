@@ -1,35 +1,554 @@
 /* Velo security extensions. Brevo credentials stay in Apps Script Script Properties. */
 var VeloSecurity = (function () {
-  var P={adminEmail:'VELO_ADMIN_EMAIL',adminPassword:'VELO_ADMIN_PASSWORD',brevoKey:'BREVO_API_KEY',auth:'VELO_AUTH_CHALLENGE_',manager:'VELO_MANAGER_INVITE_',token:'VELO_SECURE_ADMIN_TOKEN_'};
-  var OTP_TTL=10*60*1000, INVITE_TTL=24*60*60*1000, MAX_ATTEMPTS=5;
-  function props(){return PropertiesService.getScriptProperties();}
-  function hash(v){var b=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,String(v||''),Utilities.Charset.UTF_8);return b.map(function(x){return ('0'+((x+256)%256).toString(16)).slice(-2);}).join('');}
-  function email(v){return String(v||'').trim().toLowerCase();}
-  function eq(a,b){a=String(a||'');b=String(b||'');var d=a.length^b.length,n=Math.max(a.length,b.length);for(var i=0;i<n;i++)d|=(a.charCodeAt(i%Math.max(1,a.length))||0)^(b.charCodeAt(i%Math.max(1,b.length))||0);return d===0;}
-  function cfg(){var raw=props().getProperty('VELO_ADMIN_CONFIG');try{return raw?JSON.parse(raw):{};}catch(_){return {};}}
-  function saveCfg(c){props().setProperty('VELO_ADMIN_CONFIG',JSON.stringify(c));return c;}
-  function send(to,name,subject,html){var key=props().getProperty(P.brevoKey);if(!key||!to)throw new Error('Brevo is not configured.');var base=props().getProperty('BREVO_BASE_URL')||'https://api.brevo.com',senderEmail=props().getProperty('BREVO_SENDER_EMAIL')||'noreply@quantigrate.com',senderName=props().getProperty('BREVO_SENDER_NAME')||'Velo Finance LTD';var body={sender:{email:senderEmail,name:senderName},to:[{email:to,name:name||''}],subject:subject,htmlContent:html};var r=UrlFetchApp.fetch(base+'/v3/smtp/email',{method:'post',contentType:'application/json',muteHttpExceptions:true,headers:{accept:'application/json','api-key':key},payload:JSON.stringify(body)});if(r.getResponseCode()<200||r.getResponseCode()>=300)throw new Error('Brevo email failed: HTTP '+r.getResponseCode());return true;}
-  function challenge(data,prefix){var id=Utilities.getUuid();props().setProperty(prefix+id,JSON.stringify(data));return id;}
-  function read(id,prefix){var raw=props().getProperty(prefix+id);if(!raw)return null;try{return JSON.parse(raw);}catch(_){return null;}}
-  function adminEmails(){var c=cfg(),list=Array.isArray(c.adminEmails)?c.adminEmails.slice():[],e=props().getProperty(P.adminEmail);if(e)list.push(e);return list.map(email).filter(function(v,i,a){return v&&a.indexOf(v)===i;});}
-  function managers(){var c=cfg();return Array.isArray(c.loanManagers)?c.loanManagers:[];}
-  function manager(e){e=email(e);return managers().find(function(m){return email(m.email)===e&&m.active!==false;})||null;}
-  function login(payload){var e=email(payload&&payload.email),pw=String(payload&&payload.password||'');if(!e||!pw)return {ok:false,error:'Email and password are required.'};var role='',ap=props().getProperty(P.adminPassword)||'';if(adminEmails().indexOf(e)>=0&&ap&&eq(hash(pw),hash(ap)))role='ADMIN';var m=manager(e);if(!role&&m&&m.passwordHash&&eq(hash(pw),String(m.passwordHash)))role='LOAN_MANAGER';if(!role)return {ok:false,error:'Invalid email or password.'};var otp=String(Math.floor(100000+Math.random()*900000)),id=challenge({purpose:'LOGIN',email:e,role:role,otp:otp,attempts:0,expiresAt:Date.now()+OTP_TTL},P.auth);send(e,role==='ADMIN'?'Admin':'Loan Manager','Your Velo Finance login verification code','<h2>Login verification</h2><p>Your one-time code is <strong>'+otp+'</strong>.</p><p>This code expires in 10 minutes.</p>');return {ok:true,otpRequired:true,challengeId:id,expiresIn:OTP_TTL};}
-  function verifyLogin(payload){var id=String(payload&&payload.challengeId||''),otp=String(payload&&payload.otp||''),key=P.auth+id,d=read(id,P.auth);if(!d||d.purpose!=='LOGIN'||Date.now()>Number(d.expiresAt||0)){props().deleteProperty(key);return {ok:false,error:'Verification code expired or invalid.'};}if(Number(d.attempts||0)>=MAX_ATTEMPTS){props().deleteProperty(key);return {ok:false,error:'Too many verification attempts.'};}d.attempts=Number(d.attempts||0)+1;props().setProperty(key,JSON.stringify(d));if(!/^\d{6}$/.test(otp)||!eq(otp,d.otp))return {ok:false,error:'Invalid verification code.'};props().deleteProperty(key);var t=Utilities.getUuid()+'-'+Utilities.getUuid();props().setProperty(P.token+t,JSON.stringify({email:d.email,role:d.role,issuedAt:Date.now()}));return {ok:true,token:t,role:d.role};}
-  function token(t){var raw=props().getProperty(P.token+String(t||''));if(!raw)return null;try{var d=JSON.parse(raw);if(Date.now()-Number(d.issuedAt||0)>24*60*60*1000){props().deleteProperty(P.token+t);return null;}return d;}catch(_){return null;}}
-  function resumeRequest(payload){var e=email(payload&&payload.email);if(!e)return {ok:false,error:'Enter your email address.'};var sheet=getSheet_(getSpreadsheet_()),data=sheet.getDataRange().getValues();if(data.length<2)return {ok:true,found:false,sent:false,message:"Email doesn't exist, kindly start application afresh."};var h=data[0],ix=headerIndexes_(h),found=null;for(var i=data.length-1;i>=1;i--){var r=data[i],s=String(valueAt_(r,ix.status)||'').toUpperCase();if(s!=='DRAFT'&&s!=='IN_PROGRESS')continue;var re=email(valueAt_(r,ix.email)),rr=email(valueAt_(r,ix.repEmail));if(e&&(re===e||rr===e)){found={id:String(valueAt_(r,ix.id)||''),email:e,name:String(valueAt_(r,ix.name)||valueAt_(r,ix.businessName)||'Applicant')};break;}}if(!found||!found.email)return {ok:true,found:false,sent:false,message:"Email doesn't exist, kindly start application afresh."};var otp=String(Math.floor(100000+Math.random()*900000)),id=challenge({purpose:'RESUME',applicationId:found.id,email:found.email,otp:otp,attempts:0,expiresAt:Date.now()+OTP_TTL},P.auth);send(found.email,found.name,'Your Velo Finance resume verification code','<h2>Resume verification</h2><p>Your one-time code is <strong>'+otp+'</strong>.</p><p>This code expires in 10 minutes.</p>');return {ok:true,found:true,sent:true,challengeId:id,expiresIn:OTP_TTL,message:'OTP sent successfully.'};}
-  function resumeVerify(payload){var id=String(payload&&payload.challengeId||''),otp=String(payload&&payload.otp||''),key=P.auth+id,d=read(id,P.auth);if(!d||d.purpose!=='RESUME'||Date.now()>Number(d.expiresAt||0)){props().deleteProperty(key);return {ok:false,verified:false,error:'Verification code expired or invalid.'};}if(Number(d.attempts||0)>=MAX_ATTEMPTS){props().deleteProperty(key);return {ok:false,verified:false,error:'Too many attempts.'};}d.attempts++;props().setProperty(key,JSON.stringify(d));if(!/^\d{6}$/.test(otp)||!eq(otp,d.otp))return {ok:false,verified:false,error:'Authentication failed.'};var result=handleAdminGetApplication({applicationId:d.applicationId});if(!result||!result.ok||!result.application){props().deleteProperty(key);return {ok:false,verified:false,error:'The saved application is no longer available.'};}var app=result.application;if(app.status!=='DRAFT'&&app.status!=='IN_PROGRESS'){props().deleteProperty(key);return {ok:false,verified:false,error:'Authentication failed.'};}var personalEmail=email(app.personalInfo&&app.personalInfo.email),repEmail=email(app.businessRep&&app.businessRep.email);if(personalEmail!==email(d.email)&&repEmail!==email(d.email)){props().deleteProperty(key);return {ok:false,verified:false,error:'Authentication failed.'};}props().deleteProperty(key);return {ok:true,verified:true,found:true,application:app};}
-  function createManager(payload){var t=token(payload&&payload.adminToken);if(!t||t.role!=='ADMIN')return {ok:false,error:'Only administrators can create loan manager accounts.'};var e=email(payload.email),name=String(payload.name||'Loan Manager').trim().slice(0,120),url=String(payload.appUrl||'').replace(/\/$/,'');if(!e||!/^https?:\/\//i.test(url))return {ok:false,error:'Valid manager email and application URL are required.'};var c=cfg(),ms=managers();if(ms.some(function(m){return email(m.email)===e&&m.passwordHash;}))return {ok:false,error:'A loan manager account already exists for this email.'};var inv=Utilities.getUuid()+'-'+Utilities.getUuid();props().setProperty(P.manager+inv,JSON.stringify({email:e,name:name,expiresAt:Date.now()+INVITE_TTL}));ms=ms.filter(function(m){return email(m.email)!==e;});ms.push({email:e,name:name,passwordHash:'',active:true,createdAt:new Date().toISOString()});c.loanManagers=ms;c.loanManagerEmails=ms.map(function(m){return m.email;});saveCfg(c);send(e,name,'Your Velo Finance Loan Manager account','<h2>Loan Manager account created</h2><p>Your account has been created.</p><p><a href="'+url+'/admin/set-password?token='+encodeURIComponent(inv)+'">Set your password</a>.</p><p>This secure link expires in 24 hours.</p>');return {ok:true};}
-  function setManagerPassword(payload){var id=String(payload&&payload.token||''),pw=String(payload&&payload.password||''),key=P.manager+id,raw=props().getProperty(key);if(!raw||pw.length<10)return {ok:false,error:'Invalid invitation or password must be at least 10 characters.'};var inv;try{inv=JSON.parse(raw);}catch(_){return {ok:false,error:'Invalid invitation.'};}if(Date.now()>Number(inv.expiresAt||0)){props().deleteProperty(key);return {ok:false,error:'Invitation expired.'};}var c=cfg(),ms=managers(),i=ms.findIndex(function(m){return email(m.email)===email(inv.email);});if(i<0)return {ok:false,error:'Loan manager account not found.'};ms[i].passwordHash=hash(pw);ms[i].active=true;ms[i].passwordSetAt=new Date().toISOString();c.loanManagers=ms;c.loanManagerEmails=ms.map(function(m){return m.email;});saveCfg(c);props().deleteProperty(key);return {ok:true};}
-  function requestPasswordReset(payload){var e=email(payload&&payload.email),message='If that email is configured for an administrator, a reset code has been sent.';if(!e||adminEmails().indexOf(e)<0)return {ok:true,sent:true,message:message};var otp=String(Math.floor(100000+Math.random()*900000)),id=challenge({purpose:'PASSWORD_RESET',email:e,otp:otp,attempts:0,expiresAt:Date.now()+OTP_TTL},P.auth);send(e,'Administrator','Your Velo Finance password reset code','<h2>Password reset</h2><p>Your one-time reset code is <strong>'+otp+'</strong>.</p><p>This code expires in 10 minutes.</p>');return {ok:true,challengeId:id,expiresIn:OTP_TTL,message:'A password reset code has been sent to your administrator email.'};}
-  function resetPassword(payload){var id=String(payload&&payload.challengeId||''),otp=String(payload&&payload.otp||''),pw=String(payload&&payload.password||''),key=P.auth+id,d=read(id,P.auth);if(!d||d.purpose!=='PASSWORD_RESET'||Date.now()>Number(d.expiresAt||0)){props().deleteProperty(key);return {ok:false,error:'Reset code expired or invalid.'};}if(Number(d.attempts||0)>=MAX_ATTEMPTS){props().deleteProperty(key);return {ok:false,error:'Too many reset attempts.'};}d.attempts=Number(d.attempts||0)+1;props().setProperty(key,JSON.stringify(d));if(!/^\d{6}$/.test(otp)||!eq(otp,d.otp))return {ok:false,error:'Invalid reset code.'};if(pw.length<10)return {ok:false,error:'Password must be at least 10 characters.'};props().setProperty(P.adminPassword,pw);props().deleteProperty(key);return {ok:true,message:'Password reset successfully.'};}
-  function stats(){var r=handleAdminListStats(),sheet=getSheet_(getSpreadsheet_()),data=sheet.getDataRange().getValues();if(data.length<2)return r;var h=data[0],si=h.indexOf('Application Status'),ai=h.indexOf('Loan Amount'),ri=h.indexOf('Total Repayment'),d=0,real=0,awaiting=0;for(var i=1;i<data.length;i++){var s=String(data[i][si]||'').toUpperCase(),p=numberOrZero_(data[i][ai]),rep=numberOrZero_(data[i][ri]),rev=Math.max(0,rep-p);if(s==='DISBURSED'||s==='REPAID')d+=p;if(s==='REPAID')real+=rev;if(s==='DISBURSED')awaiting+=rev;}r.totalLoanDisbursed=d;r.realizedRevenue=real;r.awaitingRevenue=awaiting;return r;}
-  function dispatch(e){var body=JSON.parse(e.postData.contents||'{}'),a=String(body.action||''),p=body.payload||{};if(a==='adminLogin')return login(p);if(a==='verifyAdminLoginOtp')return verifyLogin(p);if(a==='requestAdminPasswordReset')return requestPasswordReset(p);if(a==='resetAdminPassword')return resetPassword(p);if(a==='requestResumeOtp')return resumeRequest(p);if(a==='verifyResumeOtp')return resumeVerify(p);if(a==='adminCreateLoanManager')return createManager(p);if(a==='setLoanManagerPassword')return setManagerPassword(p);var td=token(p.adminToken);if(!td&&a.indexOf('admin')===0)return {ok:false,error:'Unauthorized.',code:'UNAUTHORIZED'};if(a==='adminListStats')return td?stats():{ok:false,error:'Unauthorized.',code:'UNAUTHORIZED'};if(a==='adminListApplications'||a==='adminGetApplication'||a==='adminUpdateStatus'||a==='adminSaveConfig'||a==='adminResetConfig'){if(!td)return {ok:false,error:'Unauthorized.',code:'UNAUTHORIZED'};var clean=Object.assign({},p);delete clean.adminToken;clean.adminRole=td.role;clean.adminEmail=td.email;if((a==='adminSaveConfig'||a==='adminResetConfig')&&td.role!=='ADMIN')return {ok:false,error:'Only administrators can change configuration.'};return a==='adminListApplications'?handleAdminListApplications(clean):a==='adminGetApplication'?handleAdminGetApplication(clean):a==='adminUpdateStatus'?handleAdminUpdateStatus(clean):a==='adminSaveConfig'?handleAdminSaveConfig(clean):handleAdminResetConfig();}if(a==='saveDraft')return handleSaveDraft(p);if(a==='submit')return handleSubmit(p);if(a==='getConfig')return handleGetConfig();return {ok:false,error:'Unknown action: '+a};}
-  return {dispatch:dispatch};
+  var P = {
+    adminEmail: "VELO_ADMIN_EMAIL",
+    adminPassword: "VELO_ADMIN_PASSWORD",
+    brevoKey: "BREVO_API_KEY",
+    auth: "VELO_AUTH_CHALLENGE_",
+    manager: "VELO_MANAGER_INVITE_",
+    token: "VELO_SECURE_ADMIN_TOKEN_",
+  };
+  var OTP_TTL = 10 * 60 * 1000,
+    INVITE_TTL = 24 * 60 * 60 * 1000,
+    MAX_ATTEMPTS = 5;
+  function props() {
+    return PropertiesService.getScriptProperties();
+  }
+  function hash(v) {
+    var b = Utilities.computeDigest(
+      Utilities.DigestAlgorithm.SHA_256,
+      String(v || ""),
+      Utilities.Charset.UTF_8,
+    );
+    return b
+      .map(function (x) {
+        return ("0" + ((x + 256) % 256).toString(16)).slice(-2);
+      })
+      .join("");
+  }
+  function email(v) {
+    return String(v || "")
+      .trim()
+      .toLowerCase();
+  }
+  function eq(a, b) {
+    a = String(a || "");
+    b = String(b || "");
+    var d = a.length ^ b.length,
+      n = Math.max(a.length, b.length);
+    for (var i = 0; i < n; i++)
+      d |=
+        (a.charCodeAt(i % Math.max(1, a.length)) || 0) ^
+        (b.charCodeAt(i % Math.max(1, b.length)) || 0);
+    return d === 0;
+  }
+  function cfg() {
+    var raw = props().getProperty("VELO_ADMIN_CONFIG");
+    try {
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function saveCfg(c) {
+    props().setProperty("VELO_ADMIN_CONFIG", JSON.stringify(c));
+    return c;
+  }
+  function send(to, name, subject, html) {
+    var key = props().getProperty(P.brevoKey);
+    if (!key || !to) throw new Error("Brevo is not configured.");
+    var base = props().getProperty("BREVO_BASE_URL") || "https://api.brevo.com",
+      senderEmail =
+        props().getProperty("BREVO_SENDER_EMAIL") || "noreply@quantigrate.com",
+      senderName =
+        props().getProperty("BREVO_SENDER_NAME") || "Velo Finance LTD";
+    var body = {
+      sender: { email: senderEmail, name: senderName },
+      to: [{ email: to, name: name || "" }],
+      subject: subject,
+      htmlContent: html,
+    };
+    var r = UrlFetchApp.fetch(base + "/v3/smtp/email", {
+      method: "post",
+      contentType: "application/json",
+      muteHttpExceptions: true,
+      headers: { accept: "application/json", "api-key": key },
+      payload: JSON.stringify(body),
+    });
+    if (r.getResponseCode() < 200 || r.getResponseCode() >= 300)
+      throw new Error("Brevo email failed: HTTP " + r.getResponseCode());
+    return true;
+  }
+  function challenge(data, prefix) {
+    var id = Utilities.getUuid();
+    props().setProperty(prefix + id, JSON.stringify(data));
+    return id;
+  }
+  function read(id, prefix) {
+    var raw = props().getProperty(prefix + id);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+  function adminEmails() {
+    var c = cfg(),
+      list = Array.isArray(c.adminEmails) ? c.adminEmails.slice() : [],
+      e = props().getProperty(P.adminEmail);
+    if (e) list.push(e);
+    return list.map(email).filter(function (v, i, a) {
+      return v && a.indexOf(v) === i;
+    });
+  }
+  function managers() {
+    var c = cfg();
+    return Array.isArray(c.loanManagers) ? c.loanManagers : [];
+  }
+  function manager(e) {
+    e = email(e);
+    return (
+      managers().find(function (m) {
+        return email(m.email) === e && m.active !== false;
+      }) || null
+    );
+  }
+  function login(payload) {
+    var e = email(payload && payload.email),
+      pw = String((payload && payload.password) || "");
+    if (!e || !pw)
+      return { ok: false, error: "Email and password are required." };
+    var role = "",
+      ap = props().getProperty(P.adminPassword) || "";
+    if (adminEmails().indexOf(e) >= 0 && ap && eq(hash(pw), hash(ap)))
+      role = "ADMIN";
+    var m = manager(e);
+    if (!role && m && m.passwordHash && eq(hash(pw), String(m.passwordHash)))
+      role = "LOAN_MANAGER";
+    if (!role) return { ok: false, error: "Invalid email or password." };
+    var otp = String(Math.floor(100000 + Math.random() * 900000)),
+      id = challenge(
+        {
+          purpose: "LOGIN",
+          email: e,
+          role: role,
+          otp: otp,
+          attempts: 0,
+          expiresAt: Date.now() + OTP_TTL,
+        },
+        P.auth,
+      );
+    send(
+      e,
+      role === "ADMIN" ? "Admin" : "Loan Manager",
+      "Your Velo Finance login verification code",
+      "<h2>Login verification</h2><p>Your one-time code is <strong>" +
+        otp +
+        "</strong>.</p><p>This code expires in 10 minutes.</p>",
+    );
+    return { ok: true, otpRequired: true, challengeId: id, expiresIn: OTP_TTL };
+  }
+  function verifyLogin(payload) {
+    var id = String((payload && payload.challengeId) || ""),
+      otp = String((payload && payload.otp) || ""),
+      key = P.auth + id,
+      d = read(id, P.auth);
+    if (!d || d.purpose !== "LOGIN" || Date.now() > Number(d.expiresAt || 0)) {
+      props().deleteProperty(key);
+      return { ok: false, error: "Verification code expired or invalid." };
+    }
+    if (Number(d.attempts || 0) >= MAX_ATTEMPTS) {
+      props().deleteProperty(key);
+      return { ok: false, error: "Too many verification attempts." };
+    }
+    d.attempts = Number(d.attempts || 0) + 1;
+    props().setProperty(key, JSON.stringify(d));
+    if (!/^\d{6}$/.test(otp) || !eq(otp, d.otp))
+      return { ok: false, error: "Invalid verification code." };
+    props().deleteProperty(key);
+    var t = Utilities.getUuid() + "-" + Utilities.getUuid();
+    props().setProperty(
+      P.token + t,
+      JSON.stringify({ email: d.email, role: d.role, issuedAt: Date.now() }),
+    );
+    return { ok: true, token: t, role: d.role };
+  }
+  function token(t) {
+    var raw = props().getProperty(P.token + String(t || ""));
+    if (!raw) return null;
+    try {
+      var d = JSON.parse(raw);
+      if (Date.now() - Number(d.issuedAt || 0) > 24 * 60 * 60 * 1000) {
+        props().deleteProperty(P.token + t);
+        return null;
+      }
+      return d;
+    } catch (_) {
+      return null;
+    }
+  }
+  function resumeRequest(payload) {
+    var e = email(payload && payload.email);
+    if (!e) return { ok: false, error: "Enter your email address." };
+    var sheet = getSheet_(getSpreadsheet_()),
+      data = sheet.getDataRange().getValues();
+    if (data.length < 2)
+      return {
+        ok: true,
+        found: false,
+        sent: false,
+        message: "Email doesn't exist, kindly start application afresh.",
+      };
+    var h = data[0],
+      ix = headerIndexes_(h),
+      found = null;
+    for (var i = data.length - 1; i >= 1; i--) {
+      var r = data[i],
+        s = String(valueAt_(r, ix.status) || "").toUpperCase();
+      if (s !== "DRAFT" && s !== "IN_PROGRESS") continue;
+      var re = email(valueAt_(r, ix.email)),
+        rr = email(valueAt_(r, ix.repEmail));
+      if (e && (re === e || rr === e)) {
+        found = {
+          id: String(valueAt_(r, ix.id) || ""),
+          email: e,
+          name: String(
+            valueAt_(r, ix.name) || valueAt_(r, ix.businessName) || "Applicant",
+          ),
+        };
+        break;
+      }
+    }
+    if (!found || !found.email)
+      return {
+        ok: true,
+        found: false,
+        sent: false,
+        message: "Email doesn't exist, kindly start application afresh.",
+      };
+    var otp = String(Math.floor(100000 + Math.random() * 900000)),
+      id = challenge(
+        {
+          purpose: "RESUME",
+          applicationId: found.id,
+          email: found.email,
+          otp: otp,
+          attempts: 0,
+          expiresAt: Date.now() + OTP_TTL,
+        },
+        P.auth,
+      );
+    send(
+      found.email,
+      found.name,
+      "Your Velo Finance resume verification code",
+      "<h2>Resume verification</h2><p>Your one-time code is <strong>" +
+        otp +
+        "</strong>.</p><p>This code expires in 10 minutes.</p>",
+    );
+    return {
+      ok: true,
+      found: true,
+      sent: true,
+      challengeId: id,
+      expiresIn: OTP_TTL,
+      message: "OTP sent successfully.",
+    };
+  }
+  function resumeVerify(payload) {
+    var id = String((payload && payload.challengeId) || ""),
+      otp = String((payload && payload.otp) || ""),
+      key = P.auth + id,
+      d = read(id, P.auth);
+    if (!d || d.purpose !== "RESUME" || Date.now() > Number(d.expiresAt || 0)) {
+      props().deleteProperty(key);
+      return {
+        ok: false,
+        verified: false,
+        error: "Verification code expired or invalid.",
+      };
+    }
+    if (Number(d.attempts || 0) >= MAX_ATTEMPTS) {
+      props().deleteProperty(key);
+      return { ok: false, verified: false, error: "Too many attempts." };
+    }
+    d.attempts++;
+    props().setProperty(key, JSON.stringify(d));
+    if (!/^\d{6}$/.test(otp) || !eq(otp, d.otp))
+      return { ok: false, verified: false, error: "Authentication failed." };
+    var result = handleAdminGetApplication({ applicationId: d.applicationId });
+    if (!result || !result.ok || !result.application) {
+      props().deleteProperty(key);
+      return {
+        ok: false,
+        verified: false,
+        error: "The saved application is no longer available.",
+      };
+    }
+    var app = result.application;
+    if (app.status !== "DRAFT" && app.status !== "IN_PROGRESS") {
+      props().deleteProperty(key);
+      return { ok: false, verified: false, error: "Authentication failed." };
+    }
+    var personalEmail = email(app.personalInfo && app.personalInfo.email),
+      repEmail = email(app.businessRep && app.businessRep.email);
+    if (personalEmail !== email(d.email) && repEmail !== email(d.email)) {
+      props().deleteProperty(key);
+      return { ok: false, verified: false, error: "Authentication failed." };
+    }
+    props().deleteProperty(key);
+    return { ok: true, verified: true, found: true, application: app };
+  }
+  function createManager(payload) {
+    var t = token(payload && payload.adminToken);
+    if (!t || t.role !== "ADMIN")
+      return {
+        ok: false,
+        error: "Only administrators can create loan manager accounts.",
+      };
+    var e = email(payload.email),
+      name = String(payload.name || "Loan Manager")
+        .trim()
+        .slice(0, 120),
+      url = String(payload.appUrl || "").replace(/\/$/, "");
+    if (!e || !/^https?:\/\//i.test(url))
+      return {
+        ok: false,
+        error: "Valid manager email and application URL are required.",
+      };
+    var c = cfg(),
+      ms = managers();
+    if (
+      ms.some(function (m) {
+        return email(m.email) === e && m.passwordHash;
+      })
+    )
+      return {
+        ok: false,
+        error: "A loan manager account already exists for this email.",
+      };
+    var inv = Utilities.getUuid() + "-" + Utilities.getUuid();
+    props().setProperty(
+      P.manager + inv,
+      JSON.stringify({
+        email: e,
+        name: name,
+        expiresAt: Date.now() + INVITE_TTL,
+      }),
+    );
+    ms = ms.filter(function (m) {
+      return email(m.email) !== e;
+    });
+    ms.push({
+      email: e,
+      name: name,
+      passwordHash: "",
+      active: true,
+      createdAt: new Date().toISOString(),
+    });
+    c.loanManagers = ms;
+    c.loanManagerEmails = ms.map(function (m) {
+      return m.email;
+    });
+    saveCfg(c);
+    send(
+      e,
+      name,
+      "Your Velo Finance Loan Manager account",
+      '<h2>Loan Manager account created</h2><p>Your account has been created.</p><p><a href="' +
+        url +
+        "/admin/set-password?token=" +
+        encodeURIComponent(inv) +
+        '">Set your password</a>.</p><p>This secure link expires in 24 hours.</p>',
+    );
+    return { ok: true };
+  }
+  function setManagerPassword(payload) {
+    var id = String((payload && payload.token) || ""),
+      pw = String((payload && payload.password) || ""),
+      key = P.manager + id,
+      raw = props().getProperty(key);
+    if (!raw || pw.length < 10)
+      return {
+        ok: false,
+        error: "Invalid invitation or password must be at least 10 characters.",
+      };
+    var inv;
+    try {
+      inv = JSON.parse(raw);
+    } catch (_) {
+      return { ok: false, error: "Invalid invitation." };
+    }
+    if (Date.now() > Number(inv.expiresAt || 0)) {
+      props().deleteProperty(key);
+      return { ok: false, error: "Invitation expired." };
+    }
+    var c = cfg(),
+      ms = managers(),
+      i = ms.findIndex(function (m) {
+        return email(m.email) === email(inv.email);
+      });
+    if (i < 0) return { ok: false, error: "Loan manager account not found." };
+    ms[i].passwordHash = hash(pw);
+    ms[i].active = true;
+    ms[i].passwordSetAt = new Date().toISOString();
+    c.loanManagers = ms;
+    c.loanManagerEmails = ms.map(function (m) {
+      return m.email;
+    });
+    saveCfg(c);
+    props().deleteProperty(key);
+    return { ok: true };
+  }
+  function requestPasswordReset(payload) {
+    var e = email(payload && payload.email),
+      message =
+        "If that email is configured for an administrator, a reset code has been sent.";
+    if (!e || adminEmails().indexOf(e) < 0)
+      return { ok: true, sent: true, message: message };
+    var otp = String(Math.floor(100000 + Math.random() * 900000)),
+      id = challenge(
+        {
+          purpose: "PASSWORD_RESET",
+          email: e,
+          otp: otp,
+          attempts: 0,
+          expiresAt: Date.now() + OTP_TTL,
+        },
+        P.auth,
+      );
+    send(
+      e,
+      "Administrator",
+      "Your Velo Finance password reset code",
+      "<h2>Password reset</h2><p>Your one-time reset code is <strong>" +
+        otp +
+        "</strong>.</p><p>This code expires in 10 minutes.</p>",
+    );
+    return {
+      ok: true,
+      challengeId: id,
+      expiresIn: OTP_TTL,
+      message:
+        "A password reset code has been sent to your administrator email.",
+    };
+  }
+  function resetPassword(payload) {
+    var id = String((payload && payload.challengeId) || ""),
+      otp = String((payload && payload.otp) || ""),
+      pw = String((payload && payload.password) || ""),
+      key = P.auth + id,
+      d = read(id, P.auth);
+    if (
+      !d ||
+      d.purpose !== "PASSWORD_RESET" ||
+      Date.now() > Number(d.expiresAt || 0)
+    ) {
+      props().deleteProperty(key);
+      return { ok: false, error: "Reset code expired or invalid." };
+    }
+    if (Number(d.attempts || 0) >= MAX_ATTEMPTS) {
+      props().deleteProperty(key);
+      return { ok: false, error: "Too many reset attempts." };
+    }
+    d.attempts = Number(d.attempts || 0) + 1;
+    props().setProperty(key, JSON.stringify(d));
+    if (!/^\d{6}$/.test(otp) || !eq(otp, d.otp))
+      return { ok: false, error: "Invalid reset code." };
+    if (pw.length < 10)
+      return { ok: false, error: "Password must be at least 10 characters." };
+    props().setProperty(P.adminPassword, pw);
+    props().deleteProperty(key);
+    return { ok: true, message: "Password reset successfully." };
+  }
+  function stats() {
+    var r = handleAdminListStats(),
+      sheet = getSheet_(getSpreadsheet_()),
+      data = sheet.getDataRange().getValues();
+    if (data.length < 2) return r;
+    var h = data[0],
+      si = h.indexOf("Application Status"),
+      ai = h.indexOf("Loan Amount"),
+      ri = h.indexOf("Total Repayment"),
+      d = 0,
+      real = 0,
+      awaiting = 0;
+    for (var i = 1; i < data.length; i++) {
+      var s = String(data[i][si] || "").toUpperCase(),
+        p = numberOrZero_(data[i][ai]),
+        rep = numberOrZero_(data[i][ri]),
+        rev = Math.max(0, rep - p);
+      if (s === "DISBURSED" || s === "REPAID") d += p;
+      if (s === "REPAID") real += rev;
+      if (s === "DISBURSED") awaiting += rev;
+    }
+    r.totalLoanDisbursed = d;
+    r.realizedRevenue = real;
+    r.awaitingRevenue = awaiting;
+    return r;
+  }
+  function dispatch(e) {
+    var body = JSON.parse(e.postData.contents || "{}"),
+      a = String(body.action || ""),
+      p = body.payload || {};
+    if (a === "uploadDocument") return handleUploadDocument_(p);
+    if (a === "adminLogin") return login(p);
+    if (a === "verifyAdminLoginOtp") return verifyLogin(p);
+    if (a === "requestAdminPasswordReset") return requestPasswordReset(p);
+    if (a === "resetAdminPassword") return resetPassword(p);
+    if (a === "requestResumeOtp") return resumeRequest(p);
+    if (a === "verifyResumeOtp") return resumeVerify(p);
+    if (a === "adminCreateLoanManager") return createManager(p);
+    if (a === "setLoanManagerPassword") return setManagerPassword(p);
+    var td = token(p.adminToken);
+    if (!td && a.indexOf("admin") === 0)
+      return { ok: false, error: "Unauthorized.", code: "UNAUTHORIZED" };
+    if (a === "adminListStats")
+      return td
+        ? stats()
+        : { ok: false, error: "Unauthorized.", code: "UNAUTHORIZED" };
+    if (
+      a === "adminListApplications" ||
+      a === "adminGetApplication" ||
+      a === "adminUpdateStatus" ||
+      a === "adminSaveConfig" ||
+      a === "adminResetConfig"
+    ) {
+      if (!td)
+        return { ok: false, error: "Unauthorized.", code: "UNAUTHORIZED" };
+      var clean = Object.assign({}, p);
+      delete clean.adminToken;
+      clean.adminRole = td.role;
+      clean.adminEmail = td.email;
+      if (
+        (a === "adminSaveConfig" || a === "adminResetConfig") &&
+        td.role !== "ADMIN"
+      )
+        return {
+          ok: false,
+          error: "Only administrators can change configuration.",
+        };
+      return a === "adminListApplications"
+        ? handleAdminListApplications(clean)
+        : a === "adminGetApplication"
+          ? handleAdminGetApplication(clean)
+          : a === "adminUpdateStatus"
+            ? handleAdminUpdateStatus(clean)
+            : a === "adminSaveConfig"
+              ? handleAdminSaveConfig(clean)
+              : handleAdminResetConfig();
+    }
+    if (a === "saveDraft") return handleSaveDraft(p);
+    if (a === "submit") return handleSubmit(p);
+    if (a === "getConfig") return handleGetConfig();
+    return { ok: false, error: "Unknown action: " + a };
+  }
+  return { dispatch: dispatch };
 })();
 
 // Named function so other files can call it without hoisting/assignment issues.
-function veloSecurityDoPost_(e){
+function veloSecurityDoPost_(e) {
   try {
     return jsonOut_(VeloSecurity.dispatch(e));
   } catch (err) {

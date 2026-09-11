@@ -11,44 +11,22 @@ export function isGoogleDriveConfigured(): boolean { return configured(); }
 
 async function uploadViaAppsScript(input: { filename: string; mimeType: string; buffer: Buffer; userId: string; documentType: string }): Promise<{ provider: "google_drive"; fileId: string; filename: string }> {
   if (!env.GOOGLE_APPS_SCRIPT_UPLOAD_URL) throw new Error("Google Apps Script upload URL is not configured");
-  const formBoundary = `----veloupload${Date.now()}`;
   const basePath = `${input.userId}/${input.documentType}`;
-  const preamble = [
-    `--${formBoundary}`,
-    `Content-Disposition: form-data; name="folderId"`,
-    ``,
-    env.GOOGLE_DRIVE_PARENT_FOLDER_ID!,
-    `--${formBoundary}`,
-    `Content-Disposition: form-data; name="path"`,
-    ``,
-    basePath,
-    `--${formBoundary}`,
-    `Content-Disposition: form-data; name="filename"`,
-    ``,
-    input.filename,
-    `--${formBoundary}`,
-    `Content-Disposition: form-data; name="mimeType"`,
-    ``,
-    input.mimeType,
-    `--${formBoundary}`,
-    `Content-Disposition: form-data; name="userId"`,
-    ``,
-    input.userId,
-    `--${formBoundary}`,
-    `Content-Disposition: form-data; name="documentType"`,
-    ``,
-    input.documentType,
-    `--${formBoundary}`,
-    `Content-Disposition: form-data; name="file"; filename="${input.filename}"`,
-    `Content-Type: ${input.mimeType}`,
-    ``,
-    ``,
-  ].join("\r\n");
-  const epilogue = `\r\n--${formBoundary}--\r\n`;
-  const body = Buffer.concat([Buffer.from(preamble, "utf8"), input.buffer, Buffer.from(epilogue, "utf8")]);
+  const body = JSON.stringify({
+    action: "uploadDocument",
+    payload: {
+      folderId: env.GOOGLE_DRIVE_PARENT_FOLDER_ID,
+      path: basePath,
+      filename: input.filename,
+      mimeType: input.mimeType,
+      userId: input.userId,
+      documentType: input.documentType,
+      data: input.buffer.toString("base64"),
+    },
+  });
   const response = await fetch(env.GOOGLE_APPS_SCRIPT_UPLOAD_URL, {
     method: "POST",
-    headers: { "Content-Type": `multipart/form-data; boundary=${formBoundary}` },
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body,
     signal: AbortSignal.timeout(60_000),
   });
