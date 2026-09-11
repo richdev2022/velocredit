@@ -53,6 +53,8 @@ type TransactionData = {
 };
 type KycData = {
   status?: string;
+  bvn?: string;
+  nin?: string;
   checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean; selfieUploaded?: boolean; liveness?: boolean };
   verifiedDetails?: Record<string, unknown>;
   identityPhoto?: string;
@@ -154,6 +156,8 @@ export default function InvestorDashboard() {
               setData(dashboard as DashboardData);
               setTransactions(history as unknown as TransactionData);
               setKyc(kycResponse as unknown as KycData);
+              setBvn((kycResponse as any).bvn || "");
+              setNin((kycResponse as any).nin || "");
               setPlans((plansRes as any)?.plans || []);
             })
             .catch(() => undefined);
@@ -178,6 +182,8 @@ export default function InvestorDashboard() {
         setData(dashboard as DashboardData);
         setTransactions(history as unknown as TransactionData);
         setKyc(kycResponse as unknown as KycData);
+        setBvn((kycResponse as any).bvn || "");
+        setNin((kycResponse as any).nin || "");
         setPlans((plansRes as any)?.plans || []);
       })
       .catch((err) =>
@@ -1593,8 +1599,8 @@ function InvestorKyc(props: any) {
                 <span>Proof of address can be utility bill, bank statement, house rent receipt that indicate the resident address and not older than 3 months.</span>
               </div>
             </div>
-            <button type="button" onClick={submitAddressReview} disabled={!canSubmitAddressReview || busy || kyc?.status === "PENDING_VERIFICATION"} className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50">
-              {busy ? "Submitting…" : kyc?.status === "PENDING_VERIFICATION" ? "Address under review" : "Submit proof of address for review"}
+            <button type="button" onClick={submitAddressReview} disabled={!canSubmitAddressReview || busy || (kyc?.status === "PENDING_VERIFICATION" && Boolean(checklist.proofOfAddress))} className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50">
+              {busy ? "Submitting…" : kyc?.status === "PENDING_VERIFICATION" && checklist.proofOfAddress ? "Address under review" : "Submit proof of address for review"}
             </button>
             {!canSubmitAddressReview && <p className="text-xs text-slate-500">Verify BVN and NIN and upload proof of address before submitting for review.</p>}
           </div>

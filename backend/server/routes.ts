@@ -673,6 +673,13 @@ router.post("/me/roles/add", requireAuth, (req: AuthRequest, res) => {
 
 router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   const kyc = findOrCreateKycCase(req.user!.id);
+  if (!kyc.checklist.proofOfAddress && kyc.status === "PENDING_VERIFICATION") {
+    kyc.status = "IN_PROGRESS";
+    kyc.submittedAt = undefined;
+    kyc.updatedAt = new Date().toISOString();
+    const user = users.find((item) => item.id === req.user!.id);
+    if (user) user.kycStatus = kyc.status;
+  }
   const userDocs = documents.filter((d) => d.userId === req.user?.id);
   let identityPhoto: string | undefined;
   const normalizedFields: Record<string, unknown> = {};
