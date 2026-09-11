@@ -33,6 +33,7 @@ import {
   getSavedSectionIndex,
 } from "../utils/storage";
 import { getAccessToken, submitBorrowerApplication } from "../services/apiClient";
+import { useAuth } from "./AuthContext";
 import type {
   LookupDraftResponse,
   SaveDraftResponse,
@@ -136,6 +137,7 @@ const ApplicationContext = createContext<ApplicationContextValue | null>(null);
 // ---------------------------------------------------------------------------
 
 export function ApplicationProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [application, setApplication] = useState<ApplicationData | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -147,6 +149,39 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextAutoSave = useRef(false);
   const currentIndexRef = useRef(0);
+  const restoredUserIdRef = useRef<string | null>(null);
+
+  // Restore the complete local draft after login. KYC is fetched separately,
+  // but the application wizard data and pending section live in local storage.
+  useEffect(() => {
+    if (!user) {
+      restoredUserIdRef.current = null;
+      return;
+    }
+    if (restoredUserIdRef.current === user.id || application) return;
+    const email = user.email || "";
+    const phone = user.phone || "";
+    const matches = findDraftsByEmailOrPhone(email, phone)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const match = matches[0];
+    if (!match) {
+      restoredUserIdRef.current = user.id;
+      return;
+    }
+    const saved = loadApplication(match.applicationId);
+    if (!saved) {
+      restoredUserIdRef.current = user.id;
+      return;
+    }
+    const resumed = normalizeApplicationData(saved);
+    const savedIndex = getSavedSectionIndex(resumed);
+    setApplication(resumed);
+    setCurrentIndex(savedIndex);
+    currentIndexRef.current = savedIndex;
+    setSectionStatusOverrides({});
+    skipNextAutoSave.current = true;
+    restoredUserIdRef.current = user.id;
+  }, [user, application]);
 
   // ----- derived: calculation -----
   const calculation = useMemo<LoanCalculation | null>(() => {
