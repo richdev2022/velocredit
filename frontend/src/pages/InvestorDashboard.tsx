@@ -1748,11 +1748,12 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
   });
   (data.walletTransactions || []).forEach((tx: any) => {
     const isCredit = /CREDIT|DEPOSIT|FUNDING|IN/.test(String(tx.type || tx.direction || "").toUpperCase());
+    const amountMinor = tx.amountMinor != null ? Number(tx.amountMinor) : tx.amountNaira != null ? Number(tx.amountNaira) * 100 : 0;
     out.push({
       id: String(tx.id || `wallet-${tx.createdAt}-${tx.amountMinor}`),
       kind: isCredit ? "DEPOSIT" : "OTHER",
       direction: isCredit ? "CREDIT" : "DEBIT",
-      amountMinor: Number(tx.amountMinor ?? tx.amountNaira != null ? Number(tx.amountNaira) * 100 : 0),
+      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
       label: tx.type ? String(tx.type).replace(/_/g, " ") : "Wallet transaction",
       narration: tx.description || tx.narration,
       referenceId: tx.reference || tx.txRef || tx.transactionId,
@@ -1762,11 +1763,12 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
     });
   });
   (data.investments || []).forEach((inv: any, i: number) => {
+    const amountMinor = inv.amountMinor != null ? Number(inv.amountMinor) : inv.amountNaira != null ? Number(inv.amountNaira) * 100 : 0;
     out.push({
       id: String(inv.id || `inv-${i}`),
       kind: "INVESTMENT",
       direction: "DEBIT",
-      amountMinor: Number(inv.amountMinor ?? inv.amountNaira != null ? Number(inv.amountNaira) * 100 : 0),
+      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
       label: inv.planSnapshot?.name ? `Investment: ${inv.planSnapshot.name}` : "New investment",
       narration: `Investment created · Status: ${inv.status || "PENDING"}`,
       referenceId: inv.id,
@@ -1775,11 +1777,12 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
     });
   });
   (data.payouts || []).forEach((p: any, i: number) => {
+    const amountMinor = p.amountMinor != null ? Number(p.amountMinor) : p.amountNaira != null ? Number(p.amountNaira) * 100 : 0;
     out.push({
       id: String(p.id || `payout-${i}`),
       kind: "PAYOUT",
       direction: "CREDIT",
-      amountMinor: Number(p.amountMinor ?? p.amountNaira != null ? Number(p.amountNaira) * 100 : 0),
+      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
       label: "Investment payout",
       narration: `Payout status: ${p.status || "PENDING"}`,
       referenceId: p.referenceId || p.id,
@@ -2053,7 +2056,7 @@ function InvestorPayoutSection(props: any) {
         throw new Error("Server returned non-JSON response when resolving account");
       }
       const body = await res.json();
-      if (body.ok) setResolvedName(body.accountName);
+      if (body.ok) setResolvedName(body.accountName || body.resolved?.accountName || "");
       else setResolveError(body.error || "Could not resolve account");
     } catch (err) { setResolveError(err instanceof Error ? err.message : "Resolution failed"); }
     finally { setBusy(""); }

@@ -7,6 +7,7 @@ import {
   getBorrowerDashboard,
   getBorrowerCreditHistory,
   getBorrowerLoans,
+  getMyKyc,
   initializeLoanRepayment,
 } from "../services/apiClient";
 import BorrowerDisbursementSection from "../components/BorrowerDisbursementSection";
@@ -1627,7 +1628,36 @@ function BorrowerCredit(props: any) { const { credit, history } = props;
 }
 
 function BorrowerKyc(props: any) {
-  const status = props.user?.kycStatus ?? "NOT_STARTED";
+  const [kyc, setKyc] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  async function loadKyc() {
+    try {
+      const response = await getMyKyc();
+      setKyc(response);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load KYC status");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void loadKyc();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void loadKyc();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    const interval = window.setInterval(() => void loadKyc(), 5000);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.clearInterval(interval);
+    };
+  }, [props.user?.id]);
+
+  const status = kyc?.status ?? props.user?.kycStatus ?? "NOT_STARTED";
+  const checklist = kyc?.checklist ?? {};
+  const completedSteps = [checklist.bvn, checklist.nin, checklist.liveness, checklist.proofOfAddress].filter(Boolean).length;
   return (
     <div className="space-y-6">
       <div>
@@ -1637,6 +1667,9 @@ function BorrowerKyc(props: any) {
           Complete your verification to unlock loan and investing features.
         </p>
       </div>
+
+      {loading && <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-700 dark:border-sky-900/40 dark:bg-sky-900/20 dark:text-sky-300">Checking your latest KYC status…</div>}
+      {error && <div className="rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">{error}</div>}
 
       <section className="velo-card p-4 sm:p-5 lg:p-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -1658,10 +1691,15 @@ function BorrowerKyc(props: any) {
             {status.replace(/_/g, " ")}
           </span>
         </div>
+        <div className="mt-3 text-xs font-semibold text-slate-500 dark:text-slate-400">{completedSteps}/4 identity checks completed</div>
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
-          <KycStep label="Identity check" done={status === "VERIFIED"} />
-          <KycStep label="Liveness check" done={status === "VERIFIED"} />
+          <KycStep label="BVN verification" done={Boolean(checklist.bvn)} />
+          <KycStep label="NIN verification" done={Boolean(checklist.nin)} />
           <KycStep label="Phone & email" done={Boolean(props.user?.phone && props.user?.email)} />
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <KycStep label="Liveness check" done={Boolean(checklist.liveness)} />
+          <KycStep label="Proof of address" done={Boolean(checklist.proofOfAddress)} />
         </div>
       </section>
 

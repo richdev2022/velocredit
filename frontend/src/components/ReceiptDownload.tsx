@@ -32,6 +32,7 @@ function firstNumber(tx: Record<string, unknown>, keys: string[]): number | unde
   for (const key of keys) {
     const v = tx[key];
     if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
   }
   return undefined;
 }
@@ -71,6 +72,16 @@ function getAmountMinor(tx: Record<string, unknown>): number {
   const naira = firstNumber(tx, ["amountNaira", "amount"]);
   if (naira !== undefined) return naira * 100;
   return 0;
+}
+
+function formatMinor(value: unknown): string {
+  const amount = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(amount) ? formatNaira(amount / 100) : "—";
+}
+
+function getOptionalDetail(tx: Record<string, unknown>, keys: string[]): string | undefined {
+  const value = firstString(tx, keys) ?? (firstNumber(tx, keys) !== undefined ? String(firstNumber(tx, keys)) : undefined);
+  return value && value !== "0" ? value : undefined;
 }
 
 function getReference(tx: Record<string, unknown>): string {
@@ -150,6 +161,7 @@ async function buildPdf(
 ): Promise<jsPDF> {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 48;
   const contentWidth = pageWidth - margin * 2;
 
@@ -174,7 +186,24 @@ async function buildPdf(
   const reference = getReference(tx);
   const narration = getNarration(tx);
   const dateLabel = new Date(txDate).toLocaleString("en-NG");
-  const balanceAfterLabel = balanceAfterMinor !== undefined ? formatNaira(balanceAfterMinor) : "—";
+  const balanceBeforeLabel = balanceBeforeMinor !== undefined ? formatMinor(balanceBeforeMinor) : "—";
+  const balanceAfterLabel = balanceAfterMinor !== undefined ? formatMinor(balanceAfterMinor) : "—";
+  const status = getOptionalDetail(tx, ["status", "paymentStatus"]) ?? "—";
+  const currency = getOptionalDetail(tx, ["currency"]) ?? "NGN";
+  const breakdown: Array<[string, string]> = [
+    ["Transaction amount", (isNaN(amountMinor) ? "—" : formatNaira(amountMinor / 100))],
+    ["Direction", direction],
+    ["Status", status],
+    ["Currency", currency],
+  ];
+  const principal = getOptionalDetail(tx, ["principalNaira"]);
+  const earnings = getOptionalDetail(tx, ["earningsNaira", "expectedEarningsNaira", "accruedEarningsNaira"]);
+  const fees = getOptionalDetail(tx, ["feesNaira", "feeNaira", "liquidityFeeNaira"]);
+  const providerReference = getOptionalDetail(tx, ["providerReference", "providerTransactionId", "flutterwaveRef"]);
+  if (principal) breakdown.push(["Principal", formatNaira(Number(principal))]);
+  if (earnings) breakdown.push(["Earnings", formatNaira(Number(earnings))]);
+  if (fees) breakdown.push(["Fees", formatNaira(Number(fees))]);
+  if (providerReference) breakdown.push(["Provider reference", providerReference]);
 
   const isCredit = direction === "CREDIT";
   const amountColor = isCredit ? emerald : red;
@@ -295,11 +324,32 @@ async function buildPdf(
   }
 
   drawTallCard(margin, y, refH, "REFERENCE ID", refLines);
-  drawTallCard(margin + half + gap, y, refH, "WALLET BALANCE AFTER", [balanceAfterLabel]);
+  drawTallCard(margin + half + gap, y, refH, "WALLET BALANCE", [`Before: ${balanceBeforeLabel}`, `After: ${balanceAfterLabel}`]);
   y += refH + gap;
 
+  const breakdownRows = Math.ceil(breakdown.length / 2);
+  const breakdownH = 46 + breakdownRows * 28;
+  doc.setFillColor(cardBg);
+  doc.setDrawColor(cardBorder);
+  doc.setLineWidth(0.6);
+  doc.roundedRect(margin, y, contentWidth, breakdownH, cardR, cardR, "FD");
+  setFont(11, true, slate);
+  doc.text("TRANSACTION BREAKDOWN", margin + cardPadX, y + cardPadY);
+  breakdown.forEach(([label, value], index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const x = margin + cardPadX + column * (contentWidth / 2);
+    const valueY = y + 42 + row * 28;
+    setFont(9, true, slate);
+    doc.text(label.toUpperCase(), x, valueY);
+    setFont(11, true, navy);
+    const lines = doc.splitTextToSize(value, contentWidth / 2 - cardPadX * 2) as string[];
+    doc.text(lines[0] || "—", x, valueY + 13);
+  });
+  y += breakdownH + gap;
+
   const narrLines = doc.splitTextToSize(narration, contentWidth - cardPadX * 2) as string[];
-  const narrH = 80 + narrLines.length * 18;
+  const narrH = 62 + narrLines.length * 15;
   doc.setFillColor(cardBg);
   doc.setDrawColor(cardBorder);
   doc.setLineWidth(0.6);
@@ -307,14 +357,14 @@ async function buildPdf(
   setFont(11, true, slate);
   doc.text("NARRATION", margin + cardPadX, y + cardPadY);
   setFont(13, true, navy);
-  let narrY = y + cardPadY + 24;
+  let narrY = y + cardPadY + 22;
   narrLines.forEach((line) => {
     doc.text(line, margin + cardPadX, narrY);
-    narrY += 18;
+    narrY += 15;
   });
-  y += narrH + 40;
+  y += narrH + 24;
 
-  const footerY = 770;
+  const footerY = Math.max(y + 10, pageHeight - 62);
   doc.setDrawColor(cardBorder);
   doc.setLineWidth(0.5);
   doc.line(margin, footerY, pageWidth - margin, footerY);

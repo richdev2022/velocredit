@@ -3703,6 +3703,8 @@ router.post("/investor/payout-accounts/resolve", requireAuth, requireRole("INVES
     }
     res.json({
       ok: true,
+      accountName: String(result.data.account_name),
+      accountNumber: String(result.data.account_number ?? parsed.data.accountNumber),
       resolved: {
         accountName: String(result.data.account_name),
         accountNumber: String(result.data.account_number ?? parsed.data.accountNumber),
