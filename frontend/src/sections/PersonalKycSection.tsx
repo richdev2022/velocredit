@@ -58,6 +58,7 @@ export default function PersonalKycSection() {
   const [verificationError, setVerificationError] = useState("");
   const [livenessBusy, setLivenessBusy] = useState(false);
   const [otpMethodPickerFor, setOtpMethodPickerFor] = useState<null | "BVN" | "NIN">(null);
+  const [otpPickerState, setOtpPickerState] = useState<{ phase: "idle" | "sending" | "success" | "error"; channel?: "SMS" | "WHATSAPP"; message?: string }>({ phase: "idle" });
   const [activeOtpChallenge, setActiveOtpChallenge] = useState<null | {
     idType: "BVN" | "NIN";
     challenge: KycOtpChallenge;
@@ -148,13 +149,14 @@ export default function PersonalKycSection() {
       return;
     }
     setVerificationError("");
+    setOtpPickerState({ phase: "idle" });
     setOtpMethodPickerFor(type.toUpperCase() as "BVN" | "NIN");
   }
 
   async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS" | "WHATSAPP") {
     const value = type === "BVN" ? currentApplication.kyc?.bvn || "" : currentApplication.kyc?.nin || "";
-    setOtpMethodPickerFor(null);
     const lowerType = type.toLowerCase() as "bvn" | "nin";
+    setOtpPickerState({ phase: "sending", channel });
     setVerification((current) => ({ ...current, [lowerType]: "Verifying…" }));
     setActiveOtpChallenge(null);
     try {
@@ -167,11 +169,14 @@ export default function PersonalKycSection() {
         setActiveOtpChallenge({ idType: type, challenge, otpCode: "", cooldown: challenge.resendSecondsRemaining });
         setVerificationError(`A verification code was sent to the phone number on ${type} records ending in ···${challenge.phoneLastFour}. Enter the code to confirm ownership.`);
         setVerification((current) => ({ ...current, [lowerType]: "OTP required" }));
+        setOtpMethodPickerFor(null);
+        setOtpPickerState({ phase: "idle" });
         return;
       }
       const status = response.verificationStatus === "SUCCESS" ? "Verified" : response.error || "Verification failed";
       setVerification((current) => ({ ...current, [lowerType]: status }));
       if (response.verificationStatus === "SUCCESS") {
+        setOtpPickerState({ phase: "success", channel, message: `${type} phone matches your registered account — ownership confirmed automatically. No code required.` });
         const details = response.verifiedDetails ?? {};
         const photoUrl = normalizePhotoData(pickStr(details, ["base64Image", "identityPhoto", "photo", "photograph", "image", "face_image", "selfie"]));
         patchKyc({ [lowerType === "bvn" ? "bvnVerified" : "ninVerified"]: true, verifiedDetails: details, ...(photoUrl ? { identityPhotoUrl: photoUrl } : {}) });
@@ -183,10 +188,18 @@ export default function PersonalKycSection() {
         } else {
           setValue("nin", maskIdNumber(value), { shouldValidate: true });
         }
+        window.setTimeout(() => {
+          setOtpMethodPickerFor(null);
+          setOtpPickerState({ phase: "idle" });
+        }, 1700);
+      } else {
+        setOtpPickerState({ phase: "error", channel, message: status });
       }
     } catch (error) {
       setVerification((current) => ({ ...current, [lowerType]: "Verification failed" }));
-      setVerificationError(error instanceof Error ? error.message : `Unable to verify ${type}`);
+      const msg = error instanceof Error ? error.message : `Unable to verify ${type}`;
+      setVerificationError(msg);
+      setOtpPickerState({ phase: "error", channel, message: msg });
     }
   }
 
@@ -244,7 +257,8 @@ export default function PersonalKycSection() {
 
   const hasIdDoc = Boolean(application.documents?.identificationDocument);
   const hasProof = Boolean(application.documents?.proofOfAddress);
-  const bestSelfieImage = application.kyc?.selfieImageData || identityInfo.identityPhoto;
+  const governmentPortrait = identityInfo.identityPhoto;
+  const liveSelfie = application.kyc?.selfieImageData;
 
   function onSubmit(data: KycForm) {
     const patchPayload: Partial<KycForm> = { ...data };
@@ -422,34 +436,86 @@ export default function PersonalKycSection() {
 
         {verificationError && <p className="text-sm text-red-600">{verificationError}</p>}
 
-        <div className={`rounded-xl border p-4 sm:p-5 ${livenessLocked ? "border-emerald-200 bg-emerald-50/60" : "border-emerald-200 bg-emerald-50/60"}`}>
+        <div className={`rounded-xl border p-4 sm:p-5 ${livenessLocked ? "border-emerald-200 bg-emerald-50/60 dark:border-emerald-800/50 dark:bg-emerald-900/10" : "border-slate-200 bg-slate-50/60 dark:border-slate-700 dark:bg-slate-900/30"}`}>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-            <h3 className="text-sm font-semibold text-emerald-800">Liveness verification <span className="text-red-500">*</span></h3>
+            <h3 className={`text-sm font-semibold ${livenessLocked ? "text-emerald-800 dark:text-emerald-300" : "text-slate-800 dark:text-slate-200"}`}>Liveness verification <span className="text-red-500">*</span></h3>
             {livenessLocked && (
-              <span className="text-xs inline-flex items-center gap-1 text-emerald-700 bg-white border border-emerald-200 px-2 py-1 rounded-md font-bold shadow-sm">
+              <span className="text-xs inline-flex items-center gap-1 text-emerald-700 bg-white dark:bg-slate-900/80 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded-md font-bold shadow-sm dark:text-emerald-300">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                Verified & Locked
+                Verified &amp; Locked
               </span>
             )}
           </div>
-          <p className="mb-3 text-xs text-emerald-700">Complete a quick in-app selfie scan using the camera verification widget to confirm your identity.</p>
-          {bestSelfieImage ? (
-            <div className="mb-4 flex flex-col sm:flex-row items-start gap-4">
-              <div className="relative w-40 h-40 shrink-0 rounded-xl overflow-hidden border-2 border-emerald-300 bg-white shadow-inner">
-                <img src={bestSelfieImage} alt="Verified identity photo" className="w-full h-full object-cover" />
-                <div className="absolute inset-0 pointer-events-none border-2 border-emerald-400/30 rounded-xl" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold text-emerald-800 mb-1">Identity Photo on Record</div>
-                <p className="text-xs text-emerald-700 leading-relaxed">
-                  This image was captured from your {application.kyc?.selfieImageData ? "liveness scan" : bvnLocked ? "BVN" : "NIN"} records during verification and will be used to confirm your identity at disbursement.
-                </p>
+          <p className={`mb-3 text-xs ${livenessLocked ? "text-emerald-700 dark:text-emerald-300/80" : "text-slate-600 dark:text-slate-400"}`}>The widget below compares your current live face against the government portrait to confirm you are the legitimate identity owner.</p>
+
+          {!livenessLocked && (governmentPortrait || liveSelfie) && (
+            <div className="mb-4 rounded-xl border-2 border-amber-200 bg-amber-50/70 dark:border-amber-800/40 dark:bg-amber-900/10 p-3 sm:p-4">
+              <div className="flex items-start gap-2 mb-2">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400"><path d="M12 9v4m0 4h.01M10.3 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-amber-800 dark:text-amber-300">LIVE SCAN STILL REQUIRED</p>
+                  <p className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400 leading-relaxed">
+                    You MUST complete a real camera selfie scan using the widget below. The portrait(s) shown here are retrieved from government BVN/NIN records <strong>only</strong> and are not proof of liveness.
+                  </p>
+                </div>
               </div>
             </div>
-          ) : null}
+          )}
+
+          {(governmentPortrait || liveSelfie) && (
+            <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {governmentPortrait && (
+                <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/60">
+                  <div className={`px-3 py-2 border-b text-[10px] font-bold uppercase tracking-wider ${livenessLocked ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700" : "bg-amber-100/90 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200 dark:border-amber-800/40"}`}>
+                    {livenessLocked ? "Reference — Government ID portrait" : "⚠ Government ID portrait (NOT a selfie scan)"}
+                  </div>
+                  <div className="p-3">
+                    <div className="relative aspect-square w-full rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+                      <img src={governmentPortrait} alt="BVN/NIN government portrait" className="w-full h-full object-cover" />
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      Retrieved from {bvnLocked ? "BVN (NIBBS)" : ninLocked ? "NIN (NIMC)" : "identity"} records during verification.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {liveSelfie ? (
+                <div className="rounded-xl overflow-hidden border border-emerald-200 bg-white dark:border-emerald-800/50 dark:bg-slate-900/60">
+                  <div className="px-3 py-2 border-b text-[10px] font-bold uppercase tracking-wider bg-emerald-100/90 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/50">
+                    ✓ Your Live Selfie — Liveness Verified
+                  </div>
+                  <div className="p-3">
+                    <div className="relative aspect-square w-full rounded-lg overflow-hidden border-2 border-emerald-300 dark:border-emerald-700">
+                      <img src={liveSelfie} alt="Live captured selfie" className="w-full h-full object-cover" />
+                      <div className="absolute inset-0 pointer-events-none border-4 border-emerald-400/20 rounded-lg" />
+                    </div>
+                    <p className="mt-2 text-[11px] text-emerald-600 dark:text-emerald-400 leading-relaxed font-semibold">
+                      Your live face was matched against the government portrait above.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl overflow-hidden border-2 border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-900/30">
+                  <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    Pending — Awaiting your live selfie
+                  </div>
+                  <div className="p-4 flex flex-col items-center justify-center text-center h-full min-h-[200px]">
+                    <div className="h-14 w-14 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 flex items-center justify-center mb-2">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2v11z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><circle cx="12" cy="13" r="4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </div>
+                    <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">No live selfie yet</p>
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed max-w-xs">
+                      Click <strong>Start Live Selfie Scan</strong> below to open the camera widget and capture your matching selfie.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-3">
             {livenessLocked ? (
-              <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-800 bg-white/80 border border-emerald-200 px-4 py-2 rounded-xl">
+              <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-200 bg-white/80 dark:bg-slate-900/60 border border-emerald-200 dark:border-emerald-800 px-4 py-2 rounded-xl">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                   <rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
                   <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
@@ -466,7 +532,7 @@ export default function PersonalKycSection() {
                 idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
                 onResult={(result) => {
                   setVerification((current) => ({ ...current, liveness: result.message }));
-                  if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS" });
+                  if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS", ...(result.selfieImageData ? { selfieImageData: result.selfieImageData } : {}) });
                 }}
               />
             )}
@@ -513,130 +579,153 @@ export default function PersonalKycSection() {
         </div>
 
         {otpMethodPickerFor && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
-            <div className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl animate-slide-in-left">
-              <div className="mb-5">
-                <h3 className="text-lg font-extrabold text-velo-900 dark:text-white">Verify {otpMethodPickerFor} ownership</h3>
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Choose how to receive your one-time verification code.</p>
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/40 backdrop-blur-sm p-0 sm:p-4 animate-fade-in">
+            <div className="w-full max-w-md sm:rounded-2xl rounded-none border-t-2 sm:border-2 border-velo-500 dark:border-velo-400 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 p-0 shadow-2xl animate-slide-in-left overflow-hidden">
+              <div className="bg-gradient-to-r from-velo-500 to-sky-500 px-5 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-white min-w-0">
+                    <h3 className="text-base font-bold">Verify {otpMethodPickerFor} ownership</h3>
+                    <p className="mt-1 text-xs text-velo-100 leading-relaxed">
+                      {otpPickerState.phase === "idle" && "Choose how you want to receive your 6-digit verification code."}
+                      {otpPickerState.phase === "sending" && `Sending verification via ${otpPickerState.channel ?? "SMS"}…`}
+                      {otpPickerState.phase === "success" && "Ownership verified"}
+                      {otpPickerState.phase === "error" && "Verification could not be completed"}
+                    </p>
+                  </div>
+                  <button type="button" className="rounded-lg p-2 text-white/90 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed" onClick={() => { if (otpPickerState.phase !== "sending") setOtpMethodPickerFor(null); }} disabled={otpPickerState.phase === "sending"} aria-label="Dismiss">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
+                  </button>
+                </div>
               </div>
-              <div className="grid gap-3 sm:space-y-0 space-y-3 sm:grid-cols-1">
-                <button
-                  type="button"
-                  onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}
-                  className="w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-velo-300 dark:hover:border-velo-500 hover:bg-velo-50 dark:hover:bg-velo-900/20 transition group"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-velo-400 to-velo-600 text-white flex items-center justify-center shrink-0 shadow-soft group-hover:shadow-md transition">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+              <div className="p-5 sm:p-6 space-y-4">
+                {otpPickerState.phase === "idle" && (
+                  <div className="grid gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}
+                      className="w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-velo-300 dark:hover:border-velo-500 hover:bg-velo-50 dark:hover:bg-velo-900/20 transition group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-velo-400 to-velo-600 text-white flex items-center justify-center shrink-0 shadow-soft group-hover:shadow-md transition">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                          </svg>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-bold text-velo-900 dark:text-white">SMS</div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400">Receive code via text message</div>
+                        </div>
+                        <div className="text-slate-300 dark:text-slate-600 group-hover:text-velo-500 transition shrink-0">
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}
+                      className="w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 text-white flex items-center justify-center shrink-0 shadow-soft group-hover:shadow-md transition">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/>
+                          </svg>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-bold text-velo-900 dark:text-white">WhatsApp</div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400">Receive code on WhatsApp</div>
+                        </div>
+                        <div className="text-slate-300 dark:text-slate-600 group-hover:text-emerald-500 transition shrink-0">
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+
+                {otpPickerState.phase === "sending" && (
+                  <div className="py-4 flex flex-col items-center text-center space-y-3">
+                    <div className="relative h-14 w-14">
+                      <div className={`absolute inset-0 rounded-full ${otpPickerState.channel === "WHATSAPP" ? "bg-emerald-100 dark:bg-emerald-900/40" : "bg-velo-100 dark:bg-velo-900/40"}`} />
+                      <svg className="absolute inset-2 animate-spin" width="40" height="40" viewBox="0 0 24 24" fill="none">
+                        <path d="M21 12a9 9 0 11-6.219-8.56" stroke={otpPickerState.channel === "WHATSAPP" ? "#059669" : "#0ea5e9"} strokeWidth="2.5" strokeLinecap="round"/>
                       </svg>
                     </div>
                     <div>
-                      <div className="font-bold text-velo-900 dark:text-white">SMS</div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400">Receive code via text message</div>
-                    </div>
-                    <div className="ml-auto text-slate-300 dark:text-slate-600 group-hover:text-velo-500 transition">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                      <p className="text-sm font-bold text-velo-900 dark:text-white">Sending verification code via {otpPickerState.channel ?? "SMS"}…</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">Please wait a moment while we contact the identity provider.</p>
                     </div>
                   </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}
-                  className="w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition group"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 text-white flex items-center justify-center shrink-0 shadow-soft group-hover:shadow-md transition">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/>
-                      </svg>
+                )}
+
+                {otpPickerState.phase === "success" && (
+                  <div className="py-4 flex flex-col items-center text-center space-y-3">
+                    <div className="h-14 w-14 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </div>
                     <div>
-                      <div className="font-bold text-velo-900 dark:text-white">WhatsApp</div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400">Receive code on WhatsApp</div>
-                    </div>
-                    <div className="ml-auto text-slate-300 dark:text-slate-600 group-hover:text-emerald-500 transition">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                      <p className="text-sm font-bold text-emerald-700 dark:text-emerald-300">Ownership confirmed automatically</p>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 leading-relaxed max-w-sm">
+                        {otpPickerState.message ?? "Your phone number on record matches your account. No code was required."}
+                      </p>
                     </div>
                   </div>
-                </button>
-              </div>
-              <div className="mt-5 flex flex-wrap gap-2 justify-end">
-                <button
-                  type="button"
-                  onClick={() => setOtpMethodPickerFor(null)}
-                  className="btn-secondary text-sm"
-                >Cancel</button>
+                )}
+
+                {otpPickerState.phase === "error" && (
+                  <div className="space-y-3">
+                    <div className="rounded-xl border border-red-100 bg-red-50 dark:border-red-900/40 dark:bg-red-900/20 p-4 flex items-start gap-3">
+                      <div className="h-9 w-9 shrink-0 rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 flex items-center justify-center">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 9v4m0 4h.01M10.3 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-red-700 dark:text-red-300">Verification failed</p>
+                        <p className="mt-0.5 text-xs text-red-700/90 dark:text-red-300/90 leading-relaxed break-words">
+                          {otpPickerState.message ?? "Please try again or choose a different channel."}
+                        </p>
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => setOtpPickerState({ phase: "idle" })} className="btn-secondary w-full text-sm">Choose a different channel</button>
+                  </div>
+                )}
+
+                {otpPickerState.phase === "idle" && (
+                  <div className="flex flex-wrap gap-2 justify-end pt-1">
+                    <button type="button" onClick={() => setOtpMethodPickerFor(null)} className="btn-secondary text-sm">Cancel</button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         )}
 
         {activeOtpChallenge && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
-            <div className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-2xl animate-slide-in-left">
-              <div className="mb-5">
-                <h3 className="text-lg font-extrabold text-velo-900 dark:text-white">Enter verification code</h3>
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                  We sent a 6-digit code to the {activeOtpChallenge.idType} phone number ending in
-                  <span className="font-bold text-velo-900 dark:text-white ml-1">
-                    ···{activeOtpChallenge.challenge.phoneLastFour}</span> via {activeOtpChallenge.challenge.channel}.
-                </p>
-              </div>
-              <div>
-                <label className="velo-label">Verification code</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder="Enter 6-digit code"
-                  value={activeOtpChallenge.otpCode}
-                  onChange={(e) => {
-                    const code = e.target.value.replace(/\D/g, "");
-                    setActiveOtpChallenge((cur) => (cur ? { ...cur, otpCode: code } : cur));
-                  }}
-                  className="velo-input text-center font-bold tracking-[0.5em] text-xl"
-                  autoFocus
-                />
-              </div>
-              {activeOtpChallenge.error && (
-                <div className="mt-3 text-sm text-red-600 dark:text-red-400">{activeOtpChallenge.error}</div>
-              )}
-              <div className="mt-5 flex items-center justify-between">
-                <div className="text-xs text-slate-500 dark:text-slate-400">
-                  {(function () {
-                    if (activeOtpChallenge.cooldown > 0) return `Resend available in ${activeOtpChallenge.cooldown}s`;
-                    if (activeOtpChallenge.cooldown === 0) return "Code expired";
-                    return "";
-                  })()}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void resendActiveKycOtp("SMS")}
-                    disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy}
-                    className="text-xs font-semibold text-velo-600 dark:text-velo-400 hover:underline disabled:opacity-60"
-                  >Resend SMS</button>
-                  <button
-                    type="button"
-                    onClick={() => void resendActiveKycOtp("WHATSAPP")}
-                    disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy}
-                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline disabled:opacity-60"
-                  >Resend WhatsApp</button>
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/40 backdrop-blur-sm p-0 sm:p-4 animate-fade-in">
+            <div className="velo-card w-full max-w-md shadow-2xl rounded-none sm:rounded-2xl border-t-2 sm:border-2 border-sky-500 dark:border-sky-400 overflow-hidden">
+              <div className="bg-gradient-to-r from-sky-500 to-velo-500 px-5 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-white min-w-0">
+                    <h3 className="text-base font-bold">Confirm {activeOtpChallenge.idType} ownership</h3>
+                    <p className="mt-1 text-xs text-sky-100 leading-relaxed">
+                      Sent via <span className="font-semibold">{activeOtpChallenge.challenge.channel}</span> to ···{activeOtpChallenge.challenge.phoneLastFour}
+                    </p>
+                  </div>
+                  <button type="button" className="rounded-lg p-2 text-white/90 hover:bg-white/15" onClick={() => { setActiveOtpChallenge(null); setVerificationError(""); }} aria-label="Dismiss">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
+                  </button>
                 </div>
               </div>
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => { setActiveOtpChallenge(null); setVerificationError(""); }}
-                  className="btn-secondary text-sm"
-                >Cancel</button>
-                <button
-                  type="button"
-                  onClick={() => void submitActiveKycOtp()}
-                  disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy}
-                  className="btn-primary text-sm"
-                >{activeOtpChallenge.busy ? "Verifying…" : "Confirm code"}</button>
+              <div className="p-5 space-y-4">
+                <label className="velo-label block">
+                  <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">One-time code (6 digits)</span>
+                  <input className="velo-input mt-2 tracking-[0.6em] text-center font-bold text-2xl" inputMode="numeric" maxLength={6} autoFocus value={activeOtpChallenge.otpCode} onChange={(event) => setActiveOtpChallenge((c: any) => c ? { ...c, otpCode: event.target.value.replace(/\D/g, ""), error: undefined } : c)} placeholder="• • • • • •" />
+                </label>
+                {activeOtpChallenge.error && <p className="text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 rounded-lg px-3 py-2">{activeOtpChallenge.error}</p>}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-sky-800 hover:bg-sky-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("SMS")}>{activeOtpChallenge.cooldown > 0 ? `Resend SMS (${activeOtpChallenge.cooldown}s)` : "Resend via SMS"}</button>
+                  <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-emerald-200 bg-white px-3 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("WHATSAPP")}>{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
+                </div>
+                <button type="button" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50 min-h-[48px] text-base font-bold" disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
               </div>
             </div>
           </div>

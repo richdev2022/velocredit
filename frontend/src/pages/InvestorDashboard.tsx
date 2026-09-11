@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useDeferredValue, useMemo, useRef, useState, memo } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
@@ -96,6 +96,7 @@ export default function InvestorDashboard() {
     { key: "profile", label: "Profile", icon: "👤", hint: "Personal information" },
   ];
   const [otpMethodPickerFor, setOtpMethodPickerFor] = useState(null as "BVN" | "NIN" | null);
+  const [otpPickerState, setOtpPickerState] = useState<{ phase: "idle" | "sending" | "success" | "error"; channel?: "SMS" | "WHATSAPP"; message?: string }>({ phase: "idle" });
   const [activeOtpChallenge, setActiveOtpChallenge] = useState(null as null | {
       idType: "BVN" | "NIN";
       challenge: KycOtpChallenge;
@@ -105,6 +106,13 @@ export default function InvestorDashboard() {
       busy?: boolean;
     });
   const countdownRef = useRef(null as number | null);
+  const livenessPollRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (countdownRef.current != null) window.clearInterval(countdownRef.current);
+      if (livenessPollRef.current != null) window.clearInterval(livenessPollRef.current);
+    };
+  }, []);
 
   const [fundModalOpen, setFundModalOpen] = useState(false);
   const [fundModalAmount, setFundModalAmount] = useState("100000");
@@ -193,12 +201,13 @@ export default function InvestorDashboard() {
       setKycError(`${type} must be exactly 11 digits.`);
       return;
     }
+    setOtpPickerState({ phase: "idle" });
     setOtpMethodPickerFor(type);
   }
 
   async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS" | "WHATSAPP") {
     const value = type === "BVN" ? bvn : nin;
-    setOtpMethodPickerFor(null);
+    setOtpPickerState({ phase: "sending", channel });
     setKycBusy(type);
     setKycError("");
     setActiveOtpChallenge(null);
@@ -210,8 +219,10 @@ export default function InvestorDashboard() {
       const challenge = (response as any)?.otpChallenge as KycOtpChallenge | undefined;
       if (challenge && challenge.requiresPhoneVerification) {
         setActiveOtpChallenge({ idType: type, challenge, otpCode: "", cooldown: challenge.resendSecondsRemaining });
-        setKycError(`A verification code was sent to the phone number ending in ${type} records ending in ···${challenge.phoneLastFour}. Enter the code to confirm ownership.`);
+        setKycError(`A verification code was sent to the phone number from ${type} records ending in ···${challenge.phoneLastFour}. Enter the code to confirm ownership.`);
         setKycBusy("");
+        setOtpMethodPickerFor(null);
+        setOtpPickerState({ phase: "idle" });
         return;
       }
       const details = (response as any).verifiedDetails ?? {};
@@ -219,19 +230,33 @@ export default function InvestorDashboard() {
       const normalizedPhoto = typeof photoRaw === "string" && photoRaw.length > 20
         ? photoRaw.startsWith("data:") ? photoRaw : photoRaw.startsWith("http") ? photoRaw : `data:image/jpeg;base64,${photoRaw.replace(/\s/g, "")}`
         : undefined;
-      setKyc((current) => ({
-        ...current,
-        status: response.status,
-        checklist: response.checklist as unknown as KycData["checklist"],
-        verifiedDetails: Object.keys(details).length ? details : current?.verifiedDetails,
-        identityPhoto: normalizedPhoto || current?.identityPhoto,
-      }));
-      await refreshUser();
-      setMessage(`${type} verification completed successfully.`);
+      if (response.verificationStatus === "SUCCESS") {
+        setOtpPickerState({ phase: "success", channel, message: `${type} phone matches your registered account — ownership confirmed automatically. No code required.` });
+        setKyc((current) => ({
+          ...current,
+          status: response.status,
+          checklist: response.checklist as unknown as KycData["checklist"],
+          verifiedDetails: Object.keys(details).length ? details : current?.verifiedDetails,
+          identityPhoto: normalizedPhoto || current?.identityPhoto,
+        }));
+        await refreshUser();
+        setMessage(`${type} verification completed successfully.`);
+        window.setTimeout(() => {
+          setOtpMethodPickerFor(null);
+          setOtpPickerState({ phase: "idle" });
+          setKycBusy("");
+        }, 1700);
+      } else {
+        const status = (response as any).error || "Verification failed";
+        setKycError(status);
+        setOtpPickerState({ phase: "error", channel, message: status });
+        setKycBusy("");
+      }
     } catch (err) {
-      setKycError(err instanceof Error ? err.message : `Unable to verify ${type}`);
-    } finally {
-      if (!activeOtpChallenge) setKycBusy("");
+      const msg = err instanceof Error ? err.message : `Unable to verify ${type}`;
+      setKycError(msg);
+      setOtpPickerState({ phase: "error", channel, message: msg });
+      setKycBusy("");
     }
   }
 
@@ -320,8 +345,12 @@ export default function InvestorDashboard() {
   async function onPremblyLivenessResult(result: any) {
     if (result.success) {
       setMessage("Liveness scan submitted. Syncing with the provider — your KYC status will update within 60 seconds.");
+      if (typeof result?.selfieImageData === "string" && result.selfieImageData.length > 20) {
+        setKyc((current: any) => current ? ({ ...current, selfieImageData: result.selfieImageData }) : current);
+      }
       let attempts = 0;
       const maxAttempts = 12;
+      if (livenessPollRef.current != null) window.clearInterval(livenessPollRef.current);
       const poll = window.setInterval(async () => {
         attempts += 1;
         try {
@@ -331,10 +360,12 @@ export default function InvestorDashboard() {
           await refreshUser();
           if (checklist.liveness || checklist.selfieUploaded || attempts >= maxAttempts) {
             window.clearInterval(poll);
+            livenessPollRef.current = null;
             setMessage(checklist.liveness ? "Liveness verified. Thank you." : "Liveness processing complete. If status hasn't updated yet, refresh in a minute.");
           }
         } catch (_e) { /* ignore */ }
       }, 5000);
+      livenessPollRef.current = poll;
     } else {
       setKycError(result.message);
     }
@@ -642,6 +673,8 @@ export default function InvestorDashboard() {
               otpMethodPickerFor={otpMethodPickerFor}
               setOtpMethodPickerFor={setOtpMethodPickerFor}
               verifyIdentityWithChannel={verifyIdentityWithChannel}
+              otpPickerState={otpPickerState}
+              setOtpPickerState={setOtpPickerState}
             />
           )}
 
@@ -1199,7 +1232,7 @@ function InvestorInvestments(props: any) {
 }
 
 function InvestorKyc(props: any) {
-  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel } = props;
+  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState } = props;
   const [error, setError] = useState("");
   useEffect(() => { setError(kycError); }, [kycError]);
 
@@ -1228,11 +1261,13 @@ function InvestorKyc(props: any) {
   const anyIdentityPopulated = !!(identityInfo.fullName || identityInfo.phone || identityInfo.dateOfBirth || identityInfo.address || identityInfo.state || identityInfo.lga);
   const identityPopulated = (checklist.bvn || checklist.nin) && anyIdentityPopulated;
   const photoRaw = (kyc?.identityPhoto as string | undefined) || pickStr(details, ["base64Image", "identityPhoto", "photo", "photograph"]);
-  const bestPhoto = typeof photoRaw === "string" && photoRaw.length > 20
+  const governmentPortrait = typeof photoRaw === "string" && photoRaw.length > 20
     ? photoRaw.startsWith("data:") || photoRaw.startsWith("http")
       ? photoRaw
       : `data:image/jpeg;base64,${photoRaw.replace(/\s/g, "")}`
     : undefined;
+  const selfieRaw = kyc?.selfieImageData as string | undefined;
+  const liveSelfie = typeof selfieRaw === "string" && selfieRaw.length > 20 ? selfieRaw : undefined;
   const bvnLocked = checklist.bvn === true;
   const ninLocked = checklist.nin === true;
   const livenessLocked = checklist.liveness === true || checklist.selfieUploaded === true;
@@ -1436,21 +1471,66 @@ function InvestorKyc(props: any) {
                   </span>
                 )}
               </div>
-              <p className={`mb-3 text-xs ${livenessLocked ? "text-emerald-700 dark:text-emerald-300/80" : "text-slate-600 dark:text-slate-400"}`}>Complete a quick in-app selfie scan using our identity verification widget.</p>
-              {bestPhoto && (
-                <div className="mb-4 flex flex-col sm:flex-row items-start gap-4">
-                  <div className="relative w-40 h-40 shrink-0 rounded-xl overflow-hidden border-2 border-emerald-300 dark:border-emerald-700 bg-white shadow-inner">
-                    <img src={bestPhoto} alt="Verified identity photo" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 pointer-events-none border-2 border-emerald-400/30 dark:border-emerald-500/30 rounded-xl" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className={`text-sm font-bold mb-1 ${livenessLocked ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200"}`}>Identity Photo on Record</div>
-                    <p className={`text-xs leading-relaxed ${livenessLocked ? "text-emerald-700 dark:text-emerald-300/70" : "text-slate-600 dark:text-slate-400"}`}>
-                      This image was captured from your {kyc?.identityPhoto ? (bvnLocked ? "BVN" : "NIN") : "liveness scan"} records during verification and will be used to confirm your identity at payout.
-                    </p>
+              <p className={`mb-3 text-xs ${livenessLocked ? "text-emerald-700 dark:text-emerald-300/80" : "text-slate-600 dark:text-slate-400"}`}>Complete a quick in-app selfie scan to prove you are the same person shown on your government ID records.</p>
+              {!livenessLocked && (
+                <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2.5 dark:border-amber-800/60 dark:bg-amber-900/15">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">Live Scan Still Required</div>
+                    <p className="mt-0.5 text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/80">The government-ID portrait shown below is a record photo only — it is <span className="font-bold">NOT proof of liveness</span>. You must still run a live selfie scan for us to match your face to the ID.</p>
                   </div>
                 </div>
               )}
+              <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex flex-col gap-2">
+                  <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-[0.12em] border ${livenessLocked ? "bg-slate-100 border-slate-200 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300" : "bg-amber-100 border-amber-200 text-amber-700 dark:bg-amber-900/30 dark:border-amber-800/60 dark:text-amber-300"}`}>
+                    {livenessLocked ? <>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2"/><path d="M8 12h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                      Reference — Government ID portrait
+                    </> : <>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      ⚠ Government ID portrait (NOT a selfie scan)
+                    </>}
+                  </div>
+                  <div className={`relative aspect-[4/5] w-full rounded-xl overflow-hidden border-2 bg-white shadow-inner ${livenessLocked ? "border-slate-200 dark:border-slate-700" : "border-amber-200 dark:border-amber-800/60"}`}>
+                    {governmentPortrait ? (
+                      <img src={governmentPortrait} alt="BVN/NIN government portrait retrieved from records" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-900/30">
+                        <svg width="34" height="34" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.6"/><path d="M4 20c1.5-4 5-6 8-6s6.5 2 8 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                        <div className="text-[10px] font-medium">Complete BVN / NIN first</div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-[10px] leading-relaxed text-slate-500 dark:text-slate-400 break-words">Portrait pulled from your verified {bvnLocked ? "BVN" : ninLocked ? "NIN" : "government ID"} records. Used as the matching reference for your live selfie.</div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-[0.12em] border ${liveSelfie ? "bg-emerald-100 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-800/60 dark:text-emerald-300" : "bg-slate-100 border-slate-200 text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400"}`}>
+                    {liveSelfie ? <>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      ✅ Your Live Selfie — Liveness Verified
+                    </> : <>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" strokeDasharray="2 3"/></svg>
+                      Pending — Awaiting your live selfie
+                    </>}
+                  </div>
+                  {liveSelfie ? (
+                    <div className="relative aspect-[4/5] w-full rounded-xl overflow-hidden border-2 border-emerald-300 dark:border-emerald-700 bg-white shadow-inner shadow-emerald-500/10">
+                      <img src={liveSelfie} alt="Live captured selfie from liveness widget scan" className="w-full h-full object-cover" />
+                      <div className="absolute inset-0 pointer-events-none border-2 border-emerald-400/40 dark:border-emerald-500/40 rounded-xl" />
+                    </div>
+                  ) : (
+                    <div className="relative aspect-[4/5] w-full rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/60 flex flex-col items-center justify-center gap-2 dark:border-slate-600 dark:bg-slate-900/30">
+                      <div className="h-14 w-14 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-500 dark:text-slate-300">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><circle cx="12" cy="13" r="4" stroke="currentColor" strokeWidth="1.6"/></svg>
+                      </div>
+                      <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">Your live selfie will appear here</div>
+                      <div className="text-[10px] px-4 text-center leading-relaxed text-slate-400 dark:text-slate-500 break-words">Click the button below to start a short facial-recognition scan using your camera.</div>
+                    </div>
+                  )}
+                  <div className={`text-[10px] leading-relaxed break-words ${liveSelfie ? "text-emerald-700 dark:text-emerald-300/80" : "text-slate-500 dark:text-slate-400"}`}>{liveSelfie ? "Selfie captured and matched against the government portrait above. Liveness is now locked for your security." : "Captured automatically after you pass the liveness widget. Must match the government-ID portrait to pass."}</div>
+                </div>
+              </div>
               <div className="flex flex-wrap items-center gap-3">
                 {livenessLocked ? (
                   <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-200 bg-white/80 dark:bg-slate-900/60 border border-emerald-200 dark:border-emerald-800 px-4 py-2 rounded-xl">
@@ -1506,26 +1586,85 @@ function InvestorKyc(props: any) {
         )}
       </section>
       {otpMethodPickerFor && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 backdrop-blur-sm px-4">
-          <div className="velo-card w-full max-w-md p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-lg font-bold text-velo-900 dark:text-white">Verify {otpMethodPickerFor} ownership</h3>
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Choose how to send a one-time code to the phone number on file with your {otpMethodPickerFor}.</p>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/45 backdrop-blur-sm px-2 sm:px-4 pb-0 sm:pb-0">
+          <div className="w-full max-w-md overflow-hidden rounded-none sm:rounded-2xl bg-transparent sm:bg-transparent border-t-2 sm:border-2 border-white/0 sm:border-white/0 shadow-2xl animate-slide-in-up">
+            <div className="bg-gradient-to-br from-velo-500 via-sky-500 to-sky-600 px-5 py-4 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/75">Ownership Check</div>
+                <h3 className="mt-0.5 text-lg font-bold text-white break-words">Verify {otpMethodPickerFor} ownership</h3>
+                <p className="mt-0.5 text-xs text-white/80 break-words">Send a one-time code to the phone number registered with your {otpMethodPickerFor}.</p>
               </div>
-              <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setOtpMethodPickerFor(null)} aria-label="Close">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+              <button
+                type="button"
+                disabled={otpPickerState?.phase === "sending"}
+                className="rounded-lg p-2 text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                onClick={() => { if (otpPickerState?.phase !== "sending") setOtpMethodPickerFor(null); }}
+                aria-label="Close"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
               </button>
             </div>
-            <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-velo-500 hover:bg-velo-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-velo-400 dark:hover:bg-velo-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 group-hover:bg-velo-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></svg></div>
-                <div className="text-left"><div className="text-sm font-semibold text-velo-900 dark:text-white">SMS</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Text to identity phone</div></div>
-              </button>
-              <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 group-hover:bg-emerald-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 11-3.2-6.4L20 4l-1.6 3.2A7.9 7.9 0 0120 12zM8.3 15.4c-.2-.5-1-1-1.5-1.1l-.5-.2c-.6-.2-1.3.2-1.3.9 0 1.4 1.8 2.8 4.1 2.8 2 0 3.6-.8 4.6-2.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></div>
-                <div className="text-left"><div className="text-sm font-semibold text-velo-900 dark:text-white">WhatsApp</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Message on WhatsApp</div></div>
-              </button>
+            <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 border border-t-0 border-slate-200 sm:border rounded-b-none sm:rounded-b-2xl dark:border-slate-700">
+              {otpPickerState?.phase === "sending" ? (
+                <div className="flex flex-col items-center justify-center py-4 text-center gap-3">
+                  <div className={`inline-flex h-12 w-12 items-center justify-center rounded-full ${otpPickerState.channel === "WHATSAPP" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400" : "bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400"}`}>
+                    <svg className="animate-spin" width="22" height="22" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+                      <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-slate-900 dark:text-white">Sending via {otpPickerState.channel || "secure channel"}…</div>
+                    <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">Please wait while we contact the identity provider.</div>
+                  </div>
+                  {otpPickerState.message && <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 italic">{otpPickerState.message}</div>}
+                </div>
+              ) : otpPickerState?.phase === "success" ? (
+                <div className="flex flex-col items-center justify-center py-4 text-center gap-3">
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 animate-pulse">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-slate-900 dark:text-white">Ownership confirmed automatically</div>
+                    <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{otpPickerState.message || "Phone on file already matches your account. No code required."}</div>
+                  </div>
+                </div>
+              ) : otpPickerState?.phase === "error" ? (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-red-200 bg-red-50 dark:border-red-800/60 dark:bg-red-900/15 px-4 py-3 flex items-start gap-3">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="mt-0.5 shrink-0 text-red-600 dark:text-red-400"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-bold text-red-800 dark:text-red-200">Verification didn't go through</div>
+                      <div className="mt-0.5 text-xs leading-relaxed text-red-700/90 dark:text-red-300/80 break-words">{otpPickerState.message || "There was a temporary issue reaching the identity provider. Try a different channel or try again shortly."}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-velo-500 hover:bg-velo-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-velo-400 dark:hover:bg-velo-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}>
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 group-hover:bg-velo-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></svg></div>
+                      <div className="text-left"><div className="text-sm font-semibold text-velo-900 dark:text-white">Retry SMS</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Text to identity phone</div></div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="ml-auto text-slate-300 group-hover:text-velo-500 dark:text-slate-600 dark:group-hover:text-velo-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                    <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}>
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 group-hover:bg-emerald-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 11-3.2-6.4L20 4l-1.6 3.2A7.9 7.9 0 0120 12zM8.3 15.4c-.2-.5-1-1-1.5-1.1l-.5-.2c-.6-.2-1.3.2-1.3.9 0 1.4 1.8 2.8 4.1 2.8 2 0 3.6-.8 4.6-2.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></div>
+                      <div className="text-left"><div className="text-sm font-semibold text-velo-900 dark:text-white">Retry WhatsApp</div><div className="text-[11px] text-slate-500 dark:text-slate-400">Message on WhatsApp</div></div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="ml-auto text-slate-300 group-hover:text-emerald-500 dark:text-slate-600 dark:group-hover:text-emerald-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-velo-500 hover:bg-velo-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-velo-400 dark:hover:bg-velo-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}>
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-sky-400 to-velo-500 text-white shadow-sm shadow-velo-500/20"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></svg></div>
+                    <div className="text-left min-w-0 flex-1"><div className="text-sm font-semibold text-velo-900 dark:text-white">SMS</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Text to identity phone</div></div>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-300 group-hover:text-velo-500 dark:text-slate-600 dark:group-hover:text-velo-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </button>
+                  <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}>
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-sm shadow-emerald-500/20"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 11-3.2-6.4L20 4l-1.6 3.2A7.9 7.9 0 0120 12zM8.3 15.4c-.2-.5-1-1-1.5-1.1l-.5-.2c-.6-.2-1.3.2-1.3.9 0 1.4 1.8 2.8 4.1 2.8 2 0 3.6-.8 4.6-2.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></div>
+                    <div className="text-left min-w-0 flex-1"><div className="text-sm font-semibold text-velo-900 dark:text-white">WhatsApp</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Message on WhatsApp</div></div>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-300 group-hover:text-emerald-500 dark:text-slate-600 dark:group-hover:text-emerald-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1604,9 +1743,70 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
 }
 
 type InvestorTransactionsProps = { transactions: TransactionData | null; selectedTx: UnifiedTx | null; setSelectedTx: (t: UnifiedTx | null) => void };
+
+const InvestorTransactionRow = memo(function InvestorTransactionRow({
+  tx,
+  selected,
+  onClick,
+}: {
+  tx: UnifiedTx;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full text-left flex items-center gap-3 p-3 rounded-xl border transition cursor-pointer ${
+        selected
+          ? "border-velo-400 bg-velo-50 dark:bg-velo-900/30 dark:border-velo-500"
+          : "border-slate-100 dark:border-slate-800 hover:border-velo-200 dark:hover:border-velo-800 hover:bg-slate-50 dark:hover:bg-slate-800/50"
+      }`}
+    >
+      <div className={`mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-lg flex-shrink-0 ${tx.direction === "CREDIT" ? "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400" : "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400"}`}>
+        {tx.direction === "CREDIT" ? "▲" : "▼"}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-start justify-between gap-2">
+          <div className="font-bold text-sm text-velo-900 dark:text-white truncate">{tx.label}</div>
+          <div className={`font-black text-sm whitespace-nowrap ${tx.direction === "CREDIT" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+            {tx.direction === "CREDIT" ? "+" : "-"}₦{Math.round(tx.amountMinor / 100).toLocaleString("en-NG")}
+          </div>
+        </div>
+        {tx.narration && <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{tx.narration}</div>}
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <div className="text-[10px] text-slate-400 dark:text-slate-500">{new Date(tx.createdAt).toLocaleString()}</div>
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+            <ReceiptDownload transaction={{ ...tx.raw, label: tx.label, direction: tx.direction, amountMinor: tx.amountMinor, narration: tx.narration, referenceId: tx.referenceId, createdAt: tx.createdAt, balanceAfterMinor: tx.balanceAfterMinor, id: tx.id }} balanceBeforeMinor={tx.balanceAfterMinor != null ? tx.balanceAfterMinor - tx.amountMinor * (tx.direction === "CREDIT" ? 1 : -1) : undefined} balanceAfterMinor={tx.balanceAfterMinor} />
+          </span>
+        </div>
+      </div>
+    </button>
+  );
+});
+
 function InvestorTransactions(props: InvestorTransactionsProps) {
   const { transactions, selectedTx, setSelectedTx } = props;
-  const all = buildUnifiedTxs(transactions);
+  const all = useMemo(() => buildUnifiedTxs(transactions), [transactions]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [searchFilter, setSearchFilter] = useState("");
+  const deferredSearch = useDeferredValue(searchFilter);
+  const filtered = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((tx) =>
+      (tx.label ?? "").toLowerCase().includes(q) ||
+      (tx.narration ?? "").toLowerCase().includes(q) ||
+      (tx.referenceId ?? "").toLowerCase().includes(q) ||
+      tx.kind.toLowerCase().includes(q) ||
+      String(Math.round(tx.amountMinor / 100)).includes(q.replace(/,/g, ""))
+    );
+  }, [all, deferredSearch]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const startIdx = (safePage - 1) * pageSize;
+  const paged = filtered.slice(startIdx, startIdx + pageSize);
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -1617,36 +1817,65 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
         </div>
       </div>
       <section className="velo-card p-4 sm:p-5 lg:p-6">
-        <h2 className="section-heading">All transactions</h2>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="section-heading">All transactions</h2>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+            <input
+              type="search"
+              placeholder="Search label, ref, amount…"
+              value={searchFilter}
+              onChange={(e) => { setSearchFilter(e.target.value); setPage(1); }}
+              className="w-full sm:w-64 min-h-[40px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-velo-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-velo-500/40 focus:border-velo-500"
+            />
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              Show
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+                className="min-h-[36px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm"
+              >
+                {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+          </div>
+        </div>
         {all.length ? (
           <div className="mt-5 space-y-2">
-            {all.map((tx) => (
-              <button
+            {paged.map((tx) => (
+              <InvestorTransactionRow
                 key={tx.id}
-                type="button"
+                tx={tx}
+                selected={selectedTx?.id === tx.id}
                 onClick={() => setSelectedTx(tx)}
-                className="w-full text-left flex items-center gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-velo-200 dark:hover:border-velo-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition cursor-pointer"
-              >
-                <div className={`mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-lg flex-shrink-0 ${tx.direction === "CREDIT" ? "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400" : "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400"}`}>
-                  {tx.direction === "CREDIT" ? "▲" : "▼"}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="font-bold text-sm text-velo-900 dark:text-white truncate">{tx.label}</div>
-                    <div className={`font-black text-sm whitespace-nowrap ${tx.direction === "CREDIT" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
-                      {tx.direction === "CREDIT" ? "+" : "-"}₦{Math.round(tx.amountMinor / 100).toLocaleString("en-NG")}
-                    </div>
-                  </div>
-                  {tx.narration && <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{tx.narration}</div>}
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <div className="text-[10px] text-slate-400 dark:text-slate-500">{new Date(tx.createdAt).toLocaleString()}</div>
-                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-                      <ReceiptDownload transaction={{ ...tx.raw, label: tx.label, direction: tx.direction, amountMinor: tx.amountMinor, narration: tx.narration, referenceId: tx.referenceId, createdAt: tx.createdAt, balanceAfterMinor: tx.balanceAfterMinor, id: tx.id }} balanceBeforeMinor={tx.balanceAfterMinor != null ? tx.balanceAfterMinor - tx.amountMinor * (tx.direction === "CREDIT" ? 1 : -1) : undefined} balanceAfterMinor={tx.balanceAfterMinor} />
-                    </span>
-                  </div>
-                </div>
-              </button>
+              />
             ))}
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between border-t border-slate-100 dark:border-slate-800 pt-4">
+              <div className="text-xs text-slate-500 dark:text-slate-400">
+                Showing {filtered.length ? startIdx + 1 : 0}–{Math.min(startIdx + pageSize, filtered.length)} of {filtered.length}
+                {filtered.length !== all.length && <span className="text-slate-400"> · filtered from {all.length} total</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="min-h-[40px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-velo-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  ← Prev
+                </button>
+                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-2">
+                  Page {safePage} of {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  className="min-h-[40px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-velo-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
           </div>
         ) : <Empty text="No transactions yet. Fund your wallet or create your first investment to get started." />}
       </section>

@@ -182,7 +182,7 @@ export async function verifyMyLiveness(file: File, input?: { idType?: "BVN" | "N
   if (input?.dateOfBirth) form.append("dateOfBirth", input.dateOfBirth);
   return request("/api/v1/me/kyc/liveness/verify", { method: "POST", body: form });
 }
-export async function completePremblyWidgetVerification(input: { status: "SUCCESS" | "FAILED"; providerReference?: string; rawResponse?: Record<string, unknown> }): Promise<KycResponse> {
+export async function completePremblyWidgetVerification(input: { status: "SUCCESS" | "FAILED"; providerReference?: string; rawResponse?: Record<string, unknown>; selfieImageData?: string }): Promise<KycResponse> {
   return request("/api/v1/me/kyc/prembly-widget/complete", { method: "POST", body: JSON.stringify(input) });
 }
 

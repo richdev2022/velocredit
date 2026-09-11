@@ -459,6 +459,139 @@ app.post(
   }
 );
 
+app.get("/api/v1/webhooks/prembly/kyc", (_req, res) => {
+  res.status(200).json({ ok: true, service: "Prembly KYC Liveness Webhook", expected: "POST signature: x-prembly-signature with HMAC-SHA512 hex" });
+});
+app.post(
+  "/api/v1/webhooks/prembly/kyc",
+  express.raw({ type: "application/json", limit: "5mb" }),
+  (req, res) => {
+    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+    const signature = req.header("x-prembly-signature") ?? req.header("signature") ?? undefined;
+    if (!verifyPremblyWebhook(signature, rawBody)) {
+      res.status(401).json({ ok: false, error: "Invalid Prembly webhook signature" });
+      return;
+    }
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      payload = {};
+    }
+    providerEvents.push({
+      provider: "prembly",
+      eventKey: String((payload as { id?: string }).id ?? (payload as { event_id?: string }).event_id ?? `prembly-kyc-${Date.now()}`),
+      event: payload,
+      receivedAt: new Date().toISOString(),
+    });
+    const candidateValues = (obj: any, keys: string[]): unknown[] => keys.flatMap((k) => [obj?.[k], obj?.data?.[k], obj?.metadata?.[k]]).filter((v) => v !== undefined && v !== null);
+    const pickStr = (keys: string[]): string | undefined => {
+      for (const raw of candidateValues(payload, keys)) {
+        if (typeof raw === "string" && raw.trim()) return raw.trim();
+      }
+      return undefined;
+    };
+    const anyPayload = payload as any;
+    const eventStr = String(anyPayload.event ?? anyPayload.type ?? anyPayload.event_type ?? "").toLowerCase();
+    const verificationStatusStr = String(anyPayload.verification_status ?? anyPayload.status ?? anyPayload.data?.verification_status ?? anyPayload.data?.status ?? anyPayload.verificationStatus ?? "FAILED").toLowerCase();
+    const success = ["success","successful","verified","passed","pass","complete","completed","approved","valid","00","ok"].some((s) => [eventStr, verificationStatusStr].includes(s)) || verificationStatusStr.includes("success") || verificationStatusStr.includes("verified");
+    const providerRef = pickStr(["provider_reference","providerReference","reference","transaction_id","transactionId","id"]) ?? undefined;
+    const verificationTypeUpper = String(anyPayload.verification_type ?? anyPayload.type ?? anyPayload.data?.verification_type ?? "LIVENESS").toUpperCase();
+    const isLivenessEvent = /LIVENESS|FACE|SELFIE|BIOMETRIC/.test(verificationTypeUpper) || eventStr.includes("liveness") || /\/kyc\/liveness|\/biometric/.test(String(anyPayload.webhook_url ?? anyPayload.endpoint ?? ""));
+    const bvnFromMeta = (() => {
+      const raw = pickStr(["bvn","BVN","metadata.bvn","id_number","idNumber"]) ?? "";
+      const digits = raw.replace(/\D/g, "");
+      return /^\d{11}$/.test(digits) ? digits : undefined;
+    })();
+    const ninFromMeta = (() => {
+      const raw = pickStr(["nin","NIN","metadata.nin","national_id","nationalId"]) ?? "";
+      const digits = raw.replace(/\D/g, "");
+      return /^\d{11}$/.test(digits) ? digits : undefined;
+    })();
+    const metadataUserId = pickStr(["user_id","userId","customer_id","customerId","member_id","memberId","metadata.user_id","metadata.userId"]) ?? undefined;
+    let selfieImageData: string | undefined;
+    const selfieKeys = ["selfie","image","selfieImage","selfie_image","photo","photograph","face_image","base64Image","base64_image","imageBase64","portrait","captured_image"];
+    for (const key of selfieKeys) {
+      const variants: unknown[] = [
+        (payload as any)[key],
+        (payload as any).data?.[key],
+        (payload as any).metadata?.[key],
+        (payload as any).result?.[key],
+      ];
+      for (const raw of variants) {
+        if (typeof raw !== "string" || raw.length < 20) continue;
+        if (raw.startsWith("data:image")) {
+          selfieImageData = raw;
+          break;
+        }
+        if (/^[A-Za-z0-9+/=\s]+$/.test(raw) && raw.length > 100) {
+          selfieImageData = `data:image/jpeg;base64,${raw.replace(/\s/g, "")}`;
+          break;
+        }
+      }
+      if (selfieImageData) break;
+    }
+    const matches: { kycCaseId: string; via: "providerRef" | "metadata.bvn" | "metadata.nin" | "userId" | "recent.liveness" }[] = [];
+    if (providerRef) {
+      const byRef = identityVerificationEvents.find((e) => e.provider === "prembly" && e.providerReference === providerRef);
+      if (byRef) matches.push({ kycCaseId: byRef.kycCaseId, via: "providerRef" });
+    }
+    if (matches.length === 0 && metadataUserId) {
+      const direct = kycCases.find((k) => k.userId === metadataUserId);
+      if (direct) matches.push({ kycCaseId: direct.id, via: "userId" });
+    }
+    if (matches.length === 0 && bvnFromMeta) {
+      const byBvn = kycCases.find((k) => typeof k.bvn === "string" && k.bvn.replace(/\D/g, "") === bvnFromMeta);
+      if (byBvn) matches.push({ kycCaseId: byBvn.id, via: "metadata.bvn" });
+    }
+    if (matches.length === 0 && ninFromMeta) {
+      const byNin = kycCases.find((k) => typeof k.nin === "string" && k.nin.replace(/\D/g, "") === ninFromMeta);
+      if (byNin) matches.push({ kycCaseId: byNin.id, via: "metadata.nin" });
+    }
+    if (matches.length === 0 && isLivenessEvent) {
+      const recentLiveness = [...identityVerificationEvents]
+        .filter((e) => e.provider === "prembly" && e.verificationType === "LIVENESS")
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (recentLiveness) matches.push({ kycCaseId: recentLiveness.kycCaseId, via: "recent.liveness" });
+    }
+    const now = new Date().toISOString();
+    for (const hit of matches) {
+      const kyc = kycCases.find((k) => k.id === hit.kycCaseId);
+      if (!kyc) continue;
+      identityVerificationEvents.push({
+        id: randomUUID(),
+        kycCaseId: kyc.id,
+        provider: "prembly",
+        verificationType: isLivenessEvent ? "LIVENESS" : (verificationTypeUpper.includes("BVN") ? "BVN" : verificationTypeUpper.includes("NIN") ? "NIN" : "LIVENESS"),
+        providerReference: providerRef,
+        status: success ? "SUCCESS" : "FAILED",
+        matchScore: undefined,
+        rawResponse: payload,
+        createdAt: now,
+      });
+      if (success) {
+        if (isLivenessEvent) {
+          kyc.checklist.liveness = true;
+          kyc.livenessVerifiedAt = kyc.livenessVerifiedAt ?? now;
+          if (selfieImageData) {
+            kyc.selfieImageData = selfieImageData;
+          }
+        } else if (verificationTypeUpper.includes("BVN")) {
+          kyc.checklist.bvn = true;
+          kyc.bvnVerifiedAt = kyc.bvnVerifiedAt ?? now;
+        } else if (verificationTypeUpper.includes("NIN")) {
+          kyc.checklist.nin = true;
+          kyc.ninVerifiedAt = kyc.ninVerifiedAt ?? now;
+        }
+      }
+      kyc.updatedAt = now;
+      const user = users.find((u) => u.id === kyc.userId);
+      if (user) markKycChecklistComplete(user.id);
+    }
+    res.status(200).json({ ok: true, processed: true, success, matches: matches.length, liveness: isLivenessEvent, selfieExtracted: Boolean(selfieImageData) });
+  }
+);
+
 app.get("/api/v1/webhooks/kudi", (_req, res) => {
   res.status(200).json({ ok: true, service: "Kudi webhook endpoint" });
 });
@@ -531,6 +664,19 @@ app.post(
 );
 
 app.use(express.json({ limit: "1mb" }));
+app.use((error: unknown, _req: unknown, res: unknown, next: unknown) => {
+  if (typeof next !== "function") return;
+  const err = error as { type?: string; message?: string; status?: number; statusCode?: number };
+  if (err?.type === "entity.too.large" || /PayloadTooLarge|payload too large/i.test(err?.message ?? "")) {
+    (res as any).status?.(413)?.json?.({ ok: false, error: "Payload too large", maxBytes: err?.status === 413 ? "configured" : "1048576" });
+    return;
+  }
+  if (err && (err.status === 400 || err.statusCode === 400) && /Unexpected token|invalid json|JSON\.parse/i.test(err?.message ?? "")) {
+    (res as any).status?.(400)?.json?.({ ok: false, error: "Invalid JSON payload" });
+    return;
+  }
+  next(error);
+});
 
 app.get("/health", async (_req, res) => {
   try {
@@ -585,6 +731,7 @@ async function start(): Promise<void> {
       console.log(`Velo API: ${env.API_PUBLIC_URL}/api/v1`);
       console.log(`Swagger UI: ${env.API_PUBLIC_URL}/docs`);
       console.log(`Health check: ${env.API_PUBLIC_URL}/health`);
+      console.log(`Prembly KYC webhook (paste in widget dashboard): ${env.API_PUBLIC_URL}/api/v1/webhooks/prembly/kyc`);
       console.log(`Database: ${databaseMessage}`);
       void runRepaymentReminderSweep();
       void runInvestmentMaturitySweep();

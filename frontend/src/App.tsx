@@ -1,18 +1,38 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { ApplicationProvider } from "./context/ApplicationContext";
 import StartApplication from "./pages/StartApplication";
-import LoanApplication from "./pages/LoanApplication";
 import ResumeApplication from "./pages/ResumeApplication";
-import Admin from "./pages/Admin";
-import LoanManagerSetup from "./pages/LoanManagerSetup";
 import SEO from "./components/SEO";
 import { ThemeProvider } from "./context/ThemeContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import AccountAccess from "./pages/AccountAccess";
-import InvestorDashboard from "./pages/InvestorDashboard";
-import BorrowerDashboard from "./pages/BorrowerDashboard";
-import { useEffect, type ReactNode } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+
+const LoanApplication = lazy(() => import("./pages/LoanApplication"));
+const Admin = lazy(() => import("./pages/Admin"));
+const LoanManagerSetup = lazy(() => import("./pages/LoanManagerSetup"));
+const InvestorDashboard = lazy(() => import("./pages/InvestorDashboard"));
+const BorrowerDashboard = lazy(() => import("./pages/BorrowerDashboard"));
+
+function PageSkeleton({ label = "Loading Velo…" }: { label?: string }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="text-center space-y-3">
+        <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-velo-600 to-velo-500 shadow-lg shadow-velo-500/25 animate-pulse">
+          <svg className="animate-spin h-6 w-6 text-white" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path
+              className="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+        </div>
+        <p className="text-sm font-semibold text-velo-700">{label}</p>
+      </div>
+    </div>
+  );
+}
 
 function ProtectedRoute({
   children,
@@ -73,44 +93,46 @@ export default function App() {
       <AuthProvider>
         <ApplicationProvider>
           <SEO />
-          <Routes>
-            <Route path="/" element={<StartApplication />} />
-            <Route
-              path="/apply/*"
-              element={
-                <ProtectedRoute requiredRole="BORROWER">
-                  <LoanApplication />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/resume" element={<ResumeApplication />} />
-            <Route path="/account" element={<AccountAccess />} />
-            <Route path="/admin/set-password" element={<LoanManagerSetup />} />
-            <Route path="/admin/*" element={<Admin />} />
-            <Route
-              path="/investor/*"
-              element={
-                <ProtectedRoute requiredRole="INVESTOR">
-                  <InvestorDashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/borrower/*"
-              element={
-                <ProtectedRoute requiredRole="BORROWER">
-                  <BorrowerDashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/dashboard"
-              element={
-                <AuthProviderRoleRouter />
-              }
-            />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <Suspense fallback={<PageSkeleton />}>
+            <Routes>
+              <Route path="/" element={<StartApplication />} />
+              <Route
+                path="/apply/*"
+                element={
+                  <ProtectedRoute requiredRole="BORROWER">
+                    <LoanApplication />
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/resume" element={<ResumeApplication />} />
+              <Route path="/account" element={<AccountAccess />} />
+              <Route path="/admin/set-password" element={<LoanManagerSetup />} />
+              <Route path="/admin/*" element={<Admin />} />
+              <Route
+                path="/investor/*"
+                element={
+                  <ProtectedRoute requiredRole="INVESTOR">
+                    <InvestorDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/borrower/*"
+                element={
+                  <ProtectedRoute requiredRole="BORROWER">
+                    <BorrowerDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/dashboard"
+                element={
+                  <AuthProviderRoleRouter />
+                }
+              />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
         </ApplicationProvider>
       </AuthProvider>
     </ThemeProvider>

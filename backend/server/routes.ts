@@ -68,6 +68,7 @@ import {
   loanDisbursements,
   disbursementAccounts,
   accountChangeRequests,
+  indexes,
 } from "./store.js";
 import { env } from "./config.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
@@ -894,6 +895,7 @@ router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequ
     status: z.enum(["SUCCESS", "FAILED"]),
     providerReference: z.string().optional(),
     rawResponse: z.record(z.unknown()).optional(),
+    selfieImageData: z.string().optional(),
   }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -910,12 +912,45 @@ router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequ
     rawResponse: parsed.data.rawResponse ?? {},
     createdAt: new Date().toISOString(),
   });
+  let selfieImageData: string | undefined = parsed.data.selfieImageData;
+  if (!selfieImageData && parsed.data.rawResponse) {
+    const r = parsed.data.rawResponse as any;
+    const candidates: unknown[] = [
+      r.selfie,
+      r.image,
+      r.selfieImage,
+      r.selfie_image,
+      r.photo,
+      r.photograph,
+      r.face_image,
+      r.base64Image,
+      r.base64_image,
+      r.imageBase64,
+      (r.data as any)?.selfie,
+      (r.data as any)?.image,
+      (r.data as any)?.photo,
+    ];
+    for (const raw of candidates) {
+      if (typeof raw !== "string" || raw.length < 20) continue;
+      if (raw.startsWith("data:image")) {
+        selfieImageData = raw;
+        break;
+      }
+      if (/^[A-Za-z0-9+/=\s]+$/.test(raw) && raw.length > 100) {
+        selfieImageData = `data:image/jpeg;base64,${raw.replace(/\s/g, "")}`;
+        break;
+      }
+    }
+  }
   if (parsed.data.status === "SUCCESS") {
     kyc.checklist.liveness = true;
     kyc.updatedAt = new Date().toISOString();
+    if (selfieImageData) {
+      kyc.selfieImageData = selfieImageData;
+    }
     markKycChecklistComplete(req.user!.id);
   }
-  res.json({ ok: true, verificationStatus: parsed.data.status, providerConfigured: true, checklist: kyc.checklist });
+  res.json({ ok: true, verificationStatus: parsed.data.status, providerConfigured: true, checklist: kyc.checklist, selfieImageData });
 });
 
 router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => {
@@ -1599,12 +1634,37 @@ router.post("/investor/investments/:id/liquidity", requireAuth, requireRole("INV
 
 router.get("/investor/transactions", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
   const wallet = findWallet(req.user!.id);
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  const userInvestments = indexes.investmentsByInvestorId.get(req.user!.id) ?? [];
+  const userPayouts = indexes.payoutsByUserId.get(req.user!.id) ?? [];
+  const userLedger = (indexes.ledgerEntriesByWalletId.get(wallet.id) ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const userWalletTxs = (indexes.walletTransactionsByUserId.get(req.user!.id) ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const sliced = {
+    investments: userInvestments.slice(offset, offset + limit),
+    payouts: userPayouts.slice(offset, offset + limit),
+    ledger: userLedger.slice(offset, offset + limit),
+    walletTransactions: userWalletTxs.slice(offset, offset + limit),
+  };
   res.json({
     ok: true,
-    investments: investments.filter((item) => item.investorId === req.user!.id),
-    payouts: payouts.filter((item) => item.userId === req.user!.id),
-    ledger: ledgerEntries.filter((e) => e.walletId === wallet.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    walletTransactions: walletTransactions.filter((t) => t.userId === req.user?.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    ...sliced,
+    meta: {
+      limit,
+      offset,
+      totals: {
+        investments: userInvestments.length,
+        payouts: userPayouts.length,
+        ledger: userLedger.length,
+        walletTransactions: userWalletTxs.length,
+      },
+      hasMore: {
+        investments: offset + limit < userInvestments.length,
+        payouts: offset + limit < userPayouts.length,
+        ledger: offset + limit < userLedger.length,
+        walletTransactions: offset + limit < userWalletTxs.length,
+      },
+    },
   });
 });
 
@@ -1907,12 +1967,20 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
 });
 
 router.get("/borrower/loans", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
-  const userLoans = loans.filter((item) => item.borrowerId === req.user!.id);
-  const withSchedules = userLoans.map((loan) => ({
+  const userLoans = indexes.loansByBorrowerId.get(req.user!.id) ?? [];
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  const sorted = userLoans.slice().sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+  const page = sorted.slice(offset, offset + limit);
+  const withSchedules = page.map((loan) => ({
     ...loan,
-    schedule: loanSchedules.filter((s) => s.loanId === loan.id),
+    schedule: indexes.loanSchedulesByLoanId.get(loan.id) ?? [],
   }));
-  res.json({ ok: true, loans: withSchedules });
+  res.json({
+    ok: true,
+    loans: withSchedules,
+    meta: { total: sorted.length, limit, offset, hasMore: offset + limit < sorted.length },
+  });
 });
 
 router.get("/borrower/loans/:loanId", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
@@ -3346,7 +3414,7 @@ router.get("/admin/ledger", requireAuth, requireRole("ADMIN"), async (req: AuthR
   const offset = Math.max(0, Number(req.query.offset ?? 0));
   const entryType = req.query.entryType ? String(req.query.entryType) : undefined;
   const filtered = entryType
-    ? adminLedger.filter((e) => e.entryType === entryType)
+    ? indexes.adminLedgerByEntryType.get(entryType) ?? []
     : adminLedger;
   const sorted = filtered.slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const page = sorted.slice(offset, offset + limit);
@@ -3359,6 +3427,24 @@ router.get("/admin/ledger", requireAuth, requireRole("ADMIN"), async (req: AuthR
     entries: page,
     limit,
     offset,
+    hasMore: offset + limit < sorted.length,
+  });
+});
+
+router.get("/admin/investments", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const status = typeof req.query.status === "string" ? req.query.status : undefined;
+  const investorId = typeof req.query.investorId === "string" ? req.query.investorId : undefined;
+  let filtered: Array<(typeof investments)[number]> = investorId
+    ? indexes.investmentsByInvestorId.get(investorId) ?? []
+    : investments;
+  if (status) filtered = filtered.filter((i) => String(i.status) === status);
+  const sorted = filtered.slice().sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+  const page = paginate(sorted, req.query as Record<string, unknown>);
+  res.json({
+    ok: true,
+    investments: page.items,
+    meta: page.meta,
+    plans: investmentPlans,
   });
 });
 

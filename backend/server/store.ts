@@ -108,6 +108,9 @@ export interface KycCase {
   reviewedAt?: string;
   verifiedAt?: string;
   rejectionReason?: string;
+  verifiedDetails?: Record<string, unknown>;
+  identityPhoto?: string;
+  selfieImageData?: string;
   checklist: {
     bvn: boolean;
     nin: boolean;
@@ -603,7 +606,114 @@ function requestPersist(): void {
   pendingPersist = setTimeout(() => {
     pendingPersist = undefined;
     void persistStore();
-  }, 25);
+  }, 2000);
+}
+
+const appendToMultiIndex = <K, V>(map: Map<K, V[]>, key: K, value: V) => {
+  const existing = map.get(key);
+  if (existing) existing.push(value);
+  else map.set(key, [value]);
+};
+
+export const indexes = {
+  usersByEmail: new Map<string, User>(),
+  walletsByUserId: new Map<string, Wallet>(),
+  ledgerEntriesByWalletId: new Map<string, LedgerEntry[]>(),
+  walletTransactionsByUserId: new Map<string, WalletTransaction[]>(),
+  walletTransactionsByTxRef: new Map<string, WalletTransaction>(),
+  kycCasesByUserId: new Map<string, KycCase>(),
+  identityVerificationEventsByKycCaseId: new Map<string, IdentityVerificationEvent[]>(),
+  documentsByUserId: new Map<string, Document[]>(),
+  payoutAccountsByUserId: new Map<string, PayoutAccount[]>(),
+  investmentsByInvestorId: new Map<string, Investment[]>(),
+  investmentsByPlanId: new Map<string, Investment[]>(),
+  loanApplicationsByBorrowerId: new Map<string, LoanApplication[]>(),
+  loansByBorrowerId: new Map<string, Loan[]>(),
+  loansByStatus: new Map<string, Loan[]>(),
+  loansByApplicationId: new Map<string, Loan>(),
+  loanSchedulesByLoanId: new Map<string, LoanSchedule[]>(),
+  repaymentsByLoanId: new Map<string, Repayment[]>(),
+  repaymentsByBorrowerId: new Map<string, Repayment[]>(),
+  payoutsByUserId: new Map<string, Payout[]>(),
+  payoutsByInvestmentId: new Map<string, Payout>(),
+  creditHistoryByUserId: new Map<string, CreditHistoryEvent[]>(),
+  creditScoresByUserId: new Map<string, CreditScore[]>(),
+  creditReportsByUserId: new Map<string, CreditReport[]>(),
+  notificationsByUserId: new Map<string, Notification[]>(),
+  notificationsByIdempotencyKey: new Map<string, Notification>(),
+  auditLogsByUserId: new Map<string, AuditLog[]>(),
+  auditLogsByAction: new Map<string, AuditLog[]>(),
+  adminLedgerByEntryType: new Map<string, AdminLedgerEntry[]>(),
+  investorWithdrawalsByInvestorId: new Map<string, InvestorWithdrawal[]>(),
+  disbursementAccountsByBorrowerId: new Map<string, DisbursementAccount[]>(),
+  loanDisbursementsByLoanId: new Map<string, LoanDisbursement[]>(),
+  consentsByUserId: new Map<string, Consent[]>(),
+  otpChallengesByUserId: new Map<string, OtpChallenge[]>(),
+  passwordResetTokensByUserId: new Map<string, PasswordResetToken[]>(),
+  providerEventsByEventKey: new Map<string, ProviderWebhookEvent>(),
+  accountChangeRequestsByUserId: new Map<string, AccountChangeRequest[]>(),
+};
+
+export function rebuildIndexes(): void {
+  for (const map of Object.values(indexes) as Array<Map<unknown, unknown> | Map<unknown, unknown[]>>) {
+    map.clear();
+  }
+  for (const u of users) indexes.usersByEmail.set(u.email.toLowerCase(), u);
+  for (const w of wallets) indexes.walletsByUserId.set(w.userId, w);
+  for (const e of ledgerEntries) appendToMultiIndex(indexes.ledgerEntriesByWalletId, e.walletId, e);
+  for (const t of walletTransactions) {
+    appendToMultiIndex(indexes.walletTransactionsByUserId, t.userId, t);
+    if (t.txRef) indexes.walletTransactionsByTxRef.set(t.txRef, t);
+  }
+  for (const k of kycCases) indexes.kycCasesByUserId.set(k.userId, k);
+  for (const ev of identityVerificationEvents) appendToMultiIndex(indexes.identityVerificationEventsByKycCaseId, ev.kycCaseId, ev);
+  for (const d of documents) appendToMultiIndex(indexes.documentsByUserId, d.userId, d);
+  for (const pa of payoutAccounts) appendToMultiIndex(indexes.payoutAccountsByUserId, pa.userId, pa);
+  for (const inv of investments) {
+    appendToMultiIndex(indexes.investmentsByInvestorId, inv.investorId, inv);
+    if (inv.planId) appendToMultiIndex(indexes.investmentsByPlanId, inv.planId, inv);
+  }
+  for (const la of loanApplications) appendToMultiIndex(indexes.loanApplicationsByBorrowerId, la.borrowerId, la);
+  for (const ln of loans) {
+    appendToMultiIndex(indexes.loansByBorrowerId, ln.borrowerId, ln);
+    appendToMultiIndex(indexes.loansByStatus, String(ln.status), ln);
+    indexes.loansByApplicationId.set(ln.applicationId, ln);
+  }
+  for (const s of loanSchedules) appendToMultiIndex(indexes.loanSchedulesByLoanId, s.loanId, s);
+  for (const r of repayments) {
+    appendToMultiIndex(indexes.repaymentsByLoanId, r.loanId, r);
+    appendToMultiIndex(indexes.repaymentsByBorrowerId, r.borrowerId, r);
+  }
+  for (const p of payouts) {
+    appendToMultiIndex(indexes.payoutsByUserId, p.userId, p);
+    if (p.investmentId) indexes.payoutsByInvestmentId.set(p.investmentId, p);
+  }
+  for (const h of creditHistory) appendToMultiIndex(indexes.creditHistoryByUserId, h.userId, h);
+  for (const s of creditScores) appendToMultiIndex(indexes.creditScoresByUserId, s.userId, s);
+  for (const r of creditReports) appendToMultiIndex(indexes.creditReportsByUserId, r.userId, r);
+  for (const n of notifications) {
+    appendToMultiIndex(indexes.notificationsByUserId, n.userId, n);
+    if (n.idempotencyKey) indexes.notificationsByIdempotencyKey.set(n.idempotencyKey, n);
+  }
+  for (const a of auditLogs) {
+    if (a.userId) appendToMultiIndex(indexes.auditLogsByUserId, a.userId, a);
+    appendToMultiIndex(indexes.auditLogsByAction, a.action, a);
+  }
+  for (const e of adminLedger) appendToMultiIndex(indexes.adminLedgerByEntryType, e.entryType, e);
+  for (const w of investorWithdrawals) appendToMultiIndex(indexes.investorWithdrawalsByInvestorId, w.investorId, w);
+  for (const da of disbursementAccounts) appendToMultiIndex(indexes.disbursementAccountsByBorrowerId, da.borrowerId, da);
+  for (const d of loanDisbursements) appendToMultiIndex(indexes.loanDisbursementsByLoanId, d.loanId, d);
+  for (const c of consents) appendToMultiIndex(indexes.consentsByUserId, c.userId, c);
+  for (const o of otpChallenges) appendToMultiIndex(indexes.otpChallengesByUserId, o.userId, o);
+  for (const pr of passwordResetTokens) appendToMultiIndex(indexes.passwordResetTokensByUserId, pr.userId, pr);
+  for (const pe of providerEvents) indexes.providerEventsByEventKey.set(pe.eventKey, pe);
+  for (const acr of accountChangeRequests) appendToMultiIndex(indexes.accountChangeRequestsByUserId, acr.userId, acr);
+}
+
+function syncAfterMutation<T>(key: StoreKey, _values: T[]): void {
+  if (hydrating) return;
+  rebuildIndexes();
+  requestPersist();
 }
 
 function wrapNested<T>(value: T): T {
@@ -638,12 +748,12 @@ function createPersistentArray<T>(key: StoreKey): T[] {
     },
     set(array, property, value, receiver) {
       const result = Reflect.set(array, property, wrapNested(value), receiver);
-      requestPersist();
+      syncAfterMutation(key, array);
       return result;
     },
     deleteProperty(array, property) {
       const result = Reflect.deleteProperty(array, property);
-      requestPersist();
+      syncAfterMutation(key, array);
       return result;
     },
   });
@@ -720,10 +830,11 @@ export async function initializeStore(): Promise<void> {
   for (const app of loanApplications) {
     seedLoanStageStatuses(app);
   }
+  rebuildIndexes();
 }
 
 export function createWallet(userId: string): Wallet {
-  const existing = wallets.find((w) => w.userId === userId);
+  const existing = indexes.walletsByUserId.get(userId);
   if (existing) return existing;
   const wallet: Wallet = {
     id: randomUUID(),
@@ -741,15 +852,15 @@ export function createWallet(userId: string): Wallet {
 }
 
 export function findUserByEmail(email: string): User | undefined {
-  return users.find((user) => user.email === email.toLowerCase());
+  return indexes.usersByEmail.get(email.toLowerCase());
 }
 
 export function findWallet(userId: string): Wallet {
-  return wallets.find((wallet) => wallet.userId === userId) ?? createWallet(userId);
+  return indexes.walletsByUserId.get(userId) ?? createWallet(userId);
 }
 
 export function findOrCreateKycCase(userId: string): KycCase {
-  let kyc = kycCases.find((k) => k.userId === userId);
+  let kyc = indexes.kycCasesByUserId.get(userId);
   if (!kyc) {
     kyc = {
       id: randomUUID(),
@@ -798,16 +909,15 @@ export function settleWalletDeposit(params: {
   providerReference?: string;
   providerTransactionId?: string;
 }): { ok: boolean; tx?: WalletTransaction; wallet?: Wallet; user?: User; reason?: string } {
-  const idx = walletTransactions.findIndex((t) => t.txRef === params.txRef && t.type === "DEPOSIT");
-  if (idx < 0) return { ok: false, reason: `No pending deposit found for txRef=${params.txRef}` };
-  const tx = walletTransactions[idx];
+  const tx = indexes.walletTransactionsByTxRef.get(params.txRef);
+  if (!tx || tx.type !== "DEPOSIT") return { ok: false, reason: `No pending deposit found for txRef=${params.txRef}` };
   if (tx.status === "SUCCESSFUL") {
     return { ok: true, tx, reason: "already_settled" };
   }
-  if (!["PENDING", "PENDING_PROVIDER_CONFIRMATION", "PROVIDER_NOT_CONFIGURED"].includes(tx.status)) {
+  if (!["PENDING", "PENDING_PROVIDER_CONFIRMATION", "PROVIDER_NOT_CONFIGURED"].includes(String(tx.status))) {
     return { ok: false, reason: `Deposit status=${tx.status} is not settleable` };
   }
-  const user = users.find((u) => u.id === tx.userId);
+  const user = indexes.usersByEmail.size > 0 ? (users.find((u) => u.id === tx.userId) ?? undefined) : undefined;
   const wallet = findWallet(tx.userId);
   const now = new Date().toISOString();
   wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - tx.amountMinor);
@@ -852,7 +962,8 @@ export function settleWalletDeposit(params: {
   tx.providerTransactionId = params.providerTransactionId ?? tx.providerTransactionId;
   tx.verifiedAt = now;
   tx.updatedAt = now;
-  walletTransactions[idx] = tx;
+  const idx = walletTransactions.indexOf(tx);
+  if (idx >= 0) walletTransactions[idx] = tx;
   return { ok: true, tx, wallet, user };
 }
 
