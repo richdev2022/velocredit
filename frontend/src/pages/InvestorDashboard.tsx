@@ -192,6 +192,33 @@ export default function InvestorDashboard() {
   }, [user]);
 
   useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const refreshKycState = async () => {
+      try {
+        const response = await getMyKyc();
+        if (cancelled) return;
+        setKyc(response as unknown as KycData);
+        setBvn((response as any).bvn || "");
+        setNin((response as any).nin || "");
+        if (response.status !== user.kycStatus) await refreshUser();
+      } catch (_error) {
+        // Background refresh must not interrupt the dashboard.
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshKycState();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    const interval = window.setInterval(() => void refreshKycState(), 5000);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.clearInterval(interval);
+    };
+  }, [user]);
+
+  useEffect(() => {
     if (!activeOtpChallenge) return;
     if (countdownRef.current) window.clearInterval(countdownRef.current);
     countdownRef.current = window.setInterval(() => {
@@ -1965,6 +1992,8 @@ function InvestorPayoutSection(props: any) {
   const [banks, setBanks] = useState([] as { id: number; name: string; code: string }[]);
   const [accounts, setAccounts] = useState([] as any[]);
   const [selectedBank, setSelectedBank] = useState("");
+  const [bankQuery, setBankQuery] = useState("");
+  const [bankMenuOpen, setBankMenuOpen] = useState(false);
   const [accountNumber, setAccountNumber] = useState("");
   const [resolvedName, setResolvedName] = useState(null as string | null);
   const [resolveError, setResolveError] = useState("");
@@ -1973,6 +2002,8 @@ function InvestorPayoutSection(props: any) {
   const [error, setError] = useState("");
   const [defaultId, setDefaultId] = useState(null as string | null);
   const [pendingRequest, setPendingRequest] = useState(null as any);
+  const filteredBanks = banks.filter((bank) => bank.name.toLowerCase().includes(bankQuery.trim().toLowerCase()));
+  const selectedBankName = banks.find((bank) => bank.code === selectedBank)?.name || "";
 
   async function loadBanks() {
     if (banks.length) return;
@@ -2051,7 +2082,7 @@ function InvestorPayoutSection(props: any) {
           setMessage("Payout account saved.");
           void reloadAccounts();
         }
-        setSelectedBank(""); setAccountNumber(""); setResolvedName(null);
+        setSelectedBank(""); setBankQuery(""); setBankMenuOpen(false); setAccountNumber(""); setResolvedName(null);
       } else setError(body.error || "Save failed");
     } catch (err) { setError(err instanceof Error ? err.message : "Save failed"); }
     finally { setBusy(""); }
@@ -2095,13 +2126,43 @@ function InvestorPayoutSection(props: any) {
         <h2 className="section-heading">{accounts.length ? "Edit payout account" : "Add payout account"}</h2>
         <p className="section-subheading">Select your bank and verify the account name before saving.</p>
         <form onSubmit={saveAccount} className="mt-5 grid gap-4 md:grid-cols-3 md:items-end">
-          <label className="velo-label">
-            Bank <span className="text-red-500">*</span>
-            <select className="velo-input mt-1" value={selectedBank} onChange={(e) => { setSelectedBank(e.target.value); setResolvedName(null); setResolveError(""); }} required disabled={busy === "banks"}>
-              <option value="">{busy === "banks" ? "Loading banks…" : "Select your bank"}</option>
-              {banks.map(b => <option key={b.code} value={b.code}>{b.name}</option>)}
-            </select>
-          </label>
+          <div className="velo-label relative">
+            <label htmlFor="payout-bank-search">Bank <span className="text-red-500">*</span></label>
+            <div className="relative mt-1">
+              <input
+                id="payout-bank-search"
+                className="velo-input pr-10"
+                value={bankMenuOpen ? bankQuery : selectedBankName}
+                onFocus={() => { setBankMenuOpen(true); setBankQuery(""); }}
+                onChange={(e) => { setBankQuery(e.target.value); setBankMenuOpen(true); setSelectedBank(""); setResolvedName(null); setResolveError(""); }}
+                placeholder={busy === "banks" ? "Loading banks…" : "Search banks…"}
+                autoComplete="off"
+                required={!selectedBank}
+                disabled={busy === "banks"}
+                role="combobox"
+                aria-expanded={bankMenuOpen}
+                aria-controls="payout-bank-options"
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true">⌄</span>
+            </div>
+            {bankMenuOpen && !busy && (
+              <div id="payout-bank-options" role="listbox" className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                {filteredBanks.length ? filteredBanks.map((bank) => (
+                  <button
+                    key={bank.code}
+                    type="button"
+                    role="option"
+                    aria-selected={selectedBank === bank.code}
+                    className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 dark:text-slate-200 dark:hover:bg-emerald-900/30 dark:hover:text-emerald-200"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => { setSelectedBank(bank.code); setBankQuery(""); setBankMenuOpen(false); setResolvedName(null); setResolveError(""); }}
+                  >
+                    <span>{bank.name}</span><span className="ml-3 text-[10px] font-mono text-slate-400">{bank.code}</span>
+                  </button>
+                )) : <div className="px-3 py-6 text-center text-xs text-slate-500">No banks match “{bankQuery}”.</div>}
+              </div>
+            )}
+          </div>
           <label className="velo-label">
             Account number <span className="text-red-500">*</span>
             <input className="velo-input mt-1" inputMode="numeric" maxLength={10} required value={accountNumber} onChange={(e) => { setAccountNumber(e.target.value.replace(/\D/g, "")); setResolvedName(null); setResolveError(""); }} onBlur={() => { if (selectedBank && accountNumber.length === 10) void resolveAccount(); }} placeholder="10-digit NUBAN" />
