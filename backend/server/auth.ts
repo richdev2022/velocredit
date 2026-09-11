@@ -175,6 +175,7 @@ export async function createOtpChallenge(
     try {
       const result = await sendOtpSms({
         recipients: phone,
+        message: smsText,
         otpLength: code.length,
         otpDurationMinutes: ttlMinutes,
         otpAttempts: Math.max(1, Math.min(6, Math.round(env.OTP_MAX_ATTEMPTS))),

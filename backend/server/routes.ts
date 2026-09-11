@@ -669,6 +669,24 @@ router.post("/me/roles/add", requireAuth, (req: AuthRequest, res) => {
 router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   const kyc = findOrCreateKycCase(req.user!.id);
   const userDocs = documents.filter((d) => d.userId === req.user?.id);
+  let identityPhoto: string | undefined;
+  if (kyc.providerRaw && typeof kyc.providerRaw === "object") {
+    const raw = kyc.providerRaw as Record<string, unknown>;
+    const nestedSources = [raw.identity, raw.idScan, raw];
+    for (const src of nestedSources) {
+      if (!src || typeof src !== "object") continue;
+      const data = (src as Record<string, unknown>).data;
+      const candidate = data && typeof data === "object" ? data : src;
+      for (const key of ["photo", "photograph", "image", "face_image", "selfie", "identityPhoto"]) {
+        const val = (candidate as Record<string, unknown>)[key];
+        if (typeof val === "string" && val.length > 50) {
+          identityPhoto = val;
+          break;
+        }
+      }
+      if (identityPhoto) break;
+    }
+  }
   res.json({
     ok: true,
     status: kyc.status,
@@ -679,6 +697,7 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     rejectionReason: kyc.rejectionReason,
     documents: userDocs,
     verificationEvents: identityVerificationEvents.filter((e) => e.kycCaseId === kyc.id),
+    identityPhoto,
   });
 });
 
@@ -855,8 +874,13 @@ router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image
   }
   const result = await verifyIdentityWithFace({ type, number, image: req.file.buffer.toString("base64"), dateOfBirth: typeof req.body.dateOfBirth === "string" ? req.body.dateOfBirth : undefined });
   identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: type ?? "LIVENESS", providerReference: result.providerReference, status: result.status, matchScore: result.matchScore, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
-  if (result.status === "SUCCESS") { kyc.checklist.liveness = true; kyc.updatedAt = new Date().toISOString(); }
-  res.json({ ok: true, verificationStatus: result.status, providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist });
+  let selfieImageData: string | undefined;
+  if (result.status === "SUCCESS") {
+    kyc.checklist.liveness = true;
+    kyc.updatedAt = new Date().toISOString();
+    selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+  }
+  res.json({ ok: true, verificationStatus: result.status, providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist, selfieImageData });
 });
 
 router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequest, res) => {

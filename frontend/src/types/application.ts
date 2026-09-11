@@ -121,6 +121,8 @@ export interface KycInfo {
   livenessVerified?: boolean;
   verifiedDetails?: Record<string, unknown>;
   livenessStatus?: string;
+  identityPhotoUrl?: string;
+  selfieImageData?: string;
 }
 
 // ---------------------------------------------------------------------------

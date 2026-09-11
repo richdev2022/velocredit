@@ -62,10 +62,21 @@ function redactSensitive(value: unknown): Record<string, unknown> {
 
 function safeIdentityFields(response: Record<string, unknown>): Record<string, unknown> {
   const data = responseRecord(response);
-  const keys = ["full_name", "fullName", "name", "first_name", "firstName", "firstname", "last_name", "lastName", "surname", "phone_number", "phoneNumber", "phone", "mobile", "telephoneno", "date_of_birth", "dateOfBirth", "birthdate", "dob", "address", "residence_address", "state", "lga"];
-  const fields = Object.fromEntries(keys.filter((key) => typeof data[key] === "string" && String(data[key]).trim()).map((key) => [key, data[key]]));
+  const keys = ["full_name", "fullName", "name", "first_name", "firstName", "firstname", "last_name", "lastName", "surname", "phone_number", "phoneNumber", "phone", "mobile", "telephoneno", "date_of_birth", "dateOfBirth", "birthdate", "dob", "address", "residence_address", "state", "lga", "gender", "marital_status", "nationality", "photo", "photograph", "image", "face_image", "selfie"];
+  const fields = Object.fromEntries(keys.filter((key) => {
+    const val = data[key];
+    if (typeof val === "string" && String(val).trim()) return true;
+    return false;
+  }).map((key) => [key, data[key]]));
   if (!fields.full_name && !fields.fullName && (fields.first_name || fields.last_name)) {
     fields.full_name = [fields.first_name, fields.last_name].filter(Boolean).join(" ");
+  }
+  const photoKeys = ["photo", "photograph", "image", "face_image", "selfie"];
+  for (const key of photoKeys) {
+    if (typeof fields[key] === "string" && fields[key].length > 0) {
+      fields.identityPhoto = fields[key];
+      break;
+    }
   }
   return fields;
 }

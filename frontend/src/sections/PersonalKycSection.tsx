@@ -3,7 +3,7 @@
 // Section 2 for Personal Loan applicants — BVN, NIN, ID document, proof of address.
 // ============================================================================
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import FormInput from "../components/FormInput";
@@ -30,6 +30,28 @@ const ID_TYPES = [
   { value: "Voter's Card",            label: "Voter's Card" },
 ];
 
+function maskIdNumber(value: string): string {
+  if (!value || value.length < 4) return value;
+  const lastFour = value.slice(-4);
+  const stars = "*".repeat(Math.max(0, value.length - 4));
+  return stars + lastFour;
+}
+
+function pickStr(details: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const v = details[key];
+    if (typeof v === "string" && v.trim()) return v;
+  }
+  return undefined;
+}
+
+function normalizePhotoData(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length < 20) return undefined;
+  if (raw.startsWith("data:")) return raw;
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+  return `data:image/jpeg;base64,${raw.replace(/\s/g, "")}`;
+}
+
 export default function PersonalKycSection() {
   const { application, patchKyc, patchPersonalInfo, patchDocuments, markSectionStatus, next } = useApplication();
   const [verification, setVerification] = useState<{ bvn?: string; nin?: string; liveness?: string }>({});
@@ -47,6 +69,27 @@ export default function PersonalKycSection() {
   const countdownRef = useRef<number | null>(null);
   if (!application) return null;
   const currentApplication = application;
+  const bvnDisplay = application.kyc?.bvnVerified ? maskIdNumber(application.kyc?.bvn || "") : application.kyc?.bvn || "";
+  const ninDisplay = application.kyc?.ninVerified ? maskIdNumber(application.kyc?.nin || "") : application.kyc?.nin || "";
+  const bvnLocked = application.kyc?.bvnVerified === true;
+  const ninLocked = application.kyc?.ninVerified === true;
+  const livenessLocked = application.kyc?.livenessVerified === true;
+
+  const identityInfo = useMemo(() => {
+    const details = (application.kyc?.verifiedDetails ?? {}) as Record<string, unknown>;
+    const personal = application.personalInfo ?? {};
+    const fullName = pickStr(details, ["full_name", "fullName", "name"]) ?? personal.fullName ?? "";
+    const phone = pickStr(details, ["phone_number", "phoneNumber", "phone", "mobile", "telephoneno"]) ?? personal.phone ?? "";
+    const dateOfBirth = pickStr(details, ["date_of_birth", "dateOfBirth", "birthdate", "dob"]) ?? personal.dateOfBirth ?? "";
+    const address = pickStr(details, ["address", "residence_address", "residentialAddress"]) ?? personal.residentialAddress ?? "";
+    const state = pickStr(details, ["state"]) ?? personal.state ?? "";
+    const lga = pickStr(details, ["lga", "local_government", "localGovernmentArea"]) ?? personal.lga ?? "";
+    const gender = pickStr(details, ["gender", "sex"]);
+    const nationality = pickStr(details, ["nationality"]);
+    const photoRaw = pickStr(details, ["identityPhoto", "photo", "photograph", "image", "face_image", "selfie"]);
+    const identityPhoto = normalizePhotoData(photoRaw) ?? normalizePhotoData(application.kyc?.identityPhotoUrl) ?? normalizePhotoData(application.kyc?.selfieImageData);
+    return { fullName, phone, dateOfBirth, address, state, lga, gender, nationality, identityPhoto, anyPopulated: !!(fullName || phone || dateOfBirth || address || state || lga) };
+  }, [application.kyc?.verifiedDetails, application.kyc?.identityPhotoUrl, application.kyc?.selfieImageData, application.personalInfo]);
 
   useEffect(() => {
     if (!activeOtpChallenge) return;
@@ -69,6 +112,7 @@ export default function PersonalKycSection() {
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors, isValid },
   } = useForm<KycForm>({
     resolver: zodResolver(kycSchema),
@@ -80,6 +124,11 @@ export default function PersonalKycSection() {
       identificationNumber: application.kyc?.identificationNumber || "",
     },
   });
+
+  useEffect(() => {
+    if (application.kyc?.bvn) setValue("bvn", application.kyc.bvn, { shouldValidate: true, shouldDirty: true });
+    if (application.kyc?.nin) setValue("nin", application.kyc.nin, { shouldValidate: true, shouldDirty: true });
+  }, [application.kyc?.bvn, application.kyc?.nin, setValue]);
 
   function sync<K extends keyof KycForm>(key: K, value: KycForm[K]) {
     patchKyc({ [key]: value } as any);
@@ -123,11 +172,17 @@ export default function PersonalKycSection() {
       const status = response.verificationStatus === "SUCCESS" ? "Verified" : response.error || "Verification failed";
       setVerification((current) => ({ ...current, [lowerType]: status }));
       if (response.verificationStatus === "SUCCESS") {
-        patchKyc({ [lowerType === "bvn" ? "bvnVerified" : "ninVerified"]: true, verifiedDetails: response.verifiedDetails });
         const details = response.verifiedDetails ?? {};
+        const photoUrl = normalizePhotoData(pickStr(details, ["identityPhoto", "photo", "photograph", "image", "face_image", "selfie"]));
+        patchKyc({ [lowerType === "bvn" ? "bvnVerified" : "ninVerified"]: true, verifiedDetails: details, ...(photoUrl ? { identityPhotoUrl: photoUrl } : {}) });
         const pick = (keys: string[]) => keys.map((key) => details[key]).find((item) => typeof item === "string" && item.trim()) as string | undefined;
         const autofill = Object.fromEntries(Object.entries({ fullName: pick(["full_name", "fullName", "name"]), phone: pick(["phone_number", "phone", "mobile"]), dateOfBirth: pick(["date_of_birth", "dateOfBirth", "dob"]) }).filter(([, item]) => item));
         if (Object.keys(autofill).length) patchPersonalInfo(autofill);
+        if (lowerType === "bvn") {
+          setValue("bvn", maskIdNumber(value), { shouldValidate: true });
+        } else {
+          setValue("nin", maskIdNumber(value), { shouldValidate: true });
+        }
       }
     } catch (error) {
       setVerification((current) => ({ ...current, [lowerType]: "Verification failed" }));
@@ -141,10 +196,15 @@ export default function PersonalKycSection() {
     try {
       const confirmed = await confirmKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, code: activeOtpChallenge.otpCode });
       const lowerType = activeOtpChallenge.idType.toLowerCase() as "bvn" | "nin";
+      const value = lowerType === "bvn" ? currentApplication.kyc?.bvn : currentApplication.kyc?.nin;
       patchKyc({ [lowerType === "bvn" ? "bvnVerified" : "ninVerified"]: true, checklist: confirmed.checklist as any });
       setVerification((current) => ({ ...current, [lowerType]: "Verified" }));
       setVerificationError("");
       setActiveOtpChallenge(null);
+      if (value) {
+        if (lowerType === "bvn") setValue("bvn", maskIdNumber(value), { shouldValidate: true });
+        else setValue("nin", maskIdNumber(value), { shouldValidate: true });
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Unable to verify code";
       setActiveOtpChallenge((current) => current ? { ...current, busy: false, error: reason, otpCode: "" } : current);
@@ -174,17 +234,23 @@ export default function PersonalKycSection() {
       const idType = currentApplication.kyc?.bvnVerified ? "BVN" : currentApplication.kyc?.ninVerified ? "NIN" : undefined;
       if (!idType) { setVerificationError("Verify your BVN or NIN before starting face verification."); return; }
       const response = await verifyMyLiveness(file, { idType, idNumber: idType === "BVN" ? currentApplication.kyc?.bvn : currentApplication.kyc?.nin, dateOfBirth: currentApplication.personalInfo?.dateOfBirth });
-      patchKyc({ livenessVerified: response.verificationStatus === "SUCCESS", livenessStatus: response.verificationStatus });
-      setVerification((current) => ({ ...current, liveness: response.verificationStatus === "SUCCESS" ? "Verified" : response.error || "Verification failed" }));
+      const success = response.verificationStatus === "SUCCESS";
+      const selfieData = success ? (response as any).selfieImageData : undefined;
+      patchKyc({ livenessVerified: success, livenessStatus: response.verificationStatus, ...(selfieData ? { selfieImageData: selfieData } : {}) });
+      setVerification((current) => ({ ...current, liveness: success ? "Verified" : response.error || "Verification failed" }));
     } catch (error) { setVerificationError(error instanceof Error ? error.message : "Unable to complete liveness verification"); }
     finally { setLivenessBusy(false); }
   }
 
   const hasIdDoc = Boolean(application.documents?.identificationDocument);
   const hasProof = Boolean(application.documents?.proofOfAddress);
+  const bestSelfieImage = application.kyc?.selfieImageData || identityInfo.identityPhoto;
 
   function onSubmit(data: KycForm) {
-    patchKyc(data);
+    const patchPayload: Partial<KycForm> = { ...data };
+    if (bvnLocked) patchPayload.bvn = currentApplication.kyc?.bvn || "";
+    if (ninLocked) patchPayload.nin = currentApplication.kyc?.nin || "";
+    patchKyc(patchPayload as any);
     markSectionStatus("kyc", "completed");
     next();
   }
@@ -210,54 +276,202 @@ export default function PersonalKycSection() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <FormInput
-            label="BVN"
-            required
-            inputMode="numeric"
-            placeholder="11-digit BVN"
-            helper="Dial *565*0# on your registered line to retrieve your BVN."
-            error={errors.bvn?.message}
-            {...register("bvn")}
-            onChange={(e) => { register("bvn").onChange(e); sync("bvn", e.target.value); }}
-          />
-          <FormInput
-            label="NIN"
-            required
-            inputMode="numeric"
-            placeholder="11-digit NIN"
-            helper="Found on your National Identity Card or via the NIMC app."
-            error={errors.nin?.message}
-            {...register("nin")}
-            onChange={(e) => { register("nin").onChange(e); sync("nin", e.target.value); }}
-          />
+          {bvnLocked ? (
+            <div>
+              <label className="velo-label">BVN <span className="text-red-500">*</span></label>
+              <div className="velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 text-slate-700">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold tracking-wider font-mono text-slate-900">{bvnDisplay}</span>
+                  <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded">Verified</span>
+                </div>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
+                  <rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                  <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                </svg>
+              </div>
+              <p className="velo-helper mt-1 text-slate-500">BVN verified and locked for your security.</p>
+            </div>
+          ) : (
+            <FormInput
+              label="BVN"
+              required
+              inputMode="numeric"
+              placeholder="11-digit BVN"
+              helper="Dial *565*0# on your registered line to retrieve your BVN."
+              error={errors.bvn?.message}
+              {...register("bvn")}
+              onChange={(e) => { register("bvn").onChange(e); sync("bvn", e.target.value); }}
+            />
+          )}
+          {ninLocked ? (
+            <div>
+              <label className="velo-label">NIN <span className="text-red-500">*</span></label>
+              <div className="velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 text-slate-700">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold tracking-wider font-mono text-slate-900">{ninDisplay}</span>
+                  <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded">Verified</span>
+                </div>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
+                  <rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                  <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                </svg>
+              </div>
+              <p className="velo-helper mt-1 text-slate-500">NIN verified and locked for your security.</p>
+            </div>
+          ) : (
+            <FormInput
+              label="NIN"
+              required
+              inputMode="numeric"
+              placeholder="11-digit NIN"
+              helper="Found on your National Identity Card or via the NIMC app."
+              error={errors.nin?.message}
+              {...register("nin")}
+              onChange={(e) => { register("nin").onChange(e); sync("nin", e.target.value); }}
+            />
+          )}
           <div className="-mt-3 sm:col-start-1">
-            <button type="button" className="btn-secondary text-xs" onClick={() => void verifyIdentity("bvn", application.kyc?.bvn || "")}>Verify BVN instantly</button>
-            {verification.bvn && <span className={`ml-2 text-xs ${verification.bvn === "Verified" ? "text-emerald-600" : "text-slate-500"}`}>{verification.bvn}</span>}
+            {bvnLocked ? (
+              <span className="ml-2 text-xs inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-md font-semibold">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                BVN Verified
+              </span>
+            ) : (
+              <>
+                <button type="button" className="btn-secondary text-xs" onClick={() => void verifyIdentity("bvn", application.kyc?.bvn || "")}>Verify BVN instantly</button>
+                {verification.bvn && <span className={`ml-2 text-xs ${verification.bvn === "Verified" ? "text-emerald-600" : "text-slate-500"}`}>{verification.bvn}</span>}
+              </>
+            )}
           </div>
           <div className="-mt-3 sm:col-start-2">
-            <button type="button" className="btn-secondary text-xs" onClick={() => void verifyIdentity("nin", application.kyc?.nin || "")}>Verify NIN instantly</button>
-            {verification.nin && <span className={`ml-2 text-xs ${verification.nin === "Verified" ? "text-emerald-600" : "text-slate-500"}`}>{verification.nin}</span>}
+            {ninLocked ? (
+              <span className="ml-2 text-xs inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-md font-semibold">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                NIN Verified
+              </span>
+            ) : (
+              <>
+                <button type="button" className="btn-secondary text-xs" onClick={() => void verifyIdentity("nin", application.kyc?.nin || "")}>Verify NIN instantly</button>
+                {verification.nin && <span className={`ml-2 text-xs ${verification.nin === "Verified" ? "text-emerald-600" : "text-slate-500"}`}>{verification.nin}</span>}
+              </>
+            )}
           </div>
         </div>
+
+        {identityInfo.anyPopulated && (bvnLocked || ninLocked) && (
+          <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 sm:p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="text-sky-700" width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M12 12c2.7 0 5-2.3 5-5S14.7 2 12 2 7 4.3 7 7s2.3 5 5 5z" stroke="currentColor" strokeWidth="1.8"/>
+                <path d="M4 22c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              </svg>
+              <h3 className="text-sm font-bold text-sky-900">Identity Information <span className="text-xs text-sky-700 font-medium">(Retrieved from records · Locked)</span></h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-4">
+              {identityInfo.fullName && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">Full Name</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.fullName}</div>
+                </div>
+              )}
+              {identityInfo.phone && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">Phone Number</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.phone}</div>
+                </div>
+              )}
+              {identityInfo.dateOfBirth && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">Date of Birth</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.dateOfBirth}</div>
+                </div>
+              )}
+              {identityInfo.gender && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">Gender</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.gender}</div>
+                </div>
+              )}
+              {identityInfo.state && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">State of Origin</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.state}</div>
+                </div>
+              )}
+              {identityInfo.lga && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">Local Government (LGA)</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.lga}</div>
+                </div>
+              )}
+              {identityInfo.address && (
+                <div className="sm:col-span-2">
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">Residential Address</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.address}</div>
+                </div>
+              )}
+              {identityInfo.nationality && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wide text-sky-700 font-semibold">Nationality</label>
+                  <div className="mt-0.5 text-sm text-slate-800 bg-white/70 border border-sky-100 rounded-lg px-3 py-2">{identityInfo.nationality}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {verificationError && <p className="text-sm text-red-600">{verificationError}</p>}
 
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
-          <h3 className="mb-2 text-sm font-semibold text-emerald-800">Liveness verification <span className="text-red-500">*</span></h3>
-          <p className="mb-3 text-xs text-emerald-700">Complete a quick in-app selfie scan using the camera verification widget to confirm your identity.</p>
-          <div className="flex flex-wrap items-center gap-3">
-            <PremblyKycWidgetButton
-              fullName={currentApplication.personalInfo?.fullName}
-              email={currentApplication.personalInfo?.email}
-              phone={currentApplication.personalInfo?.phone}
-              idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
-              idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
-              onResult={(result) => {
-                setVerification((current) => ({ ...current, liveness: result.message }));
-                if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS" });
-              }}
-            />
+        <div className={`rounded-xl border p-4 sm:p-5 ${livenessLocked ? "border-emerald-200 bg-emerald-50/60" : "border-emerald-200 bg-emerald-50/60"}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h3 className="text-sm font-semibold text-emerald-800">Liveness verification <span className="text-red-500">*</span></h3>
+            {livenessLocked && (
+              <span className="text-xs inline-flex items-center gap-1 text-emerald-700 bg-white border border-emerald-200 px-2 py-1 rounded-md font-bold shadow-sm">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                Verified & Locked
+              </span>
+            )}
           </div>
-          {verification.liveness && <p className={`mt-3 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
+          <p className="mb-3 text-xs text-emerald-700">Complete a quick in-app selfie scan using the camera verification widget to confirm your identity.</p>
+          {bestSelfieImage ? (
+            <div className="mb-4 flex flex-col sm:flex-row items-start gap-4">
+              <div className="relative w-40 h-40 shrink-0 rounded-xl overflow-hidden border-2 border-emerald-300 bg-white shadow-inner">
+                <img src={bestSelfieImage} alt="Verified identity photo" className="w-full h-full object-cover" />
+                <div className="absolute inset-0 pointer-events-none border-2 border-emerald-400/30 rounded-xl" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold text-emerald-800 mb-1">Identity Photo on Record</div>
+                <p className="text-xs text-emerald-700 leading-relaxed">
+                  This image was captured from your {application.kyc?.selfieImageData ? "liveness scan" : bvnLocked ? "BVN" : "NIN"} records during verification and will be used to confirm your identity at disbursement.
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-3">
+            {livenessLocked ? (
+              <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-800 bg-white/80 border border-emerald-200 px-4 py-2 rounded-xl">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                  <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                  <circle cx="12" cy="15" r="1.8" fill="currentColor"/>
+                </svg>
+                Liveness check completed · cannot retrigger
+              </div>
+            ) : (
+              <PremblyKycWidgetButton
+                fullName={currentApplication.personalInfo?.fullName}
+                email={currentApplication.personalInfo?.email}
+                phone={currentApplication.personalInfo?.phone}
+                idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
+                idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
+                onResult={(result) => {
+                  setVerification((current) => ({ ...current, liveness: result.message }));
+                  if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS" });
+                }}
+              />
+            )}
+          </div>
+          {verification.liveness && !livenessLocked && <p className={`mt-3 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
