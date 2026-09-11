@@ -10,6 +10,22 @@ import {
   appendAdminLedger,
   indexes,
 } from "./store.js";
+export function calculateInvestmentAccrual(investment: { amountNaira: number; annualRatePercent: number; tenureDays: number; startsAt: string; maturesAt: string }, now = new Date()) {
+  const startsAt = new Date(investment.startsAt);
+  const maturesAt = new Date(investment.maturesAt);
+  const elapsedDays = Math.max(0, Math.min(investment.tenureDays, Math.floor((Math.min(now.getTime(), maturesAt.getTime()) - startsAt.getTime()) / 86400000)));
+  const dailyEarningsNaira = (Number(investment.amountNaira) * Number(investment.annualRatePercent) / 100) / 365;
+  const accruedEarningsNaira = Math.round(dailyEarningsNaira * elapsedDays * 100) / 100;
+  const expectedEarningsNaira = Math.round(dailyEarningsNaira * investment.tenureDays * 100) / 100;
+  return {
+    dailyEarningsNaira: Math.round(dailyEarningsNaira * 100) / 100,
+    accruedEarningsNaira,
+    expectedEarningsNaira,
+    elapsedDays,
+    remainingDays: Math.max(0, investment.tenureDays - elapsedDays),
+    isMatured: now.getTime() >= maturesAt.getTime(),
+  };
+}
 
 async function yieldEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(() => resolve()));

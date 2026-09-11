@@ -352,7 +352,7 @@ function StatusBadge({ status }: { status?: string }) {
 }
 
 function Kyc() {
-  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(""); const [actionBusy, setActionBusy] = useState("");
+  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(""); const [actionBusy, setActionBusy] = useState(""); const [selected, setSelected] = useState<any>(null);
   const load = () => adminListKycCases(100).then((response) => setRows(response.cases)).catch((err) => setError(err instanceof Error ? err.message : "Unable to load KYC cases"));
   useEffect(() => { load(); }, []);
   async function decide(id: string, decision: "VERIFIED" | "REJECTED") { setBusy(id); try { await adminDecideKyc(id, { decision }); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC"); } finally { setBusy(""); } }
@@ -386,7 +386,57 @@ function Kyc() {
       <div className="text-[11px] text-slate-500 dark:text-slate-400">{done}/{total} complete</div>
     </div>);
   }
-  return <Panel title="KYC review queue" action={<span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} cases</span>}>{error && <ErrorBox message={error} />}{rows.length ? <Table headers={["Applicant", "Status", "Checklist", "Submitted", "Actions"]}>{rows.map((item) => { const userShim = { id: item.userId, fullName: item.user?.fullName || item.userId, email: item.user?.email || "" }; return (<tr key={item.id}><td className="px-3 py-3"><div className="font-medium text-velo-900 dark:text-white">{item.user?.fullName || item.userId}</div><div className="text-xs text-slate-500 dark:text-slate-400">{item.user?.email || ""}</div></td><td className="px-3 py-3"><span className="badge bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">{item.status}</span></td><td className="px-3 py-3"><ChecklistChips checklist={item.checklist} /></td><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{item.submittedAt ? new Date(item.submittedAt).toLocaleDateString() : "—"}</td><td className="px-3 py-3"><div className="space-y-2"><div className="flex gap-2"><button className="btn-primary text-xs" disabled={busy === item.id} onClick={() => decide(item.id, "VERIFIED")}>Verify</button><button className="btn-secondary text-xs" disabled={busy === item.id} onClick={() => decide(item.id, "REJECTED")}>Reject</button></div><KycResetButtons user={userShim} busyPrefix={`kycreset-kycpanel-case-${item.id}`} actionBusy={actionBusy} onReset={resetKycCase} /></div></td></tr>); })}</Table> : <Empty text="No KYC cases are waiting for review." />}</Panel>;
+  if (selected) {
+    const userShim = { id: selected.userId, fullName: selected.user?.fullName || selected.userId, email: selected.user?.email || "" };
+    const checklistItems = [
+      ["BVN", "bvn"], ["NIN", "nin"], ["Liveness", "liveness"],
+      ["Proof of address", "proofOfAddress"], ["Passport", "passport"], ["Signature", "signature"],
+    ];
+    return (
+      <div className="space-y-5 animate-fade-in">
+        <button type="button" onClick={() => setSelected(null)} className="btn-ghost text-xs">← Back to review queue</button>
+        <div className="velo-card overflow-hidden dark:bg-slate-900 dark:border-slate-800 rounded-2xl">
+          <div className="border-b border-slate-100 dark:border-slate-800 px-5 py-5 sm:px-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-xl font-bold text-velo-900 dark:text-white">{userShim.fullName}</h1>
+                  <span className="badge bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">{selected.status}</span>
+                </div>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{userShim.email}</p>
+                <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">Submitted {selected.submittedAt ? new Date(selected.submittedAt).toLocaleString() : "—"}</p>
+              </div>
+              <div className="flex gap-2">
+                <button className="btn-primary text-xs" disabled={busy === selected.id} onClick={() => decide(selected.id, "VERIFIED")}>{busy === selected.id ? "Saving…" : "Verify KYC"}</button>
+                <button className="btn-secondary text-xs" disabled={busy === selected.id} onClick={() => decide(selected.id, "REJECTED")}>Reject</button>
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[1fr_280px]">
+            <div>
+              <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Verification checklist</h2>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {checklistItems.map(([label, key]) => {
+                  const complete = Boolean(selected.checklist?.[key]);
+                  return <div key={key} className={`flex items-center justify-between rounded-xl border px-4 py-3 ${complete ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50"}`}><span className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span><span className={`text-xs font-bold ${complete ? "text-emerald-700 dark:text-emerald-300" : "text-slate-400"}`}>{complete ? "Complete" : "Pending"}</span></div>;
+                })}
+              </div>
+              <h2 className="mt-6 text-sm font-semibold text-velo-900 dark:text-white">Case information</h2>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {[['Case ID', selected.id], ['User ID', selected.userId], ['Review status', selected.status], ['Last updated', selected.updatedAt ? new Date(selected.updatedAt).toLocaleString() : '—']].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</div><div className="mt-1 break-all text-sm font-medium text-velo-900 dark:text-white">{value || '—'}</div></div>)}
+              </div>
+            </div>
+            <aside className="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+              <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Admin actions</h2>
+              <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">Reset only the verification step that needs to be completed again.</p>
+              <div className="mt-4"><KycResetButtons user={userShim} busyPrefix={`kycreset-kycpanel-case-${selected.id}`} actionBusy={actionBusy} onReset={resetKycCase} /></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <Panel title="KYC review queue" action={<span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} cases</span>}>{error && <ErrorBox message={error} />}{rows.length ? <Table headers={["Applicant", "Status", "Progress", "Submitted", ""]}>{rows.map((item) => { const completed = Object.values(item.checklist || {}).filter(Boolean).length; const total = Object.keys(item.checklist || {}).length || 6; return (<tr key={item.id} className="cursor-pointer hover:bg-velo-50/40 dark:hover:bg-slate-800/40" onClick={() => setSelected(item)}><td className="px-3 py-4"><div className="font-medium text-velo-900 dark:text-white">{item.user?.fullName || item.userId}</div><div className="text-xs text-slate-500 dark:text-slate-400">{item.user?.email || ""}</div></td><td className="px-3 py-4"><span className="badge bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">{item.status}</span></td><td className="px-3 py-4"><div className="min-w-32"><div className="flex justify-between text-xs text-slate-500 dark:text-slate-400"><span>{completed}/{total} checks</span><span>{Math.round(completed / total * 100)}%</span></div><div className="mt-1.5 h-1.5 rounded-full bg-slate-100 dark:bg-slate-800"><div className="h-1.5 rounded-full bg-emerald-500" style={{ width: `${Math.max(4, completed / total * 100)}%` }} /></div></div></td><td className="px-3 py-4 text-xs text-slate-500 dark:text-slate-400">{item.submittedAt ? new Date(item.submittedAt).toLocaleDateString() : "—"}</td><td className="px-3 py-4 text-right"><button type="button" className="btn-secondary text-xs" onClick={(event) => { event.stopPropagation(); setSelected(item); }}>Review <span aria-hidden="true">→</span></button></td></tr>); })}</Table> : <Empty text="No KYC cases are waiting for review." />}</Panel>;
 }
 
 function Payouts() {

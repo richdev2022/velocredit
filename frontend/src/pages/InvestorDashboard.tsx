@@ -33,6 +33,14 @@ const money = new Intl.NumberFormat("en-NG", {
 type DashboardData = {
   wallet?: { availableMinor?: number; heldMinor?: number };
   investments?: Array<{
+    amountNaira?: number;
+    expectedEarningsNaira?: number;
+    tenureDays?: number;
+    annualRatePercent?: number;
+    startsAt?: string;
+    maturesAt?: string;
+    status?: string;
+    accrual?: { dailyEarningsNaira?: number; accruedEarningsNaira?: number; expectedEarningsNaira?: number; elapsedDays?: number; remainingDays?: number; isMatured?: boolean };
     expectedInterestMinor?: number;
     expectedInterestNaira?: number;
   }>;
@@ -449,7 +457,7 @@ export default function InvestorDashboard() {
   const returns = investments.reduce(
     (sum, item) =>
       sum +
-      Number(item.expectedInterestNaira ?? Number(item.expectedInterestMinor ?? 0) / 100),
+      Number(item.expectedEarningsNaira ?? item.accrual?.expectedEarningsNaira ?? item.expectedInterestNaira ?? Number(item.expectedInterestMinor ?? 0) / 100),
     0
   );
   const totalCapital = available + locked;
@@ -1220,8 +1228,8 @@ function InvestorInvestments(props: any) {
           <div className="mt-5 space-y-3">
             {investments.map((inv: any, idx: number) => (
               <div key={inv.id || idx} className="rounded-xl border border-slate-100 dark:border-slate-800 p-4 flex flex-wrap justify-between gap-3">
-                <div><div className="text-sm font-semibold text-velo-900 dark:text-white">{inv.planSnapshot?.name || `Investment ${idx + 1}`}</div><div className="text-xs text-slate-500 mt-0.5">Status: {inv.status || "UNKNOWN"} · Created: {inv.createdAt ? new Date(inv.createdAt).toLocaleDateString() : "—"}</div></div>
-                <div className="text-right"><div className="font-bold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div><div className="text-xs text-emerald-600">+{money.format(Number(inv.expectedEarningsNaira ?? Number(inv.expectedInterestMinor ?? 0) / 100))}</div></div>
+                <div><div className="text-sm font-semibold text-velo-900 dark:text-white">{inv.planSnapshot?.name || `Investment ${idx + 1}`}</div><div className="text-xs text-slate-500 mt-0.5">Status: {inv.status || "UNKNOWN"} · Started: {inv.startsAt ? new Date(inv.startsAt).toLocaleDateString() : "—"}</div><div className="mt-1 text-xs font-semibold text-amber-700 dark:text-amber-300">🔒 Locked until {inv.maturesAt ? new Date(inv.maturesAt).toLocaleDateString() : "maturity"} · {inv.accrual?.remainingDays ?? inv.tenureDays ?? 0} days remaining</div></div>
+                <div className="text-right"><div className="font-bold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div><div className="text-xs text-emerald-600">Accrued: +{money.format(Number(inv.accrual?.accruedEarningsNaira ?? 0))}</div><div className="text-[11px] text-slate-500">Maturity interest: {money.format(Number(inv.expectedEarningsNaira ?? 0))}</div></div>
               </div>
             ))}
           </div>

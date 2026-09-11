@@ -21,6 +21,7 @@ import {
   resetKycCategory,
   type KycResetCategory,
 } from "./auth.js";
+import { calculateInvestmentAccrual } from "./investments.js";
 import {
   createWallet,
   findUserByEmail,
@@ -1278,7 +1279,9 @@ router.get("/investor/dashboard", requireAuth, requireRole("INVESTOR"), (req: Au
   const userPayouts = payouts.filter((item) => item.userId === req.user!.id);
   const account = payoutAccounts.find((item) => item.userId === req.user!.id) ?? null;
   const userDocs = documents.filter((d) => d.userId === req.user?.id);
-  res.json({ ok: true, wallet, investments: userInvestments, payouts: userPayouts, payoutAccount: account, documents: userDocs });
+  const now = new Date();
+  const investmentViews = userInvestments.map((investment) => ({ ...investment, accrual: calculateInvestmentAccrual(investment, now) }));
+  res.json({ ok: true, wallet, investments: investmentViews, payouts: userPayouts, payoutAccount: account, documents: userDocs });
 });
 
 router.get("/investor/wallet", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
@@ -1494,7 +1497,8 @@ router.get("/payments/flutterwave/return", async (req, res) => {
 });
 
 router.get("/investor/investments", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
-  res.json({ ok: true, investments: investments.filter((item) => item.investorId === req.user!.id) });
+  const now = new Date();
+  res.json({ ok: true, investments: investments.filter((item) => item.investorId === req.user!.id).map((investment) => ({ ...investment, accrual: calculateInvestmentAccrual(investment, now) })) });
 });
 
 router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
@@ -1536,7 +1540,7 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), (req:
   }
   const startsAt = new Date();
   const maturesAt = new Date(startsAt.getTime() + tenure * 86400000);
-  const expectedEarnings = (parsed.data.amountNaira * annualRate * tenure) / 365 / 100;
+  const expectedEarnings = calculateInvestmentAccrual({ amountNaira: parsed.data.amountNaira, annualRatePercent: annualRate, tenureDays: tenure, startsAt: startsAt.toISOString(), maturesAt: maturesAt.toISOString() }).expectedEarningsNaira;
   const investment = {
     id: randomUUID(),
     investorId: req.user!.id,
@@ -1544,7 +1548,7 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), (req:
     planVersion: plan?.version,
     planSnapshot: plan ? { ...plan } : undefined,
     amountNaira: parsed.data.amountNaira,
-    expectedEarningsNaira: Math.round(expectedEarnings * 100) / 100,
+    expectedEarningsNaira: expectedEarnings,
     tenureDays: tenure,
     annualRatePercent: annualRate,
     startsAt: startsAt.toISOString(),
