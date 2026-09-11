@@ -298,6 +298,11 @@ export async function adminEditUser(userId: string, input: { fullName?: string; 
   return request(`/api/v1/admin/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
+export type KycResetCategory = "BVN" | "NIN" | "LIVENESS" | "ADDRESS" | "ALL";
+export async function adminResetKycCategory(userId: string, category: KycResetCategory): Promise<{ ok: true; category: KycResetCategory; checklist: Record<string, boolean>; status: string; kyc: { id: string; userId: string; status: string; checklist: Record<string, boolean>; updatedAt: string } }> {
+  return request(`/api/v1/admin/users/${encodeURIComponent(userId)}/kyc-reset`, { method: "POST", body: JSON.stringify({ category }) });
+}
+
 export const adminApi = {
   approveAccountRequest: async (id: string, _opts?: unknown) => adminApproveAccountRequest(id),
   rejectAccountRequest: async (id: string, opts?: { rejectionReason?: string }) => adminRejectAccountRequest(id, opts),

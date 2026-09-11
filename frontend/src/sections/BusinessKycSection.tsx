@@ -393,6 +393,7 @@ export default function BusinessKycSection() {
             onFile={(doc) => handleFile("identificationDocument", doc)}
             onRemove={() => handleRemoveFile("identificationDocument")}
           />
+          <div className="space-y-2">
           <FileUpload
             label="Proof of Address"
             required
@@ -401,6 +402,14 @@ export default function BusinessKycSection() {
             onFile={(doc) => handleFile("proofOfAddress", doc)}
             onRemove={() => handleRemoveFile("proofOfAddress")}
           />
+          <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 flex items-start gap-2 text-xs leading-5 font-medium text-amber-800 dark:text-amber-200">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+              <path d="M12 8v5M12 16h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <span>Proof of address can be utility bill, bank statement, house rent receipt that indicate the resident address and not older than 3 months.</span>
+          </div>
+          </div>
         </div>
       </div>
 

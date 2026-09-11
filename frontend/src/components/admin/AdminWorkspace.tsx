@@ -21,6 +21,8 @@ import {
   adminPatchUserRoles,
   adminPatchUserStatus,
   adminEditUser,
+  adminResetKycCategory,
+  type KycResetCategory,
   type LoanDisbursement,
 } from "../../services/adminApi";
 
@@ -44,6 +46,40 @@ function Panel({ title, children, action }: { title: string; children: React.Rea
 function Empty({ text = "No records found." }: { text?: string }) { return <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">{text}</div>; }
 function ErrorBox({ message }: { message: string }) { return <div className="rounded-lg border border-red-100 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-400">{message}</div>; }
 function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) { return <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b border-slate-100 dark:border-slate-800 text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{headers.map((header) => <th key={header} className="whitespace-nowrap px-3 py-3">{header}</th>)}</tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{children}</tbody></table></div>; }
+
+function KycResetButtons({ user, busyPrefix, actionBusy, onReset }: { user: any; busyPrefix: string; actionBusy: string; onReset: (user: any, category: KycResetCategory) => void | Promise<void>; }) {
+  const items: Array<{ cat: KycResetCategory; label: string; hint?: string; tone?: string }> = [
+    { cat: "BVN", label: "Reset BVN", hint: "Clear BVN + provider response + checklist.bvn" },
+    { cat: "NIN", label: "Reset NIN", hint: "Clear NIN + provider response + checklist.nin" },
+    { cat: "LIVENESS", label: "Reset Liveness", hint: "Clear liveness/selfie + checklist.liveness" },
+    { cat: "ADDRESS", label: "Reset Address", hint: "Delete proof-of-address doc + checklist.proofOfAddress" },
+    { cat: "ALL", label: "Reset Full KYC", hint: "Wipe every KYC field, document, and provider event", tone: "danger" },
+  ];
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map(({ cat, label, hint, tone }) => {
+        const busy = actionBusy === `${busyPrefix}-${user.id}-${cat}`;
+        return (
+          <button
+            key={cat}
+            type="button"
+            title={hint}
+            disabled={busy}
+            onClick={() => void onReset(user, cat)}
+            className={`inline-flex px-2 py-1 rounded-lg border text-[10.5px] font-bold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+              tone === "danger"
+                ? "border-red-200 bg-red-50 hover:bg-red-100 text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-900/40"
+                : "border-slate-200 bg-white hover:bg-amber-50 text-slate-700 hover:text-amber-800 hover:border-amber-300 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-amber-950/30 dark:hover:border-amber-700 dark:hover:text-amber-200"
+            }`}
+          >
+            {busy ? "Resetting…" : label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Overview() {
   const [data, setData] = useState<AdminSummaryResponse | null>(null); const [error, setError] = useState("");
   useEffect(() => { getAdminSummary().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load summary")); }, []);
@@ -129,6 +165,21 @@ function Users({ role, title }: { role: "BORROWER" | undefined; title: string })
     } finally { setActionBusy(""); }
   }
 
+  async function resetKyc(user: any, category: KycResetCategory) {
+    const label: Record<KycResetCategory, string> = { BVN: "BVN", NIN: "NIN", LIVENESS: "Liveness", ADDRESS: "Proof of address", ALL: "Full KYC profile" };
+    const reason = category === "ALL"
+      ? `This will PERMANENTLY clear every piece of KYC for "${user.fullName}" (BVN, NIN, liveness, proof of address, documents, provider events). User will need to re-verify everything. Continue?`
+      : `Reset ${label[category]} for "${user.fullName}"? Any data for this category will be cleared and the user will be asked to re-verify. Continue?`;
+    if (!confirm(reason)) return;
+    setActionBusy(`kycreset-${user.id}-${category}`);
+    try {
+      await adminResetKycCategory(user.id, category);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Unable to reset KYC ${label[category]}`);
+    } finally { setActionBusy(""); }
+  }
+
   function RoleChips({ roles }: { roles?: string[] }) {
     if (!roles || !roles.length) return <span className="text-slate-400 text-xs">—</span>;
     return <div className="flex flex-wrap gap-1">{roles.map((r) => <span key={r} className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${r === "INVESTOR" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : r === "BORROWER" ? "bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-400" : "bg-slate-100 text-slate-600"}`}>{r}</span>)}</div>;
@@ -151,7 +202,12 @@ function Users({ role, title }: { role: "BORROWER" | undefined; title: string })
           <Table headers={["Name", "Email", "Phone", "Roles", "KYC", "Status", "Created", "Actions"]}>
             {rows.map((user) => (
               <tr key={user.id} className="hover:bg-velo-50/40 dark:hover:bg-slate-800/40">
-                <td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{user.fullName}</td>
+                <td className="px-3 py-3 font-medium text-velo-900 dark:text-white">
+                  <div>{user.fullName}</div>
+                  <div className="mt-2">
+                    <KycResetButtons user={user} busyPrefix="kycreset" actionBusy={actionBusy} onReset={resetKyc} />
+                  </div>
+                </td>
                 <td className="px-3 py-3 text-slate-600 dark:text-slate-300 text-xs">{user.email}</td>
                 <td className="px-3 py-3 text-slate-600 dark:text-slate-300 text-xs">{user.phone || "—"}</td>
                 <td className="px-3 py-3"><RoleChips roles={user.roles} /></td>
@@ -296,11 +352,41 @@ function StatusBadge({ status }: { status?: string }) {
 }
 
 function Kyc() {
-  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState("");
+  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(""); const [actionBusy, setActionBusy] = useState("");
   const load = () => adminListKycCases(100).then((response) => setRows(response.cases)).catch((err) => setError(err instanceof Error ? err.message : "Unable to load KYC cases"));
   useEffect(() => { load(); }, []);
   async function decide(id: string, decision: "VERIFIED" | "REJECTED") { setBusy(id); try { await adminDecideKyc(id, { decision }); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC"); } finally { setBusy(""); } }
-  return <Panel title="KYC review queue" action={<span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} cases</span>}>{error && <ErrorBox message={error} />}{rows.length ? <Table headers={["Applicant", "Status", "Checklist", "Submitted", "Actions"]}>{rows.map((item) => <tr key={item.id}><td className="px-3 py-3"><div className="font-medium text-velo-900 dark:text-white">{item.user?.fullName || item.userId}</div><div className="text-xs text-slate-500 dark:text-slate-400">{item.user?.email || ""}</div></td><td className="px-3 py-3"><span className="badge bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">{item.status}</span></td><td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300">{Object.values(item.checklist || {}).filter(Boolean).length}/{Object.keys(item.checklist || {}).length} complete</td><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{item.submittedAt ? new Date(item.submittedAt).toLocaleDateString() : "—"}</td><td className="px-3 py-3"><div className="flex gap-2"><button className="btn-primary text-xs" disabled={busy === item.id} onClick={() => decide(item.id, "VERIFIED")}>Verify</button><button className="btn-secondary text-xs" disabled={busy === item.id} onClick={() => decide(item.id, "REJECTED")}>Reject</button></div></td></tr>)}</Table> : <Empty text="No KYC cases are waiting for review." />}</Panel>;
+  async function resetKycCase(user: any, category: KycResetCategory) {
+    const label: Record<KycResetCategory, string> = { BVN: "BVN", NIN: "NIN", LIVENESS: "Liveness", ADDRESS: "Proof of address", ALL: "Full KYC profile" };
+    const reason = category === "ALL"
+      ? `This will PERMANENTLY clear every piece of KYC for "${user.fullName}" (BVN, NIN, liveness, proof of address, documents, provider events). User will need to re-verify everything. Continue?`
+      : `Reset ${label[category]} for "${user.fullName}"? Any data for this category will be cleared and the user will be asked to re-verify. Continue?`;
+    if (!confirm(reason)) return;
+    setActionBusy(`kycreset-kycpanel-case-${user.id}-${category}`);
+    try {
+      await adminResetKycCategory(user.id, category);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Unable to reset KYC ${label[category]}`);
+    } finally { setActionBusy(""); }
+  }
+  function ChecklistChips({ checklist }: { checklist?: Record<string, boolean> }) {
+    const items = [
+      { key: "bvn", label: "BVN" },
+      { key: "nin", label: "NIN" },
+      { key: "liveness", label: "Liveness" },
+      { key: "proofOfAddress", label: "Address" },
+      { key: "passport", label: "Passport" },
+      { key: "signature", label: "Signature" },
+    ];
+    const total = Object.keys(checklist || {}).length || 6;
+    const done = Object.values(checklist || {}).filter(Boolean).length;
+    return (<div className="space-y-2">
+      <div className="flex flex-wrap gap-1">{items.map((it) => { const ok = Boolean(checklist?.[it.key]); return (<span key={it.key} className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold border ${ok ? "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800" : "bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700"}`}>{ok ? "✓ " : "○ "}{it.label}</span>); })}</div>
+      <div className="text-[11px] text-slate-500 dark:text-slate-400">{done}/{total} complete</div>
+    </div>);
+  }
+  return <Panel title="KYC review queue" action={<span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} cases</span>}>{error && <ErrorBox message={error} />}{rows.length ? <Table headers={["Applicant", "Status", "Checklist", "Submitted", "Actions"]}>{rows.map((item) => { const userShim = { id: item.userId, fullName: item.user?.fullName || item.userId, email: item.user?.email || "" }; return (<tr key={item.id}><td className="px-3 py-3"><div className="font-medium text-velo-900 dark:text-white">{item.user?.fullName || item.userId}</div><div className="text-xs text-slate-500 dark:text-slate-400">{item.user?.email || ""}</div></td><td className="px-3 py-3"><span className="badge bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">{item.status}</span></td><td className="px-3 py-3"><ChecklistChips checklist={item.checklist} /></td><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{item.submittedAt ? new Date(item.submittedAt).toLocaleDateString() : "—"}</td><td className="px-3 py-3"><div className="space-y-2"><div className="flex gap-2"><button className="btn-primary text-xs" disabled={busy === item.id} onClick={() => decide(item.id, "VERIFIED")}>Verify</button><button className="btn-secondary text-xs" disabled={busy === item.id} onClick={() => decide(item.id, "REJECTED")}>Reject</button></div><KycResetButtons user={userShim} busyPrefix={`kycreset-kycpanel-case-${item.id}`} actionBusy={actionBusy} onReset={resetKycCase} /></div></td></tr>); })}</Table> : <Empty text="No KYC cases are waiting for review." />}</Panel>;
 }
 
 function Payouts() {

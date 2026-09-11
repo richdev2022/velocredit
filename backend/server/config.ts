@@ -4,7 +4,8 @@ import { z } from "zod";
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   API_PORT: z.coerce.number().int().positive().default(Number(process.env.PORT ?? 4000)),
-  API_PUBLIC_URL: z.string().url().default("http://localhost:4000"),
+  API_HOST: z.string().default("0.0.0.0"),
+  API_PUBLIC_URL: z.string().default("http://localhost:4000"),
   API_ORIGIN: z.string().default("http://localhost:5173"),
   DATABASE_URL: z.string().url().optional(),
   JWT_SECRET: z.string().min(32).optional(),
@@ -69,7 +70,18 @@ const envSchema = z.object({
   }
 });
 
-export const env = envSchema.parse(process.env);
+const parsedEnv = envSchema.safeParse(process.env);
+if (!parsedEnv.success) {
+  // Render deploy guard: if env validation fails at startup, die loudly with structured error
+  // instead of hanging forever without an open port (causes "Port scan timeout reached").
+  // eslint-disable-next-line no-console
+  console.error("[FATAL] Environment configuration validation failed:");
+  const issues = parsedEnv.error.flatten();
+  // eslint-disable-next-line no-console
+  console.error(JSON.stringify({ fieldErrors: issues.fieldErrors, formErrors: issues.formErrors }, null, 2));
+  process.exit(1);
+}
+export const env = parsedEnv.data;
 
 export function hasDatabase(): boolean {
   return Boolean(env.DATABASE_URL);

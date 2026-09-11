@@ -714,6 +714,7 @@ app.use((_req, res) => {
 
 async function start(): Promise<void> {
   try {
+    console.log(`[startup] Booting Velo API (NODE_ENV=${env.NODE_ENV}, PORT=${env.API_PORT}, HOST=${env.API_HOST})…`);
     console.log("Initializing database schema...");
     const schema = await ensureDatabaseSchema();
     console.log("Loading persisted application state...");
@@ -724,13 +725,14 @@ async function start(): Promise<void> {
     getPlatformSettings();
     await persistStore();
     console.log("Database initialization complete.");
-    app.listen(env.API_PORT, () => {
+    const server = app.listen(env.API_PORT, env.API_HOST, () => {
       const databaseMessage = schema === "created"
         ? "schema initialized"
         : "schema skipped (DATABASE_URL is not configured)";
       console.log(`Velo API: ${env.API_PUBLIC_URL}/api/v1`);
       console.log(`Swagger UI: ${env.API_PUBLIC_URL}/docs`);
       console.log(`Health check: ${env.API_PUBLIC_URL}/health`);
+      console.log(`Listening on ${env.API_HOST}:${env.API_PORT}`);
       console.log(`Prembly KYC webhook (paste in widget dashboard): ${env.API_PUBLIC_URL}/api/v1/webhooks/prembly/kyc`);
       console.log(`Database: ${databaseMessage}`);
       void runRepaymentReminderSweep();
@@ -740,9 +742,13 @@ async function start(): Promise<void> {
         void runInvestmentMaturitySweep();
       }, 60 * 60 * 1000).unref();
     });
+    server.on("error", (err) => {
+      console.error("[FATAL] HTTP server bind failed", err);
+      process.exit(1);
+    });
   } catch (error) {
-    console.error("Database schema initialization failed", error);
-    process.exitCode = 1;
+    console.error("[FATAL] Database schema / store initialization failed — exiting to avoid Render port-scan hang:", error);
+    process.exit(1);
   }
 }
 

@@ -18,6 +18,8 @@ import {
   setAdminPasswordHashOverride,
   markKycChecklistComplete,
   recordConsent,
+  resetKycCategory,
+  type KycResetCategory,
 } from "./auth.js";
 import {
   createWallet,
@@ -672,23 +674,63 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   const kyc = findOrCreateKycCase(req.user!.id);
   const userDocs = documents.filter((d) => d.userId === req.user?.id);
   let identityPhoto: string | undefined;
+  const normalizedFields: Record<string, unknown> = {};
   if (kyc.providerRaw && typeof kyc.providerRaw === "object") {
     const raw = kyc.providerRaw as Record<string, unknown>;
-    const nestedSources = [raw.identity, raw.idScan, raw];
-    for (const src of nestedSources) {
-      if (!src || typeof src !== "object") continue;
-      const data = (src as Record<string, unknown>).data;
-      const candidate = data && typeof data === "object" ? data : src;
-      for (const key of ["photo", "photograph", "image", "face_image", "selfie", "identityPhoto"]) {
-        const val = (candidate as Record<string, unknown>)[key];
-        if (typeof val === "string" && val.length > 50) {
-          identityPhoto = val;
-          break;
+    for (const idKey of ["bvn", "nin"]) {
+      const block = (raw as any)[idKey];
+      if (!block || typeof block !== "object") continue;
+      const data = block.data ?? block;
+      if (!data || typeof data !== "object") continue;
+      const aliases: Record<string, Array<string>> = {
+        fullName: ["fullName", "firstName middleName lastName", "firstName", "lastName"],
+        firstName: ["firstName", "first_name"],
+        middleName: ["middleName", "middle_name"],
+        lastName: ["lastName", "surname", "last_name"],
+        dateOfBirth: ["dateOfBirth", "dob", "birthDate", "date_of_birth"],
+        phone: ["phoneNumber", "phone_number", "phone", "mobile", "telephone", "telephoneno"],
+        residentialAddress: ["residentialAddress", "residence_address", "address", "residence", "contact_address", "house_address"],
+        state: ["state", "stateOfOrigin", "state_of_origin", "residenceState"],
+        lga: ["lga", "localGovernment", "local_government", "localGovernmentArea", "lg"],
+        email: ["email", "emailAddress", "email_address"],
+        gender: ["gender", "sex"],
+        photo: ["photo", "photograph", "image", "face_image", "selfie", "identityPhoto"],
+      };
+      const merged: Record<string, unknown> = {};
+      for (const [outKey, candidateKeys] of Object.entries(aliases)) {
+        for (const ck of candidateKeys) {
+          const v = (data as any)[ck];
+          if (v != null && !(typeof v === "string" && !v.trim())) {
+            if (outKey === "fullName" && candidateKeys[0] === "fullName" && (ck === "firstName" || ck === "lastName" || ck === "middleName")) {
+              continue;
+            }
+            merged[outKey] = String(v);
+            break;
+          }
         }
       }
-      if (identityPhoto) break;
+      if (!merged.fullName) {
+        const parts = [merged.firstName, merged.middleName, merged.lastName].filter((x) => typeof x === "string" && x.trim());
+        if (parts.length) merged.fullName = parts.join(" ");
+      }
+      Object.assign(normalizedFields, { [idKey]: merged });
+      if (!identityPhoto) {
+        for (const key of ["photo", "photograph", "image", "face_image", "selfie", "identityPhoto"]) {
+          const val = (data as any)[key];
+          if (typeof val === "string" && val.length > 50) { identityPhoto = val; break; }
+        }
+      }
     }
   }
+  if (!identityPhoto && kyc.identityPhoto && typeof kyc.identityPhoto === "string") identityPhoto = kyc.identityPhoto;
+  const profilePrefill: Record<string, unknown> = {};
+  const bvnFields = (normalizedFields.bvn as Record<string, unknown>) ?? {};
+  const ninFields = (normalizedFields.nin as Record<string, unknown>) ?? {};
+  const source = { ...ninFields, ...bvnFields };
+  for (const key of ["fullName", "firstName", "middleName", "lastName", "dateOfBirth", "phone", "residentialAddress", "state", "lga", "email", "gender"]) {
+    if (source[key] != null) profilePrefill[key] = source[key];
+  }
+  const proofOfAddressUrl = userDocs.find((d) => d.documentType === "PROOF_OF_ADDRESS")?.providerFileId;
   res.json({
     ok: true,
     status: kyc.status,
@@ -700,6 +742,13 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     documents: userDocs,
     verificationEvents: identityVerificationEvents.filter((e) => e.kycCaseId === kyc.id),
     identityPhoto,
+    selfieImageData: typeof (kyc as any).selfieImageData === "string" ? (kyc as any).selfieImageData : undefined,
+    verifiedDetails: Object.keys(source).length ? source : undefined,
+    normalizedFields: Object.keys(normalizedFields).length ? normalizedFields : undefined,
+    profilePrefill: Object.keys(profilePrefill).length ? profilePrefill : undefined,
+    proofOfAddressUrl,
+    bvn: typeof (kyc as any).bvn === "string" ? (kyc as any).bvn : undefined,
+    nin: typeof (kyc as any).nin === "string" ? (kyc as any).nin : undefined,
   });
 });
 
@@ -1935,6 +1984,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
       .object({ amount: z.number().positive(), tenure: z.number().int().positive(), purpose: z.string().min(1) })
       .optional(),
     collateral: z.record(z.unknown()).optional(),
+    documents: z.record(z.unknown()).optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -1944,6 +1994,42 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
   const snapshot = application.customerSnapshot ?? {};
   if (parsed.data.personalInfo) Object.assign(snapshot, { personalInfo: parsed.data.personalInfo });
   if (parsed.data.businessInfo) Object.assign(snapshot, { businessInfo: parsed.data.businessInfo });
+  if (parsed.data.kyc) {
+    Object.assign(snapshot, { kyc: parsed.data.kyc });
+    const kyc = findOrCreateKycCase(req.user!.id);
+    const anyKyc = parsed.data.kyc as Record<string, unknown>;
+    if (typeof anyKyc.bvn === "string" && /^\d{11}$/.test(anyKyc.bvn)) {
+      kyc.bvn = anyKyc.bvn;
+      kyc.checklist.bvn = true;
+    }
+    if (typeof anyKyc.nin === "string" && /^\d{11}$/.test(anyKyc.nin)) {
+      kyc.nin = anyKyc.nin;
+      kyc.checklist.nin = true;
+    }
+    if (typeof anyKyc.identificationNumber === "string" && typeof anyKyc.identificationType === "string") {
+      if (anyKyc.identificationType === "BVN" && /^\d{11}$/.test(anyKyc.identificationNumber)) {
+        kyc.bvn = anyKyc.identificationNumber;
+        kyc.checklist.bvn = true;
+      } else if (anyKyc.identificationType === "NIN" && /^\d{11}$/.test(anyKyc.identificationNumber)) {
+        kyc.nin = anyKyc.identificationNumber;
+        kyc.checklist.nin = true;
+      }
+    }
+    if (typeof anyKyc.liveness === "boolean" && anyKyc.liveness) kyc.checklist.liveness = true;
+    if (typeof anyKyc.liveness === "string" && anyKyc.liveness !== "") kyc.checklist.liveness = true;
+    const addressKeys = ["residentialAddress", "proofOfAddress", "address", "homeAddress"];
+    for (const key of addressKeys) {
+      const v = (anyKyc as any)[key];
+      if (typeof v === "string" && v.trim().length >= 6) kyc.checklist.proofOfAddress = true;
+    }
+    markKycChecklistComplete(req.user!.id);
+  }
+  if (parsed.data.documents) {
+    const docs = parsed.data.documents as Record<string, unknown>;
+    const kyc = findOrCreateKycCase(req.user!.id);
+    if (docs.proofOfAddressUrl || docs.proofOfAddress || docs.proofOfAddressFile) kyc.checklist.proofOfAddress = true;
+    markKycChecklistComplete(req.user!.id);
+  }
   application.customerSnapshot = snapshot;
   application.updatedAt = new Date().toISOString();
   res.json({ ok: true, application });
@@ -2355,6 +2441,31 @@ router.patch("/admin/users/:id", requireAuth, requireRole("ADMIN"), (req: AuthRe
   recordAdminAudit(req, "USER_UPDATED", "USER", user.id, { fullName: user.fullName, phone: user.phone });
   const { passwordHash: _passwordHash, ...safeUser } = user;
   res.json({ ok: true, user: safeUser });
+});
+
+router.post("/admin/users/:id/kyc-reset", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+  const parsed = z.object({
+    category: z.enum(["BVN", "NIN", "LIVENESS", "ADDRESS", "ALL"]),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const user = users.find((u) => u.id === req.params.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  const result = resetKycCategory(user.id, parsed.data.category as KycResetCategory);
+  recordAdminAudit(req, "KYC_RESET", "KYC", user.id, { category: parsed.data.category, checklist: result.checklist, status: result.status });
+  const kyc = findOrCreateKycCase(user.id);
+  res.json({
+    ok: true,
+    category: parsed.data.category,
+    checklist: result.checklist,
+    status: result.status,
+    kyc: {
+      id: kyc.id,
+      userId: kyc.userId,
+      status: kyc.status,
+      checklist: kyc.checklist,
+      updatedAt: kyc.updatedAt,
+    },
+  });
 });
 
 router.get("/admin/loan-managers", requireAuth, requireRole("ADMIN"), (_req, res) => {

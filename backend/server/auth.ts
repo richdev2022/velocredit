@@ -18,6 +18,9 @@ import {
   type OtpAction,
   type User,
   type AdminPermission,
+  documents,
+  identityVerificationEvents,
+  indexes,
 } from "./store.js";
 import { sendOtpSms, maskPhone, formatOtpMessage } from "./providers/kudi.js";
 // import { sendSms, maskPhone, formatOtpMessage } from "./providers/kudi.js"; // legacy generic SMS, replaced with Kudi Send OTP endpoint
@@ -361,10 +364,77 @@ export function markKycChecklistComplete(userId: string): void {
     }
   } else if (anyDone) {
     if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
+  } else {
+    if (kyc.status !== "NOT_STARTED") kyc.status = "IN_PROGRESS";
   }
   kyc.updatedAt = now;
   const user = users.find((u) => u.id === userId);
   if (user) user.kycStatus = kyc.status;
+}
+
+export type KycResetCategory = "BVN" | "NIN" | "LIVENESS" | "ADDRESS" | "ALL";
+
+export function resetKycCategory(userId: string, category: KycResetCategory): { ok: boolean; error?: string; checklist?: any; status?: any } {
+  const kyc = indexes?.kycCasesByUserId ? indexes.kycCasesByUserId.get(userId) ?? findOrCreateKycCase(userId) : findOrCreateKycCase(userId);
+  const cat = String(category).toUpperCase();
+  const now = new Date().toISOString();
+  if (cat === "BVN" || cat === "ALL") {
+    kyc.bvn = undefined;
+    kyc.bvnVerifiedAt = undefined;
+    kyc.checklist.bvn = false;
+    if (kyc.providerRaw && typeof kyc.providerRaw === "object") delete (kyc.providerRaw as any).bvn;
+    if (kyc.verifiedDetails && typeof kyc.verifiedDetails === "object") delete (kyc.verifiedDetails as any).bvn;
+    const keep = identityVerificationEvents.filter((e) => !(e.kycCaseId === kyc.id && e.verificationType === "BVN"));
+    identityVerificationEvents.length = 0;
+    identityVerificationEvents.push(...keep);
+  }
+  if (cat === "NIN" || cat === "ALL") {
+    kyc.nin = undefined;
+    kyc.ninVerifiedAt = undefined;
+    kyc.checklist.nin = false;
+    if (kyc.providerRaw && typeof kyc.providerRaw === "object") delete (kyc.providerRaw as any).nin;
+    if (kyc.verifiedDetails && typeof kyc.verifiedDetails === "object") delete (kyc.verifiedDetails as any).nin;
+    const keep = identityVerificationEvents.filter((e) => !(e.kycCaseId === kyc.id && e.verificationType === "NIN"));
+    identityVerificationEvents.length = 0;
+    identityVerificationEvents.push(...keep);
+  }
+  if (cat === "LIVENESS" || cat === "ALL") {
+    kyc.livenessVerifiedAt = undefined;
+    kyc.checklist.liveness = false;
+    kyc.selfieImageData = undefined;
+    kyc.identityPhoto = undefined;
+    const keep = identityVerificationEvents.filter((e) => !(e.kycCaseId === kyc.id && ((e.verificationType as string) === "LIVENESS" || (e.verificationType as string) === "FACE_MATCH" || (e.verificationType as string) === "BVN_LIVENESS" || (e.verificationType as string) === "NIN_LIVENESS")));
+    identityVerificationEvents.length = 0;
+    identityVerificationEvents.push(...keep);
+  }
+  if (cat === "ADDRESS" || cat === "ALL") {
+    kyc.checklist.proofOfAddress = false;
+    const keepDocs = documents.filter((d) => !(d.userId === userId && (d.documentType === "PROOF_OF_ADDRESS")));
+    documents.length = 0;
+    documents.push(...keepDocs);
+  }
+  if (cat === "ALL") {
+    kyc.checklist.passport = false;
+    kyc.checklist.signature = false;
+    kyc.status = "NOT_STARTED";
+    kyc.submittedAt = undefined;
+    kyc.verifiedAt = undefined;
+    kyc.rejectionReason = undefined;
+    kyc.providerRequestId = undefined;
+    kyc.providerRaw = undefined;
+    kyc.verifiedDetails = undefined;
+    const keepAll = identityVerificationEvents.filter((e) => e.kycCaseId !== kyc.id);
+    identityVerificationEvents.length = 0;
+    identityVerificationEvents.push(...keepAll);
+    const keepAllDocs = documents.filter((d) => d.userId !== userId);
+    documents.length = 0;
+    documents.push(...keepAllDocs);
+  } else {
+    if (kyc.status === "VERIFIED") kyc.status = "IN_PROGRESS";
+  }
+  kyc.updatedAt = now;
+  markKycChecklistComplete(userId);
+  return { ok: true, checklist: kyc.checklist, status: kyc.status };
 }
 
 export function recordConsent(userId: string, consentType: Parameters<typeof consents.push>[0]["consentType"]): (typeof consents)[number] {

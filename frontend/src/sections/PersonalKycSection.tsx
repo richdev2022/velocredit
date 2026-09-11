@@ -19,6 +19,8 @@ import {
   verifyMyLiveness,
   confirmKycOwnershipOtp,
   resendKycOwnershipOtp,
+  getMyKyc,
+  updateMyKyc,
   type KycOtpChallenge,
 } from "../services/apiClient";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
@@ -68,6 +70,7 @@ export default function PersonalKycSection() {
     busy?: boolean;
   }>(null);
   const countdownRef = useRef<number | null>(null);
+  const kycProfileLoadedRef = useRef(false);
   if (!application) return null;
   const currentApplication = application;
   const bvnDisplay = application.kyc?.bvnVerified ? maskIdNumber(application.kyc?.bvn || "") : application.kyc?.bvn || "";
@@ -131,6 +134,72 @@ export default function PersonalKycSection() {
     if (application.kyc?.nin) setValue("nin", application.kyc.nin, { shouldValidate: true, shouldDirty: true });
   }, [application.kyc?.bvn, application.kyc?.nin, setValue]);
 
+  useEffect(() => {
+    if (kycProfileLoadedRef.current) return;
+    kycProfileLoadedRef.current = true;
+    let cancelled = false;
+    void getMyKyc().then((kyc) => {
+      if (cancelled || !kyc?.ok) return;
+      const anyKyc = kyc as any;
+      const checklist = (anyKyc.checklist || {}) as Record<string, boolean>;
+      const existingPersonal = application.personalInfo || {};
+      const prefill = anyKyc.profilePrefill as Record<string, string> | undefined;
+      if (prefill) {
+        const infoPatch: Record<string, string> = {};
+        (["fullName", "dateOfBirth", "phone", "residentialAddress", "state", "lga", "email", "gender"] as const).forEach((key) => {
+          const existing = (existingPersonal as unknown as Record<string, unknown>)[key] as string | undefined;
+          const val = prefill[key];
+          if (!existing && typeof val === "string" && val.trim()) infoPatch[key] = val;
+        });
+        if (Object.keys(infoPatch).length) patchPersonalInfo(infoPatch);
+      }
+      const existingKyc = application.kyc || {};
+      const kycPatch: Record<string, any> = {};
+      const profileBvn = typeof anyKyc.bvn === "string" ? anyKyc.bvn : undefined;
+      const profileNin = typeof anyKyc.nin === "string" ? anyKyc.nin : undefined;
+      if (checklist.bvn && profileBvn && !existingKyc.bvnVerified) {
+        kycPatch.bvn = profileBvn;
+        kycPatch.bvnVerified = true;
+        setValue("bvn", maskIdNumber(profileBvn), { shouldValidate: true });
+      }
+      if (checklist.nin && profileNin && !existingKyc.ninVerified) {
+        kycPatch.nin = profileNin;
+        kycPatch.ninVerified = true;
+        setValue("nin", maskIdNumber(profileNin), { shouldValidate: true });
+      }
+      if (checklist.liveness && !existingKyc.livenessVerified) {
+        kycPatch.livenessVerified = true;
+        if (anyKyc.selfieImageData) kycPatch.selfieImageData = anyKyc.selfieImageData;
+      }
+      const merged = { ...(anyKyc.verifiedDetails || {}), ...(anyKyc.normalizedFields?.bvn || {}), ...(anyKyc.normalizedFields?.nin || {}) };
+      if (Object.keys(merged).length) {
+        const currentDetails = (existingKyc.verifiedDetails || {}) as Record<string, unknown>;
+        const nextDetails = { ...currentDetails };
+        Object.entries(merged).forEach(([k, v]) => { if (nextDetails[k] === undefined) nextDetails[k] = v; });
+        kycPatch.verifiedDetails = nextDetails;
+        if (!existingKyc.identityPhotoUrl) {
+          const photoRaw = pickStr(nextDetails, ["base64Image", "identityPhoto", "photo", "photograph", "image", "face_image", "selfie"]);
+          const photo = normalizePhotoData(photoRaw);
+          if (photo) kycPatch.identityPhotoUrl = photo;
+        }
+      }
+      if (Object.keys(kycPatch).length) patchKyc(kycPatch);
+      const hasProof = Boolean(application.documents?.proofOfAddress);
+      if (!hasProof) {
+        const url = anyKyc.proofOfAddressUrl as string | undefined;
+        const docs = anyKyc.documents as any[] | undefined;
+        const proofDoc = docs?.find((d) => d?.documentType === "PROOF_OF_ADDRESS");
+        if (url || proofDoc) {
+          const upload: UploadedDocument = proofDoc
+            ? { ...proofDoc, slot: "proofOfAddress" }
+            : ({ name: "Proof of Address (from KYC profile)", size: 0, type: url?.includes(".pdf") ? "application/pdf" : url?.includes("png") ? "image/png" : "image/jpeg", previewUrl: url, slot: "proofOfAddress", uploadedAt: new Date().toISOString() } as any);
+          patchDocuments({ proofOfAddress: upload });
+        }
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   function sync<K extends keyof KycForm>(key: K, value: KycForm[K]) {
     patchKyc({ [key]: value } as any);
   }
@@ -185,8 +254,10 @@ export default function PersonalKycSection() {
         if (Object.keys(autofill).length) patchPersonalInfo(autofill);
         if (lowerType === "bvn") {
           setValue("bvn", maskIdNumber(value), { shouldValidate: true });
+          void updateMyKyc({ bvn: value, checklist: { bvn: true } }).catch(() => {});
         } else {
           setValue("nin", maskIdNumber(value), { shouldValidate: true });
+          void updateMyKyc({ nin: value, checklist: { nin: true } }).catch(() => {});
         }
         window.setTimeout(() => {
           setOtpMethodPickerFor(null);
@@ -215,8 +286,13 @@ export default function PersonalKycSection() {
       setVerificationError("");
       setActiveOtpChallenge(null);
       if (value) {
-        if (lowerType === "bvn") setValue("bvn", maskIdNumber(value), { shouldValidate: true });
-        else setValue("nin", maskIdNumber(value), { shouldValidate: true });
+        if (lowerType === "bvn") {
+          setValue("bvn", maskIdNumber(value), { shouldValidate: true });
+          void updateMyKyc({ bvn: value, checklist: { bvn: true } }).catch(() => {});
+        } else {
+          setValue("nin", maskIdNumber(value), { shouldValidate: true });
+          void updateMyKyc({ nin: value, checklist: { nin: true } }).catch(() => {});
+        }
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Unable to verify code";
@@ -568,6 +644,7 @@ export default function PersonalKycSection() {
             onFile={(doc) => handleFile("identificationDocument", doc)}
             onRemove={() => handleRemoveFile("identificationDocument")}
           />
+          <div className="space-y-2">
           <FileUpload
             label="Proof of Address"
             required
@@ -576,6 +653,14 @@ export default function PersonalKycSection() {
             onFile={(doc) => handleFile("proofOfAddress", doc)}
             onRemove={() => handleRemoveFile("proofOfAddress")}
           />
+          <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 flex items-start gap-2 text-xs leading-5 font-medium text-amber-800 dark:text-amber-200">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+              <path d="M12 8v5M12 16h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <span>Proof of address can be utility bill, bank statement, house rent receipt that indicate the resident address and not older than 3 months.</span>
+          </div>
+          </div>
         </div>
 
         {otpMethodPickerFor && (
