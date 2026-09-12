@@ -24,6 +24,7 @@ interface ImportMetaEnv {
   readonly VITE_COMPANY_WEBSITE: string;
   readonly VITE_PREMBLY_WIDGET_ID?: string;
   readonly VITE_PREMBLY_WIDGET_KEY?: string;
+  readonly VITE_PREMBLY_WIDGET_IS_TEST?: string;
 }
 
 interface ImportMeta {

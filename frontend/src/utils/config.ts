@@ -108,6 +108,9 @@ export interface AppConfig {
   apiUrl: string;
   loanManagerEmails: string[];
   adminEmails: string[];
+  premblyWidgetId: string;
+  premblyWidgetKey: string;
+  premblyWidgetIsTest: boolean;
   loanPrograms: Record<LoanProgramKey, LoanProgramConfig>;
 }
 
@@ -175,6 +178,9 @@ const baseConfig: AppConfig = {
   apiUrl: getStr("VITE_API_URL", "http://localhost:4000").replace(/\/$/, ""),
   loanManagerEmails: getStr("VITE_LOAN_MANAGER_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
   adminEmails: getStr("VITE_ADMIN_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
+  premblyWidgetId: getStr("VITE_PREMBLY_WIDGET_ID"),
+  premblyWidgetKey: getStr("VITE_PREMBLY_WIDGET_KEY"),
+  premblyWidgetIsTest: getBool("VITE_PREMBLY_WIDGET_IS_TEST", false),
 };
 
 /** Deep-merge tenureFees overrides onto base */
@@ -275,6 +281,9 @@ export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOve
     apiUrl: overrides.apiUrl || baseConfig.apiUrl,
     loanManagerEmails: overrides.loanManagerEmails ?? baseConfig.loanManagerEmails,
     adminEmails: overrides.adminEmails ?? baseConfig.adminEmails,
+    premblyWidgetId: baseConfig.premblyWidgetId,
+    premblyWidgetKey: baseConfig.premblyWidgetKey,
+    premblyWidgetIsTest: baseConfig.premblyWidgetIsTest,
   };
   return eff;
 }

@@ -14,6 +14,8 @@ declare module "prembly-react-kyc" {
     widget_key: string;
     widget_id: string;
     metadata?: Record<string, string>;
+    user_ref?: string;
+    is_test?: string | boolean;
     callback: (response: PremblyWidgetResponse) => void;
   }
 

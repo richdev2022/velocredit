@@ -2,6 +2,7 @@ import useIdentityPayKYC from "prembly-react-kyc";
 import { useMemo, useState } from "react";
 import { completePremblyWidgetVerification } from "../services/apiClient";
 import { useAuth } from "../context/AuthContext";
+import { config } from "../utils/config";
 
 interface Props {
   fullName?: string;
@@ -65,12 +66,18 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
   const { user } = useAuth();
   const resolvedEmail = (email ?? user?.email ?? "").trim();
   const resolvedPhone = (phone ?? user?.phone ?? "").trim();
-  const normalizedPhone = resolvedPhone.replace(/[^\d+]/g, "");
+  const phoneDigits = resolvedPhone.replace(/\D/g, "");
+  const normalizedPhone = phoneDigits.startsWith("234") && phoneDigits.length === 13
+    ? `+${phoneDigits}`
+    : phoneDigits.startsWith("0") && phoneDigits.length === 11
+      ? `+234${phoneDigits.slice(1)}`
+      : resolvedPhone.replace(/[^\d+]/g, "");
   const [firstName = "", ...lastNames] = (fullName ?? user?.fullName ?? "").trim().split(/\s+/);
-  const widgetId = import.meta.env.VITE_PREMBLY_WIDGET_ID;
-  const widgetKey = import.meta.env.VITE_PREMBLY_WIDGET_KEY;
+  const widgetId = config.premblyWidgetId;
+  const widgetKey = config.premblyWidgetKey;
   const cleanId = (idNumber ?? "").replace(/[^\d]/g, "");
-  const canRenderWidget = Boolean(widgetId && widgetKey && /^\d{11}$/.test(cleanId) && firstName && resolvedEmail && normalizedPhone);
+  const userRef = user?.id ?? `${idType}-${cleanId}`;
+  const canRenderWidget = Boolean(widgetId && widgetKey && /^\d{11}$/.test(cleanId) && firstName && resolvedEmail);
   const [sending, setSending] = useState(false);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
 
@@ -79,9 +86,11 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
     last_name: lastNames.join(" "),
     email: resolvedEmail,
     phone: normalizedPhone,
-    widget_key: widgetKey ?? "",
-    widget_id: widgetId ?? "",
-    metadata: { id_type: idType, id_number: cleanId, date_of_birth: dateOfBirth ?? "" },
+    widget_key: widgetKey,
+    widget_id: widgetId,
+    user_ref: userRef,
+    is_test: config.premblyWidgetIsTest,
+    metadata: { user_id: userRef, id_type: idType, id_number: cleanId, date_of_birth: dateOfBirth ?? "" },
     callback: (response: { status?: string | boolean; code?: string; message?: string; verification_status?: string; data?: Record<string, unknown> }) => {
       const success = isSuccessResponse(response);
       const selfie = extractSelfieImage(response);
@@ -108,7 +117,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
         setSending(false);
       });
     },
-  }), [cleanId, dateOfBirth, firstName, idType, lastNames, normalizedPhone, onResult, resolvedEmail, widgetId, widgetKey]));
+  }), [cleanId, dateOfBirth, firstName, idType, lastNames, normalizedPhone, onResult, resolvedEmail, userRef, widgetId, widgetKey]));
 
   if (!widgetId || !widgetKey) {
     return (
