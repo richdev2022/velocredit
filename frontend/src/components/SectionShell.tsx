@@ -75,12 +75,12 @@ export default function SectionShell({
       <ProgressSteps sections={sections} currentIndex={currentIndex} />
 
       <div className="velo-card p-5 sm:p-7">
-        <div className="flex items-start justify-between gap-4 mb-1">
-          <div>
+        <div className="flex min-w-0 flex-col gap-2 mb-1 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
             <h1 className="section-heading">{title}</h1>
             {description && <p className="section-subheading">{description}</p>}
           </div>
-          <SaveProgress state={saveState} lastSavedAt={lastSavedAt} />
+          <div className="shrink-0 self-start"><SaveProgress state={saveState} lastSavedAt={lastSavedAt} /></div>
         </div>
 
         <div className="mt-5">
@@ -88,7 +88,7 @@ export default function SectionShell({
         </div>
 
         <div className="mt-7 pt-5 border-t border-slate-100 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
-          <div className="flex flex-col sm:flex-row gap-2 sm:order-2">
+          <div className="flex w-full flex-col gap-2 sm:order-2 sm:w-auto sm:flex-row">
             {skippable && (
               <button type="button" onClick={handleSkip} className="btn-ghost">
                 Skip for Now
@@ -99,7 +99,7 @@ export default function SectionShell({
                 Save & Exit
               </button>
             )}
-            <button type="button" onClick={handleSaveAndContinue} disabled={!canContinue} className="btn-primary">
+            <button type="button" onClick={handleSaveAndContinue} disabled={!canContinue} className="btn-primary w-full sm:w-auto">
               {continueLabel || "Save & Continue"}
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                 <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>

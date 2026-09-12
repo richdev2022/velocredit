@@ -355,7 +355,7 @@ export default function PersonalKycSection() {
       canContinue={canContinue}
       onContinue={handleSubmit(onSubmit)}
     >
-      <div className="space-y-5">
+      <div className="min-w-0 space-y-5">
         <div className="rounded-xl bg-velo-50 border border-velo-100 p-3 sm:p-4 flex items-start gap-3">
           <svg className="text-velo-600 shrink-0 mt-0.5" width="18" height="18" viewBox="0 0 24 24" fill="none">
             <path d="M12 2l9 4v6c0 5-3.5 8.5-9 10-5.5-1.5-9-5-9-10V6l9-4z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/>
@@ -366,7 +366,7 @@ export default function PersonalKycSection() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2">
           {bvnLocked ? (
             <div>
               <label className="velo-label">BVN <span className="text-red-500">*</span></label>
@@ -548,7 +548,7 @@ export default function PersonalKycSection() {
           )}
 
           {(governmentPortrait || liveSelfie) && (
-            <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="mb-4 grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
               {governmentPortrait && (
                 <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/60">
                   <div className={`px-3 py-2 border-b text-[10px] font-bold uppercase tracking-wider ${livenessLocked ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700" : "bg-amber-100/90 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200 dark:border-amber-800/40"}`}>
@@ -598,9 +598,9 @@ export default function PersonalKycSection() {
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-center">
             {livenessLocked ? (
-              <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-200 bg-white/80 dark:bg-slate-900/60 border border-emerald-200 dark:border-emerald-800 px-4 py-2 rounded-xl">
+              <div className="inline-flex max-w-full items-center gap-2 break-words text-xs font-semibold text-emerald-800 dark:text-emerald-200 bg-white/80 dark:bg-slate-900/60 border border-emerald-200 dark:border-emerald-800 px-4 py-2 rounded-xl">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                   <rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
                   <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
@@ -625,7 +625,7 @@ export default function PersonalKycSection() {
           {verification.liveness && !livenessLocked && <p className={`mt-3 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2">
           <SelectInput
             label="Identification Type"
             required
@@ -645,7 +645,7 @@ export default function PersonalKycSection() {
           />
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2">
           <FileUpload
             label="Identification Document"
             required
