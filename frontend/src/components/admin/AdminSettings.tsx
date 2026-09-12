@@ -62,6 +62,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const [companyName, setCompanyName] = useState(currentConfig.companyName);
   const [companyWebsite, setCompanyWebsite] = useState(currentConfig.companyWebsite);
   const [brandLogoUrl, setBrandLogoUrl] = useState(currentConfig.brandLogoUrl);
+  const [lenderSignatoryName, setLenderSignatoryName] = useState(currentConfig.lenderSignatoryName);
+  const [lenderSignatoryPosition, setLenderSignatoryPosition] = useState(currentConfig.lenderSignatoryPosition);
+  const [lenderSignatorySignatureUrl, setLenderSignatorySignatureUrl] = useState(currentConfig.lenderSignatorySignatureUrl);
   const [apiUrl, setApiUrl] = useState(currentConfig.apiUrl);
   const [loanManagerEmails, setLoanManagerEmails] = useState(currentConfig.loanManagerEmails.join(", "));
   const [adminEmails, setAdminEmails] = useState(currentConfig.adminEmails.join(", "));
@@ -395,6 +398,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       companyName: companyName !== baseConfig.companyName ? companyName : undefined,
       companyWebsite: companyWebsite !== baseConfig.companyWebsite ? companyWebsite : undefined,
       brandLogoUrl: brandLogoUrl !== baseConfig.brandLogoUrl ? brandLogoUrl : undefined,
+      lenderSignatoryName: lenderSignatoryName !== baseConfig.lenderSignatoryName ? lenderSignatoryName : undefined,
+      lenderSignatoryPosition: lenderSignatoryPosition !== baseConfig.lenderSignatoryPosition ? lenderSignatoryPosition : undefined,
+      lenderSignatorySignatureUrl: lenderSignatorySignatureUrl !== baseConfig.lenderSignatorySignatureUrl ? lenderSignatorySignatureUrl : undefined,
       apiUrl: apiUrl !== baseConfig.apiUrl ? apiUrl : undefined,
       loanManagerEmails: loanManagerEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
       adminEmails: adminEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
@@ -436,6 +442,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     setCompanyName(baseConfig.companyName);
     setCompanyWebsite(baseConfig.companyWebsite);
     setBrandLogoUrl(baseConfig.brandLogoUrl);
+    setLenderSignatoryName(baseConfig.lenderSignatoryName);
+    setLenderSignatoryPosition(baseConfig.lenderSignatoryPosition);
+    setLenderSignatorySignatureUrl(baseConfig.lenderSignatorySignatureUrl);
     setApiUrl(baseConfig.apiUrl);
     setLoanManagerEmails(baseConfig.loanManagerEmails.join(", "));
     setAdminEmails(baseConfig.adminEmails.join(", "));
@@ -717,6 +726,15 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
               <Field label="Brand Logo URL">
                 <input type="url" value={brandLogoUrl} onChange={(e) => setBrandLogoUrl(e.target.value)} className="velo-input text-sm" placeholder="https://.../logo.png" />
                 <div className="mt-2 flex items-center gap-3"><img src={brandLogoUrl} alt="Brand preview" className="h-10 max-w-[180px] object-contain" /><span className="text-xs text-slate-500">Used in navigation, SEO, emails, and agreements where supported.</span></div>
+              </Field>
+              <Field label="Authorised Signatory Full Name">
+                <input type="text" value={lenderSignatoryName} onChange={(e) => setLenderSignatoryName(e.target.value)} className="velo-input text-sm" placeholder="Full name displayed on agreements" />
+              </Field>
+              <Field label="Authorised Signatory Position">
+                <input type="text" value={lenderSignatoryPosition} onChange={(e) => setLenderSignatoryPosition(e.target.value)} className="velo-input text-sm" placeholder="e.g. Director" />
+              </Field>
+              <Field label="Authorised Signatory Signature URL">
+                <input type="url" value={lenderSignatorySignatureUrl} onChange={(e) => setLenderSignatorySignatureUrl(e.target.value)} className="velo-input text-sm" placeholder="https://.../signature.png" />
               </Field>
               <Field label="Frontend API URL">
                 <input type="url" value={apiUrl} onChange={(e) => setApiUrl(e.target.value.replace(/\/$/, ""))} className="velo-input text-sm" placeholder="https://api.example.com" />

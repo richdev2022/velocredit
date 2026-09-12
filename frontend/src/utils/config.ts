@@ -30,6 +30,9 @@ export interface AdminConfigOverride {
   companyName?: string;
   companyWebsite?: string;
   brandLogoUrl?: string;
+  lenderSignatoryName?: string;
+  lenderSignatoryPosition?: string;
+  lenderSignatorySignatureUrl?: string;
   apiUrl?: string;
   loanManagerEmails?: string[];
   adminEmails?: string[];
@@ -99,6 +102,9 @@ export interface AppConfig {
   companyName: string;
   companyWebsite: string;
   brandLogoUrl: string;
+  lenderSignatoryName: string;
+  lenderSignatoryPosition: string;
+  lenderSignatorySignatureUrl: string;
   apiUrl: string;
   loanManagerEmails: string[];
   adminEmails: string[];
@@ -163,6 +169,9 @@ const baseConfig: AppConfig = {
   companyName: getStr("VITE_COMPANY_NAME", "Velo Finance LTD"),
   companyWebsite: getStr("VITE_COMPANY_WEBSITE", "www.velofinance.co"),
   brandLogoUrl: getStr("VITE_BRAND_LOGO_URL", "https://i.ibb.co/b57jKwmk/Velo-New-Logo-2.png"),
+  lenderSignatoryName: getStr("VITE_LENDER_SIGNATORY_NAME"),
+  lenderSignatoryPosition: getStr("VITE_LENDER_SIGNATORY_POSITION"),
+  lenderSignatorySignatureUrl: getStr("VITE_LENDER_SIGNATORY_SIGNATURE_URL"),
   apiUrl: getStr("VITE_API_URL", "http://localhost:4000").replace(/\/$/, ""),
   loanManagerEmails: getStr("VITE_LOAN_MANAGER_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
   adminEmails: getStr("VITE_ADMIN_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
@@ -260,6 +269,9 @@ export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOve
     companyName: overrides.companyName || baseConfig.companyName,
     companyWebsite: overrides.companyWebsite || baseConfig.companyWebsite,
     brandLogoUrl: overrides.brandLogoUrl || baseConfig.brandLogoUrl,
+    lenderSignatoryName: overrides.lenderSignatoryName || baseConfig.lenderSignatoryName,
+    lenderSignatoryPosition: overrides.lenderSignatoryPosition || baseConfig.lenderSignatoryPosition,
+    lenderSignatorySignatureUrl: overrides.lenderSignatorySignatureUrl || baseConfig.lenderSignatorySignatureUrl,
     apiUrl: overrides.apiUrl || baseConfig.apiUrl,
     loanManagerEmails: overrides.loanManagerEmails ?? baseConfig.loanManagerEmails,
     adminEmails: overrides.adminEmails ?? baseConfig.adminEmails,

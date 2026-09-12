@@ -63,7 +63,7 @@ export function buildPlaceholderMap(
     LOAN_PURPOSE:          app.loanRequest?.purpose || "—",
     COMPANY_NAME:          config.companyName,
     COMPANY_WEBSITE:       config.companyWebsite,
-    TODAY:                 formatDateLabel(new Date().toISOString()),
+    TODAY:                 formatDateLabel(app.agreement?.executionDate || app.agreement?.generatedAt || new Date().toISOString()),
     SIGNATORY_NAME:        "—",
     REPRESENTATIVE_NAME:   "—",
     REPRESENTATIVE_POSITION: "—",
@@ -130,6 +130,10 @@ export function generateLoanAgreement(
   calc: LoanCalculation
 ): GeneratedAgreement {
   const map = buildPlaceholderMap(app, calc);
+  const agreementDate = formatDateLabel(app.agreement?.executionDate || app.agreement?.generatedAt || new Date().toISOString());
+  const lenderSignature = config.lenderSignatorySignatureUrl
+    ? `<img class="agreement-media" src="${escapeHtml(config.lenderSignatorySignatureUrl)}" alt="Lender authorised signatory signature" />`
+    : `<div class="media-placeholder">Lender signature not configured</div>`;
 
   const borrowerName = map.APPLICANT_NAME;
   const residentialAddress = map.RESIDENTIAL_ADDRESS;
@@ -190,7 +194,7 @@ export function generateLoanAgreement(
     </div>
     <div class="agr-meta">
       <div>Agreement Ref: ${bold(app.applicationId || "—")}</div>
-      <div>Date: ${bold(formatDateLabel(new Date().toISOString()))}</div>
+      <div>Date: ${bold(agreementDate)}</div>
     </div>
   </div>
 
@@ -307,13 +311,12 @@ export function generateLoanAgreement(
         <div class="lender-brand-url">${config.companyWebsite}</div>
       </div>
       <div class="sign-block">
+        ${lenderSignature}
         <div class="sign-line"></div>
         <div class="sign-label">AUTHORISED SIGNATORY</div>
-        <div class="sign-sub">${config.companyName} — Name &amp; Position below</div>
-        <div class="sign-date">Date: ____________________</div>
+        <div class="sign-sub">${escapeHtml(config.lenderSignatoryName || "Not configured")} — ${escapeHtml(config.lenderSignatoryPosition || "Position not configured")}</div>
+        <div class="sign-date">Date: ${agreementDate}</div>
       </div>
-      <div class="blank-field">Full Name (Print) <span class="blank-underline"></span></div>
-      <div class="blank-field">Position <span class="blank-underline"></span></div>
     </div>
 
     <div class="exec-borrower">
@@ -325,7 +328,7 @@ export function generateLoanAgreement(
         <div class="sign-line"></div>
         <div class="sign-label">BORROWER'S SIGNATURE</div>
         <div class="sign-sub">${signatoryRoleLine}</div>
-        <div class="sign-date">Date: ____________________</div>
+        <div class="sign-date">Date: ${agreementDate}</div>
       </div>
       ${app.applicantType === "BUSINESS" ? `<p class="pn-sub">Representative: ${signatoryName}</p>` : ""}
     </div>
@@ -343,7 +346,7 @@ export function generateLoanAgreement(
         <div class="sign-line"></div>
         <div class="sign-label">WITNESS'S SIGNATURE</div>
         <div class="sign-sub">Witness to the Borrower's signature</div>
-        <div class="sign-date">Date: ____________________</div>
+        <div class="sign-date">Date: ${agreementDate}</div>
       </div>
     </div>
   </div>
@@ -358,7 +361,7 @@ export function generateLoanAgreement(
   // Keep a plain-text version for legacy consumers (simplified)
   const text = `LOAN AGREEMENT
 Ref: ${app.applicationId || "—"}
-Date: ${formatDateLabel(new Date().toISOString())}
+Date: ${agreementDate}
 
 1. PARTIES
 Lender: ${config.companyName} (${config.companyWebsite})
