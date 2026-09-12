@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { requestOtp, withdrawInvestorWallet, type OtpChannel } from "../services/apiClient";
 import { config } from "../utils/config";
 import { getAccessToken } from "../services/apiClient";
+import Icon from "./Icon";
 
 type Bank = { id: number; name: string; code: string };
 type SavedAccount = { id: string; bankCode: string; bankName?: string; accountNumber: string; accountName?: string; status: string; isDefault?: boolean };
@@ -24,6 +25,7 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
   const [resendSecondsRemaining, setResendSecondsRemaining] = useState(0);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [result, setResult] = useState<{ ok: boolean; title: string; message: string } | null>(null);
   const [banks, setBanks] = useState<Bank[]>([]);
   const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("");
@@ -117,10 +119,20 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
     if (!challengeId || otpCode.length !== 6 || !validDestination) return;
     setBusy("submit"); setError("");
     try {
-      const result = await withdrawInvestorWallet({ amountNaira: Number(amount), bankCode: bankCode.trim(), accountNumber, narration: narration || undefined, otpChallengeId: challengeId, otpCode });
-      onSuccess(`Withdrawal ${result.withdrawal.id} is pending approval.`);
+      const response = await withdrawInvestorWallet({ amountNaira: Number(amount), bankCode: bankCode.trim(), accountNumber, narration: narration || undefined, otpChallengeId: challengeId, otpCode });
+      const successful = response.withdrawal.status === "SUCCESSFUL";
+      setResult({
+        ok: successful,
+        title: successful ? "Withdrawal successful" : "Withdrawal failed",
+        message: successful ? "Your withdrawal was submitted successfully." : (response.message || "The withdrawal failed and your wallet balance was restored."),
+      });
+      onSuccess(successful ? `Withdrawal ${response.withdrawal.id} was submitted successfully.` : `Withdrawal ${response.withdrawal.id} failed and your wallet balance was restored.`);
       setAmount(""); setNarration(""); setChallengeId(""); setOtpCode(""); setResendAvailableAt(""); setResendSecondsRemaining(0);
-    } catch (err) { setError(err instanceof Error ? err.message : "Unable to submit withdrawal"); }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to submit withdrawal";
+      setResult({ ok: false, title: "Withdrawal failed", message });
+      setError(message);
+    }
     finally { setBusy(""); }
   }
 
@@ -143,5 +155,15 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
       <div className="sm:col-span-2 flex flex-wrap items-center gap-3"><button className="btn-primary" disabled={busy !== "" || !validDestination || !challengeId || otpCode.length !== 6}>{busy === "submit" ? "Submitting…" : "Confirm withdrawal"}</button><span className="text-xs text-slate-500">Available: ₦{available.toLocaleString("en-NG")}</span></div>
       {error && <p className="sm:col-span-2 text-sm text-red-700 dark:text-red-400">{error}</p>}
     </form>
+    {result && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="withdrawal-result-title">
+      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+        <div className={`mx-auto flex h-14 w-14 items-center justify-center rounded-full ${result.ok ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600"}`}>
+          <Icon name={result.ok ? "check" : "x"} size={28} />
+        </div>
+        <h3 id="withdrawal-result-title" className="mt-4 text-center text-xl font-bold text-velo-900 dark:text-white">{result.title}</h3>
+        <p className="mt-2 text-center text-sm leading-6 text-slate-600 dark:text-slate-300">{result.message}</p>
+        <button type="button" className="btn-primary mt-6 w-full" onClick={() => setResult(null)}>Close</button>
+      </div>
+    </div>}
   </section>;
 }

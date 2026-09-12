@@ -27,8 +27,7 @@ import {
   adminGetLedger,
   adminListInvestors,
   adminListWithdrawals,
-  adminApproveWithdrawal,
-  adminRejectWithdrawal,
+  adminRetryWithdrawal,
   type AdminLedgerEntry,
 } from "../../services/adminApi";
 import { formatNaira } from "../../utils/loanCalculator";
@@ -262,21 +261,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }
   }
 
-  async function handleApproveWithdrawal(id: string) {
+  async function handleRetryWithdrawal(id: string) {
     setWithdrawalActioning(id);
     try {
-      const res = await adminApproveWithdrawal(id);
-      setWithdrawals(current => current.map(w => (w.id === id ? res.withdrawal : w)));
-    } finally {
-      setWithdrawalActioning(null);
-    }
-  }
-
-  async function handleRejectWithdrawal(id: string) {
-    const reasonInput = window.prompt("Reason for rejection (optional):") as string | undefined;
-    setWithdrawalActioning(id);
-    try {
-      const res = await adminRejectWithdrawal(id, reasonInput);
+      const res = await adminRetryWithdrawal(id);
       setWithdrawals(current => current.map(w => (w.id === id ? res.withdrawal : w)));
     } finally {
       setWithdrawalActioning(null);
@@ -1086,11 +1074,11 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     <Icon name="clock" size={20} />Pending Investor Withdrawals
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Approve or reject pending withdrawal requests. Approved payouts are sent immediately via Flutterwave transfer.
+                    Monitor investor withdrawals. Failed payouts can be retried from here.
                   </p>
                 </div>
                 <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 text-xs font-bold border border-amber-100 dark:border-amber-900/40">
-                  {withdrawals.filter(w => w.status === "PENDING_APPROVAL").length} pending
+                  {withdrawals.filter(w => w.status === "FAILED").length} failed
                 </span>
               </div>
               {withdrawalsLoading ? (
@@ -1138,23 +1126,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                             </span>
                           </td>
                           <td className="p-3 text-right">
-                            {w.status === "PENDING_APPROVAL" && (
-                              <div className="flex items-center justify-end gap-1.5">
-                                <button
-                                  onClick={() => handleApproveWithdrawal(w.id)}
-                                  disabled={withdrawalActioning === w.id}
-                                  className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-bold transition"
-                                >
-                                  <Icon name="check" size={13} />Approve
-                                </button>
-                                <button
-                                  onClick={() => handleRejectWithdrawal(w.id)}
-                                  disabled={withdrawalActioning === w.id}
-                                  className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[11px] font-bold transition"
-                                >
-                                  <Icon name="x" size={13} />Reject
-                                </button>
-                              </div>
+                            {w.status === "FAILED" && (
+                              <button
+                                onClick={() => handleRetryWithdrawal(w.id)}
+                                disabled={withdrawalActioning === w.id}
+                                className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold transition"
+                              >
+                                <Icon name="history" size={13} />{withdrawalActioning === w.id ? "Retrying…" : "Retry"}
+                              </button>
                             )}
                           </td>
                         </tr>
