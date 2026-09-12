@@ -104,7 +104,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         },
         body: JSON.stringify({ bankCode: selectedBank, accountNumber }),
       }).then((r) => r.json());
-      if (res.ok) setResolvedName(res.accountName);
+      if (res.ok) setResolvedName(res.accountName ?? res.resolved?.accountName ?? null);
       else setResolveError(res.error || "Could not resolve account");
     } catch (err) {
       setResolveError(err instanceof Error ? err.message : "Resolution failed");
@@ -142,7 +142,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
           onSaved?.(account);
         } else {
           setMessage("Disbursement account saved.");
-          const saved = res.disbursementAccount ?? null;
+          const saved = res.account ?? res.disbursementAccount ?? null;
           setAccount(saved);
           onSaved?.(saved);
           reloadAccount();

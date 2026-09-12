@@ -354,8 +354,9 @@ export async function confirmPasswordReset(resetId: string, rawToken: string, ne
 
 export function markKycChecklistComplete(userId: string): void {
   const kyc = findOrCreateKycCase(userId);
-  const allDone = Object.values(kyc.checklist).every(Boolean);
-  const anyDone = Object.values(kyc.checklist).some(Boolean);
+  const requiredChecks = ["bvn", "nin", "liveness", "proofOfAddress", "signature"] as const;
+  const allDone = requiredChecks.every((key) => kyc.checklist[key]);
+  const anyDone = requiredChecks.some((key) => kyc.checklist[key]);
   const now = new Date().toISOString();
   if (allDone) {
     if (kyc.status === "NOT_STARTED" || kyc.status === "IN_PROGRESS" || kyc.status === "ACTION_REQUIRED") {
