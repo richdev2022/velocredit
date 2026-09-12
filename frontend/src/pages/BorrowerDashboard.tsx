@@ -12,6 +12,7 @@ import {
 } from "../services/apiClient";
 import BorrowerDisbursementSection from "../components/BorrowerDisbursementSection";
 import OtpLoginSettings from "../components/OtpLoginSettings";
+import Icon from "../components/Icon";
 
 type DashboardData = {
   applications?: Array<{
@@ -340,12 +341,8 @@ export default function BorrowerDashboard() {
                   <div className="text-[11px] uppercase tracking-wider font-bold text-indigo-100/85">
                     Account status
                   </div>
-                  <div className="mt-1 text-lg font-black">
-                    {hasSubmittedApplication
-                      ? "📋 Application started"
-                      : user?.kycStatus === "VERIFIED"
-                      ? "✅ Verified — apply now"
-                      : "🔒 Complete KYC first"}
+                  <div className="mt-1 inline-flex items-center gap-2 text-lg font-black">
+                    {hasSubmittedApplication ? <><Icon name="history" size={18} />Application started</> : user?.kycStatus === "VERIFIED" ? <><Icon name="check" size={18} />Verified — apply now</> : <><Icon name="lock" size={18} />Complete KYC first</>}
                   </div>
                   <div className="mt-1 text-[11px] text-indigo-100/80">
                     {!hasSubmittedApplication ? (
@@ -353,7 +350,7 @@ export default function BorrowerDashboard() {
                         to="/apply"
                         className="underline underline-offset-2 font-semibold hover:text-white"
                       >
-                        Start a new loan application →
+                        <span className="inline-flex items-center gap-1">Start a new loan application <Icon name="arrowRight" size={13} /></span>
                       </Link>
                     ) : (
                       "You can track every stage of your request here."

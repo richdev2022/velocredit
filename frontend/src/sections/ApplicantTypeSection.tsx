@@ -8,6 +8,7 @@
 
 import { useMemo, useState } from "react";
 import ApplicantTypeSelector from "../components/ApplicantTypeSelector";
+import Icon from "../components/Icon";
 import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
 import { getApplicationDraft } from "../services/apiClient";
@@ -176,8 +177,8 @@ export default function ApplicantTypeSection() {
         <p className="text-xs text-slate-600 leading-relaxed">
           Your selection determines which sections of the form you'll need to complete. You can save and resume at any time.
           {isReturningToSameType && sections.length > 0 ? (
-            <span className="block mt-2 font-semibold text-emerald-700">
-              ✓ We detected a saved {selected === "PERSONAL" ? "personal" : "business"} draft — continuing will take you straight to the next section you need to complete.
+            <span className="mt-2 flex items-start gap-1.5 font-semibold text-emerald-700">
+              <Icon name="check" size={14} className="mt-0.5 shrink-0" />We detected a saved {selected === "PERSONAL" ? "personal" : "business"} draft — continuing will take you straight to the next section you need to complete.
             </span>
           ) : null}
         </p>

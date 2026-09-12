@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getAccessToken } from "../services/apiClient";
 import { config } from "../utils/config";
+import Icon from "./Icon";
 
 type DisbursementAccount = {
   id?: string;
@@ -305,8 +306,8 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
                   : "Save account"}
               </button>
               {account && (
-                <div className="text-xs text-slate-500">
-                  ⚠️ Subsequent edits require admin approval.
+                <div className="inline-flex items-center gap-1 text-xs text-slate-500">
+                  <Icon name="alert" size={14} className="text-amber-500" />Subsequent edits require admin approval.
                 </div>
               )}
             </div>

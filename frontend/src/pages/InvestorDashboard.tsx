@@ -27,6 +27,7 @@ import {
 } from "../services/apiClient";
 import { config } from "../utils/config";
 import { documentDownloadUrl, documentPreviewUrl } from "../utils/documentLinks";
+import Icon from "../components/Icon";
 
 const money = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -624,8 +625,8 @@ export default function InvestorDashboard() {
               <div className="mt-6 sm:mt-8 pt-4 sm:pt-5 border-t border-emerald-100/80 dark:border-slate-800">
                 <div className="rounded-2xl bg-gradient-to-br from-emerald-600 to-emerald-700 text-white p-4 shadow-lg shadow-emerald-600/20">
                   <div className="text-[11px] uppercase tracking-wider font-bold text-emerald-100/85">KYC status</div>
-                  <div className="mt-1 text-lg font-black">
-                    {user?.kycStatus === "VERIFIED" ? "✅ Verified" : user?.kycStatus === "PENDING_VERIFICATION" ? "⏳ Reviewing" : "🔒 Action needed"}
+                  <div className="mt-1 inline-flex items-center gap-2 text-lg font-black">
+                    {user?.kycStatus === "VERIFIED" ? <><Icon name="check" size={18} />Verified</> : user?.kycStatus === "PENDING_VERIFICATION" ? <><Icon name="clock" size={18} />Reviewing</> : <><Icon name="lock" size={18} />Action needed</>}
                   </div>
                   <div className="mt-1 text-[11px] text-emerald-100/80">
                     {user?.kycStatus === "VERIFIED"
@@ -633,7 +634,7 @@ export default function InvestorDashboard() {
                       : view !== "kyc"
                       ? (
                         <button type="button" onClick={() => { setView("kyc"); setSidebarOpen(false); }} className="underline underline-offset-2 font-semibold hover:text-white">
-                          Tap here to complete →
+                          <span className="inline-flex items-center gap-1">Tap here to complete <Icon name="arrowRight" size={13} /></span>
                         </button>
                       )
                       : "Complete BVN, NIN, and liveness to verify."}
@@ -1302,7 +1303,7 @@ function InvestorInvestments(props: any) {
           <div className="mt-5 space-y-3">
             {investments.map((inv: any, idx: number) => (
               <div key={inv.id || idx} className="rounded-xl border border-slate-100 dark:border-slate-800 p-4 flex flex-wrap justify-between gap-3">
-                <div><div className="text-sm font-semibold text-velo-900 dark:text-white">{inv.planSnapshot?.name || `Investment ${idx + 1}`}</div><div className="text-xs text-slate-500 mt-0.5">Status: {inv.status || "UNKNOWN"} · Started: {inv.startsAt ? new Date(inv.startsAt).toLocaleDateString() : "—"}</div><div className="mt-1 text-xs font-semibold text-amber-700 dark:text-amber-300">🔒 Locked until {inv.maturesAt ? new Date(inv.maturesAt).toLocaleDateString() : "maturity"} · {inv.accrual?.remainingDays ?? inv.tenureDays ?? 0} days remaining</div></div>
+                <div><div className="text-sm font-semibold text-velo-900 dark:text-white">{inv.planSnapshot?.name || `Investment ${idx + 1}`}</div><div className="text-xs text-slate-500 mt-0.5">Status: {inv.status || "UNKNOWN"} · Started: {inv.startsAt ? new Date(inv.startsAt).toLocaleDateString() : "—"}</div><div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-amber-700 dark:text-amber-300"><Icon name="lock" size={13} />Locked until {inv.maturesAt ? new Date(inv.maturesAt).toLocaleDateString() : "maturity"} · {inv.accrual?.remainingDays ?? inv.tenureDays ?? 0} days remaining</div></div>
                 <div className="text-right"><div className="font-bold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div><div className="text-xs text-emerald-600">Accrued: +{money.format(Number(inv.accrual?.accruedEarningsNaira ?? 0))}</div><div className="text-[11px] text-slate-500">Maturity interest: {money.format(Number(inv.expectedEarningsNaira ?? 0))}</div></div>
               </div>
             ))}
@@ -1591,8 +1592,8 @@ function InvestorKyc(props: any) {
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2"/><path d="M8 12h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
                       Reference — Government ID portrait
                     </> : <>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      ⚠ Government ID portrait (NOT a selfie scan)
+                      <Icon name="alert" size={10} />
+                      Government ID portrait (NOT a selfie scan)
                     </>}
                   </div>
                   <div className={`relative aspect-[4/5] w-full rounded-xl overflow-hidden border-2 bg-white shadow-inner ${livenessLocked ? "border-slate-200 dark:border-slate-700" : "border-amber-200 dark:border-amber-800/60"}`}>
@@ -1610,8 +1611,8 @@ function InvestorKyc(props: any) {
                 <div className="flex flex-col gap-2">
                   <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-[0.12em] border ${liveSelfie ? "bg-emerald-100 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-800/60 dark:text-emerald-300" : "bg-slate-100 border-slate-200 text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400"}`}>
                     {liveSelfie ? <>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                      ✅ Your Live Selfie — Liveness Verified
+                      <Icon name="check" size={10} strokeWidth={2.5} />
+                      Your Live Selfie — Liveness Verified
                     </> : <>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" strokeDasharray="2 3"/></svg>
                       Pending — Awaiting your live selfie
@@ -1647,7 +1648,7 @@ function InvestorKyc(props: any) {
                 ) : (
                   <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} onResult={onPremblyLivenessResult} />
                 )}
-                {!livenessLocked && (checklist.selfieUploaded || checklist.liveness) && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
+                {!livenessLocked && (checklist.selfieUploaded || checklist.liveness) && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400"><Icon name="check" size={13} />Liveness verified</span>}
               </div>
             </div>
             <div className="space-y-2">
@@ -2019,7 +2020,7 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
                   disabled={safePage <= 1}
                   className="min-h-[40px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-velo-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  ← Prev
+                  <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={14} />Prev</span>
                 </button>
                 <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 px-2">
                   Page {safePage} of {totalPages}
@@ -2030,7 +2031,7 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
                   disabled={safePage >= totalPages}
                   className="min-h-[40px] px-3 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-velo-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Next →
+                  <span className="inline-flex items-center gap-1">Next<Icon name="arrowRight" size={14} /></span>
                 </button>
               </div>
             </div>
