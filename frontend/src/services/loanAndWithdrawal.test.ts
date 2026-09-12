@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compactApplicationForTransport } from "./apiClient";
 import { isValidWithdrawalDestination } from "../components/InvestorWithdrawalForm";
+import { paginateRepayments, repaymentProgressValues, sortRepaymentsRecentFirst } from "../pages/BorrowerDashboard";
 
 const baseApplication = (applicantType: "PERSONAL" | "BUSINESS") => ({
   applicationId: `${applicantType}-draft`,
@@ -34,6 +35,32 @@ describe("loan application transport", () => {
     expect((compact.collateral as Record<string, unknown>).description).toBe("A vehicle");
     expect((compact.witness as Record<string, unknown>).fullName).toBe("Witness");
     expect(JSON.stringify(compact)).not.toContain("large-binary-payload");
+  });
+});
+
+describe("repayment progress and history", () => {
+  it("uses the full loan schedule as the denominator and only successful payments as paid", () => {
+    const result = repaymentProgressValues(
+      [
+        { amountNaira: 100, status: "PENDING_PROVIDER_CONFIRMATION" },
+        { amountNaira: 100, status: "SUCCESSFUL" },
+      ],
+      [{ totalRepaymentNaira: 517697.26, schedule: [{ totalDueNaira: 517697.26 }] }],
+    );
+
+    expect(result.scheduled).toBe(517697.26);
+    expect(result.paid).toBe(100);
+    expect(result.progress).toBe(0);
+  });
+
+  it("sorts records newest first and paginates them", () => {
+    const records = [
+      { id: "old", createdAt: "2026-09-12T20:00:00Z" },
+      { id: "new", createdAt: "2026-09-12T23:00:00Z" },
+      { id: "middle", createdAt: "2026-09-12T21:00:00Z" },
+    ];
+    expect(sortRepaymentsRecentFirst(records).map((record) => record.id)).toEqual(["new", "middle", "old"]);
+    expect(paginateRepayments(records, 2, 2).records.map((record) => record.id)).toEqual(["old"]);
   });
 });
 

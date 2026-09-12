@@ -13,6 +13,7 @@ const Admin = lazy(() => import("./pages/Admin"));
 const LoanManagerSetup = lazy(() => import("./pages/LoanManagerSetup"));
 const InvestorDashboard = lazy(() => import("./pages/InvestorDashboard"));
 const BorrowerDashboard = lazy(() => import("./pages/BorrowerDashboard"));
+const BorrowerLoanDetail = lazy(() => import("./pages/BorrowerLoanDetail"));
 
 function PageSkeleton({ label = "Loading Velo…" }: { label?: string }) {
   return (
@@ -113,6 +114,14 @@ export default function App() {
                 element={
                   <ProtectedRoute requiredRole="INVESTOR">
                     <InvestorDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/borrower/loans/:loanId"
+                element={
+                  <ProtectedRoute requiredRole="BORROWER">
+                    <BorrowerLoanDetail />
                   </ProtectedRoute>
                 }
               />

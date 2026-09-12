@@ -37,6 +37,8 @@ type DashboardData = {
     tenureDays?: number;
     disbursedAt?: string;
     dueAt?: string;
+    totalRepaymentNaira?: number;
+    schedule?: Array<{ totalDueNaira?: number }>;
   }>;
   payments?: Array<{ status?: string; amountNaira?: number }>;
   repayments?: Array<{
@@ -67,6 +69,43 @@ type CreditData = {
     calculatedAt?: string;
   };
 };
+
+type RepaymentRecord = {
+  id?: string;
+  status?: string;
+  amountNaira?: number;
+  dueDate?: string;
+  paidAt?: string;
+  createdAt?: string;
+  loanId?: string;
+};
+
+function repaymentDate(record: RepaymentRecord): number {
+  const value = record.paidAt ?? record.createdAt ?? record.dueDate;
+  return value ? new Date(value).getTime() : 0;
+}
+
+export function sortRepaymentsRecentFirst(records: RepaymentRecord[]): RepaymentRecord[] {
+  return records.slice().sort((a, b) => repaymentDate(b) - repaymentDate(a));
+}
+
+export function repaymentProgressValues(repayments: RepaymentRecord[], loans: DashboardData["loans"] = []) {
+  const paid = repayments
+    .filter((payment) => ["SUCCESSFUL", "COMPLETED"].includes(String(payment.status)))
+    .reduce((sum, payment) => sum + Number(payment.amountNaira ?? 0), 0);
+  const scheduled = loans.reduce((sum, loan) => {
+    const schedule = (loan as { schedule?: Array<{ totalDueNaira?: number }> }).schedule;
+    const scheduleTotal = schedule?.reduce((total, installment) => total + Number(installment.totalDueNaira ?? 0), 0) ?? 0;
+    return sum + (scheduleTotal || Number((loan as { totalRepaymentNaira?: number }).totalRepaymentNaira ?? 0));
+  }, 0);
+  const progress = scheduled > 0 ? Math.min(100, Math.round((paid / scheduled) * 100)) : 0;
+  return { paid, scheduled, progress };
+}
+
+export function paginateRepayments(records: RepaymentRecord[], page: number, pageSize: number) {
+  const sorted = sortRepaymentsRecentFirst(records);
+  return { records: sorted.slice((page - 1) * pageSize, page * pageSize), totalPages: Math.max(1, Math.ceil(sorted.length / pageSize)) };
+}
 
 function MenuIcon({ name }: { name: string }) {
   const paths: Record<string, React.ReactNode> = { grid: <><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></>, document: <><path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></>, wallet: <><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18M16 15h2"/></>, star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>, check: <path d="m5 12 4 4L19 6"/>, bank: <><path d="M3 10h18M5 10v8m4-8v8m6-8v8m4-8v8M3 20h18L12 4 3 10Z"/></>, user: <><circle cx="12" cy="8" r="3"/><path d="M5 21c.8-4 3.1-6 7-6s6.2 2 7 6"/></> };
@@ -136,16 +175,10 @@ export default function BorrowerDashboard() {
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const repayments = data?.repayments ?? data?.payments ?? [];
-  const paidRepayments = repayments
-    .filter((payment) => ["SUCCESSFUL", "COMPLETED"].includes(String(payment.status)))
-    .reduce((sum, payment) => sum + Number(payment.amountNaira ?? 0), 0);
-  const scheduledRepayments = repayments.reduce(
-    (sum, payment) => sum + Number(payment.amountNaira ?? 0),
-    0
-  );
-  const repaymentProgress = scheduledRepayments
-    ? Math.min(100, Math.round((paidRepayments / scheduledRepayments) * 100))
-    : 0;
+  const repaymentTotals = repaymentProgressValues(repayments, data?.loans);
+  const paidRepayments = repaymentTotals.paid;
+  const scheduledRepayments = repaymentTotals.scheduled;
+  const repaymentProgress = repaymentTotals.progress;
 
   useEffect(() => {
     if (error || switchMsg || successMsg) {
@@ -1375,7 +1408,14 @@ function BorrowerRepayments(props: any) {
     repayBusy,
     handleRepayNow,
   } = props;
-  const safeRepayments = repayments ?? [];
+  const safeRepayments = (repayments ?? []) as RepaymentRecord[];
+  const pageSize = 10;
+  const [page, setPage] = useState(1);
+  const { records: visibleRepayments, totalPages } = paginateRepayments(safeRepayments, page, pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [safeRepayments.length]);
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
@@ -1484,7 +1524,7 @@ function BorrowerRepayments(props: any) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {safeRepayments.map((r: any, i: number) => (
+                {visibleRepayments.map((r: any, i: number) => (
                   <tr key={r.id ?? i} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/30">
                     <td className="px-5 sm:px-6 py-4 text-slate-700 dark:text-slate-300">
                       {r.dueDate || r.paidAt || r.createdAt
@@ -1494,7 +1534,7 @@ function BorrowerRepayments(props: any) {
                         : "—"}
                     </td>
                     <td className="px-5 sm:px-6 py-4 font-mono text-xs text-slate-600 dark:text-slate-400">
-                      {r.loanId?.slice(0, 10) ?? "—"}
+                      {r.loanId ? <Link to={`/borrower/loans/${encodeURIComponent(r.loanId)}`} className="text-velo-600 hover:underline">{r.loanId.slice(0, 10)}</Link> : "—"}
                     </td>
                     <td className="px-5 sm:px-6 py-4 text-right font-bold text-velo-900 dark:text-white">
                       ₦{Number(r.amountNaira ?? 0).toLocaleString("en-NG")}
@@ -1516,6 +1556,15 @@ function BorrowerRepayments(props: any) {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between border-t border-slate-100 px-5 py-4 text-sm dark:border-slate-800">
+            <span className="text-slate-500">Page {page} of {totalPages}</span>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1} className="btn-secondary px-3 py-2 text-xs disabled:opacity-50">Previous</button>
+              <button type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page === totalPages} className="btn-secondary px-3 py-2 text-xs disabled:opacity-50">Next</button>
+            </div>
           </div>
         )}
       </section>

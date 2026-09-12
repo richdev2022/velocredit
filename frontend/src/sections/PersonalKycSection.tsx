@@ -84,6 +84,7 @@ export default function PersonalKycSection() {
     const personal = application.personalInfo ?? {};
     const fullName = pickStr(details, ["full_name", "fullName", "name"]) ?? personal.fullName ?? "";
     const phone = pickStr(details, ["phone_number", "phoneNumber", "phone", "mobile", "telephoneno"]) ?? personal.phone ?? "";
+    const email = pickStr(details, ["email", "emailAddress", "email_address"]) ?? personal.email ?? "";
     const dateOfBirth = pickStr(details, ["date_of_birth", "dateOfBirth", "birthdate", "dob"]) ?? personal.dateOfBirth ?? "";
     const address = pickStr(details, ["address", "residence_address", "residentialAddress"]) ?? personal.residentialAddress ?? "";
     const state = pickStr(details, ["state"]) ?? personal.state ?? "";
@@ -92,7 +93,7 @@ export default function PersonalKycSection() {
     const nationality = pickStr(details, ["nationality"]);
     const photoRaw = pickStr(details, ["base64Image", "identityPhoto", "photo", "photograph", "image", "face_image", "selfie"]);
     const identityPhoto = normalizePhotoData(photoRaw) ?? normalizePhotoData(application.kyc?.identityPhotoUrl) ?? normalizePhotoData(application.kyc?.selfieImageData);
-    return { fullName, phone, dateOfBirth, address, state, lga, gender, nationality, identityPhoto, anyPopulated: !!(fullName || phone || dateOfBirth || address || state || lga) };
+    return { fullName, email, phone, dateOfBirth, address, state, lga, gender, nationality, identityPhoto, anyPopulated: !!(fullName || phone || dateOfBirth || address || state || lga) };
   }, [application.kyc?.verifiedDetails, application.kyc?.identityPhotoUrl, application.kyc?.selfieImageData, application.personalInfo]);
 
   useEffect(() => {
@@ -610,11 +611,12 @@ export default function PersonalKycSection() {
               </div>
             ) : (
               <PremblyKycWidgetButton
-                fullName={currentApplication.personalInfo?.fullName}
-                email={currentApplication.personalInfo?.email}
-                phone={currentApplication.personalInfo?.phone}
+                fullName={identityInfo.fullName}
+                email={identityInfo.email}
+                phone={identityInfo.phone}
                 idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
                 idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
+                dateOfBirth={identityInfo.dateOfBirth}
                 onResult={(result) => {
                   setVerification((current) => ({ ...current, liveness: result.message }));
                   if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS", ...(result.selfieImageData ? { selfieImageData: result.selfieImageData } : {}) });

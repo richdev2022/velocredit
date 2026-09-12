@@ -9,6 +9,7 @@ interface Props {
   phone?: string;
   idType: "BVN" | "NIN";
   idNumber: string;
+  dateOfBirth?: string;
   onResult: (result: { success: boolean; message: string; selfieImageData?: string }) => void;
 }
 
@@ -60,7 +61,7 @@ function extractSelfieImage(response: { data?: Record<string, unknown> }): strin
   return undefined;
 }
 
-export default function PremblyKycWidgetButton({ fullName, email, phone, idType, idNumber, onResult }: Props) {
+export default function PremblyKycWidgetButton({ fullName, email, phone, idType, idNumber, dateOfBirth, onResult }: Props) {
   const { user } = useAuth();
   const resolvedEmail = (email ?? user?.email ?? "").trim();
   const resolvedPhone = (phone ?? user?.phone ?? "").trim();
@@ -80,7 +81,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
     phone: normalizedPhone,
     widget_key: widgetKey ?? "",
     widget_id: widgetId ?? "",
-    metadata: { id_type: idType, id_number: cleanId },
+    metadata: { id_type: idType, id_number: cleanId, date_of_birth: dateOfBirth ?? "" },
     callback: (response: { status?: string | boolean; code?: string; message?: string; verification_status?: string; data?: Record<string, unknown> }) => {
       const success = isSuccessResponse(response);
       const selfie = extractSelfieImage(response);
@@ -107,7 +108,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
         setSending(false);
       });
     },
-  }), [cleanId, firstName, idType, lastNames, normalizedPhone, onResult, resolvedEmail, widgetId, widgetKey]));
+  }), [cleanId, dateOfBirth, firstName, idType, lastNames, normalizedPhone, onResult, resolvedEmail, widgetId, widgetKey]));
 
   if (!widgetId || !widgetKey) {
     return (
@@ -131,7 +132,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
   }
   function handleStart() {
     if (!canRenderWidget) {
-      setLastError("Add your name, email, and phone number before starting the liveness check.");
+      setLastError("Verified BVN/NIN details are not available yet. Refresh the verification details and try again.");
       return;
     }
     setSending(true);
@@ -167,7 +168,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
           </>
         )}
       </button>
-      {!canRenderWidget && !lastError && <p className="text-xs text-slate-500">Your account contact details are required to start the secure camera check.</p>}
+      {!canRenderWidget && !lastError && <p className="text-xs text-slate-500">Loading verified identity details for the secure camera check.</p>}
       {lastError && <p className="break-words text-xs font-medium text-red-600">{lastError}</p>}
     </div>
   );
