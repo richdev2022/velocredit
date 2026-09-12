@@ -1656,10 +1656,12 @@ function BorrowerKyc(props: any) {
     };
   }, [props.user?.id]);
 
-  const status = kyc?.status ?? props.user?.kycStatus ?? "NOT_STARTED";
   const checklist = kyc?.checklist ?? {};
+  const allRequiredChecksComplete = [checklist.bvn, checklist.nin, checklist.liveness, checklist.proofOfAddress, checklist.signature].every(Boolean);
+  const reportedStatus = kyc?.status ?? props.user?.kycStatus ?? "NOT_STARTED";
+  const status = reportedStatus === "VERIFIED" && !allRequiredChecksComplete ? "IN_PROGRESS" : reportedStatus;
   const categoryResults = kyc?.categoryResults ?? {};
-  const completedSteps = [checklist.bvn, checklist.nin, checklist.liveness, checklist.proofOfAddress].filter(Boolean).length;
+  const completedSteps = [checklist.bvn, checklist.nin, checklist.liveness, checklist.proofOfAddress, checklist.signature].filter(Boolean).length;
   const categories = [["BVN", "bvn"], ["NIN", "nin"], ["Liveness", "liveness"], ["Proof of address", "proofOfAddress"], ["Passport", "passport"], ["Signature", "signature"]] as const;
   const categoryStatus = (key: string) => categoryResults[key]?.status ?? (checklist[key] ? "VERIFIED" : "NOT_STARTED");
   return (
@@ -1695,7 +1697,7 @@ function BorrowerKyc(props: any) {
             {status.replace(/_/g, " ")}
           </span>
         </div>
-        <div className="mt-3 text-xs font-semibold text-slate-500 dark:text-slate-400">{completedSteps}/4 identity checks completed</div>
+        <div className="mt-3 text-xs font-semibold text-slate-500 dark:text-slate-400">{completedSteps}/5 required checks completed</div>
         <div className="mt-6 grid gap-4 sm:grid-cols-3">
           <KycStep label="BVN verification" done={Boolean(checklist.bvn)} />
           <KycStep label="NIN verification" done={Boolean(checklist.nin)} />

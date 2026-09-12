@@ -36,6 +36,9 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
           <h3 className="text-sm font-semibold text-velo-900">Agreement Preview</h3>
           <p className="text-xs text-slate-500">Scroll to read the complete agreement before continuing.</p>
         </div>
+        <button type="button" className="btn-secondary text-xs" onClick={() => window.print()}>
+          Print full agreement
+        </button>
       </div>
       <div
         ref={contentRef}
@@ -194,8 +197,12 @@ function agreementCss(): string {
     .media-placeholder { color: #64748b; font-size: 11px; font-style: italic; margin: 8px 0; }
 
     @media print {
-      .agreement-content { max-height: none !important; overflow: visible !important; }
       body { background: #fff !important; }
+      body * { visibility: hidden; }
+      .agreement-print-target, .agreement-print-target * { visibility: visible; }
+      .agreement-print-target { position: absolute; inset: 0; width: 100%; overflow: visible !important; }
+      .agreement-content { max-height: none !important; overflow: visible !important; }
+      .no-print { display: none !important; }
       .page-break { page-break-before: always; }
     }
   </style>`;

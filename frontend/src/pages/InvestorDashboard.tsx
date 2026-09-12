@@ -1350,7 +1350,9 @@ function InvestorKyc(props: any) {
   const liveSelfie = typeof selfieRaw === "string" && selfieRaw.length > 20 ? selfieRaw : undefined;
   const bvnLocked = checklist.bvn === true;
   const ninLocked = checklist.nin === true;
-  const livenessLocked = checklist.liveness === true || checklist.selfieUploaded === true;
+  const livenessLocked = checklist.liveness === true;
+  const allRequiredChecksComplete = [checklist.bvn, checklist.nin, checklist.liveness, checklist.proofOfAddress, checklist.signature].every(Boolean);
+  const displayedKycStatus = kyc?.status === "VERIFIED" && !allRequiredChecksComplete ? "IN_PROGRESS" : kyc?.status;
   const bvnDisplay = bvnLocked ? maskId(bvn) : bvn;
   const ninDisplay = ninLocked ? maskId(nin) : nin;
 
@@ -1384,7 +1386,7 @@ function InvestorKyc(props: any) {
           </div>
           <div className="text-right shrink-0">
             <div className="text-sm font-semibold text-velo-600">{completedSteps}/6</div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400">{user?.kycStatus === "VERIFIED" ? "All verified" : "Completed steps"}</div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">{displayedKycStatus === "VERIFIED" ? "All verified" : "Completed steps"}</div>
           </div>
         </div>
         <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
@@ -1402,7 +1404,7 @@ function InvestorKyc(props: any) {
           })}
         </div>
         {kyc?.rejectionReason && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/15 dark:text-red-300"><strong>Review note:</strong> {kyc.rejectionReason}</div>}
-        {user?.kycStatus !== "VERIFIED" && (
+        {displayedKycStatus !== "VERIFIED" && (
           <div className="mt-6 space-y-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
             <p className="text-sm font-semibold text-velo-900 dark:text-white">Complete your verification</p>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1653,7 +1655,7 @@ function InvestorKyc(props: any) {
                 )}
               </div>
               <label className={`group relative flex flex-col items-center justify-center gap-2 w-full min-h-[120px] rounded-2xl border-2 border-dashed cursor-pointer transition-all px-5 py-4 text-center ${kycBusy === "SIGNATURE" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : checklist.signature ? "border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-400 dark:border-emerald-700/60 dark:bg-emerald-900/10 dark:hover:bg-emerald-900/20" : "border-slate-300 bg-slate-50 hover:border-velo-500 hover:bg-velo-50/50 hover:shadow-sm dark:border-slate-600 dark:bg-slate-900/30 dark:hover:border-velo-400 dark:hover:bg-velo-950/20"}`}>
-                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "SIGNATURE" || kyc?.status === "VERIFIED"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSignature(file); }} />
+                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "SIGNATURE" || checklist.signature === true} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSignature(file); }} />
                 <div className={`flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${checklist.signature ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-200 dark:group-hover:bg-emerald-800/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 group-hover:bg-velo-100 dark:group-hover:bg-velo-900/40 group-hover:text-velo-600 dark:group-hover:text-velo-400"}`}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                     <path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1661,7 +1663,7 @@ function InvestorKyc(props: any) {
                 </div>
                 <div>
                   <div className={`text-sm font-semibold ${checklist.signature ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-300"}`}>
-                    {kycBusy === "SIGNATURE" ? "Uploading…" : kyc?.status === "VERIFIED" ? "Signature verified and locked" : checklist.signature ? "Signature attached · click to replace" : "Click to upload signature"}
+                    {kycBusy === "SIGNATURE" ? "Uploading…" : checklist.signature ? "Signature approved and locked" : "Click to upload signature"}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">PDF, JPG, or PNG — clear image of your handwritten signature.</div>
                 </div>
@@ -1683,7 +1685,7 @@ function InvestorKyc(props: any) {
                 )}
               </div>
               <label className={`group relative flex flex-col items-center justify-center gap-2 w-full min-h-[120px] rounded-2xl border-2 border-dashed cursor-pointer transition-all px-5 py-4 text-center ${kycBusy === "PROOF_OF_ADDRESS" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : checklist.proofOfAddress ? "border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-400 dark:border-emerald-700/60 dark:bg-emerald-900/10 dark:hover:bg-emerald-900/20" : "border-slate-300 bg-slate-50 hover:border-velo-500 hover:bg-velo-50/50 hover:shadow-sm dark:border-slate-600 dark:bg-slate-900/30 dark:hover:border-velo-400 dark:hover:bg-velo-950/20"}`}>
-                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS" || kyc?.status === "VERIFIED"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />
+                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS" || checklist.proofOfAddress === true} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />
                 <div className={`flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${checklist.proofOfAddress ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-200 dark:group-hover:bg-emerald-800/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 group-hover:bg-velo-100 dark:group-hover:bg-velo-900/40 group-hover:text-velo-600 dark:group-hover:text-velo-400"}`}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                     <path d="M12 16V4m0 0L7 9m5-5l5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1692,7 +1694,7 @@ function InvestorKyc(props: any) {
                 </div>
                 <div>
                   <div className={`text-sm font-semibold ${checklist.proofOfAddress ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-300"}`}>
-                    {kycBusy === "PROOF_OF_ADDRESS" ? "Uploading…" : kyc?.status === "VERIFIED" ? "Proof of address verified and locked" : checklist.proofOfAddress ? "File attached · click to replace" : "Click to upload document"}
+                    {kycBusy === "PROOF_OF_ADDRESS" ? "Uploading…" : checklist.proofOfAddress ? "Proof of address approved and locked" : "Click to upload document"}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">PDF, JPG, or PNG — recent utility bill or bank statement.</div>
                 </div>
