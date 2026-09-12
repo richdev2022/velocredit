@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { requestOtp, withdrawInvestorWallet, type OtpChannel } from "../services/apiClient";
-import { config } from "../utils/config";
-import { getAccessToken } from "../services/apiClient";
+import { getInvestorPayoutAccounts, getNigerianBanks, requestOtp, resolveInvestorPayoutAccount, withdrawInvestorWallet, type OtpChannel } from "../services/apiClient";
 import Icon from "./Icon";
 
 type Bank = { id: number; name: string; code: string };
@@ -37,19 +35,12 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
   const validDestination = isValidWithdrawalDestination(amount, available, bankCode, accountNumber, accountName);
 
   useEffect(() => {
-    const token = getAccessToken();
-    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    void Promise.all([
-      fetch(`${config.apiUrl}/api/v1/providers/flutterwave/banks`, { headers }).then((response) => response.json()),
-      fetch(`${config.apiUrl}/api/v1/investor/payout-accounts`, { headers }).then((response) => response.json()),
-    ]).then(([bankBody, accountBody]) => {
-      if (bankBody.ok) setBanks(bankBody.banks || []);
-      if (accountBody.ok) {
-        const accounts = (accountBody.accounts || []) as SavedAccount[];
-        setSavedAccounts(accounts);
-        const defaultAccount = accounts.find((account) => account.isDefault) || accounts[0];
-        if (defaultAccount) selectSavedAccount(defaultAccount);
-      }
+    void Promise.all([getNigerianBanks(), getInvestorPayoutAccounts()]).then(([bankBody, accountBody]) => {
+      setBanks(bankBody.banks || []);
+      const accounts = accountBody.accounts || [];
+      setSavedAccounts(accounts);
+      const defaultAccount = accounts.find((account) => account.isDefault) || accounts[0];
+      if (defaultAccount) selectSavedAccount(defaultAccount);
     }).catch(() => undefined);
   }, []);
 
@@ -90,13 +81,7 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
     setBusy("resolve");
     setError("");
     try {
-      const response = await fetch(`${config.apiUrl}/api/v1/investor/payout-accounts/resolve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}) },
-        body: JSON.stringify({ bankCode, accountNumber }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok || !body.ok) throw new Error(body.error || "Unable to verify account name");
+      const body = await resolveInvestorPayoutAccount(bankCode, accountNumber);
       setAccountName(body.accountName || body.resolved?.accountName || "");
     } catch (err) {
       setAccountName("");

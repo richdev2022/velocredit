@@ -140,7 +140,7 @@ export function generateLoanAgreement(
   calc: LoanCalculation
 ): GeneratedAgreement {
   const map = buildPlaceholderMap(app, calc);
-  const agreementDate = formatDateLabel(app.agreement.executionDate || new Date().toISOString());
+  const agreementDate = formatDateLabel(app.agreement?.executionDate || new Date().toISOString());
   const lenderSignature = config.lenderSignatorySignatureUrl
     ? `<img class="agreement-media" src="${escapeHtml(config.lenderSignatorySignatureUrl)}" alt="Lender authorised signatory signature" />`
     : `<div class="media-placeholder">Lender signature not configured</div>`;

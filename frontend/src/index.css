@@ -196,6 +196,8 @@
     .section-heading { font-size: 1.15rem !important; }
     .btn-primary, .btn-secondary { padding: 0.65rem 1rem; font-size: 0.875rem; }
     .velo-input { padding: 0.65rem 0.8rem; font-size: 0.9rem; }
+    .velo-input.pl-10 { padding-left: 2.5rem; }
+    .velo-input.pl-11 { padding-left: 2.75rem; }
     .velo-card { border-radius: 1rem; }
     .badge { font-size: 0.7rem; padding: 0.25rem 0.6rem; }
   }

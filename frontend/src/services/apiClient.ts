@@ -33,6 +33,18 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    const usesAdminSession = path.startsWith("/api/v1/admin/");
+    if (usesAdminSession) {
+      sessionStorage.removeItem("velo:admin-token");
+      sessionStorage.removeItem("velo:admin-role");
+      sessionStorage.removeItem("velo:admin-permissions");
+      window.dispatchEvent(new Event("velo:admin-unauthorized"));
+    } else {
+      clearAccessToken();
+      window.dispatchEvent(new Event("velo:unauthorized"));
+    }
+  }
   if (!response.ok) throw new Error(body.error || body.message || `Request failed (${response.status})`);
   return body as T;
 }
@@ -266,6 +278,11 @@ export async function requestEarlyLiquidity(input: LiquidityRequestInput): Promi
   return request(`/api/v1/investor/investments/${encodeURIComponent(input.investmentId)}/liquidity`, { method: "POST", body: JSON.stringify(input) });
 }
 
+export interface InvestorPayoutAccount { id: string; bankCode: string; bankName?: string; accountNumber: string; accountName?: string; status: string; isDefault?: boolean; }
+export async function getInvestorPayoutAccounts(): Promise<{ ok: true; accounts: InvestorPayoutAccount[] }> { return request("/api/v1/investor/payout-accounts"); }
+export async function getNigerianBanks(): Promise<{ ok: true; banks: Array<{ id: number; name: string; code: string }> }> { return request("/api/v1/providers/flutterwave/banks"); }
+export async function resolveInvestorPayoutAccount(bankCode: string, accountNumber: string): Promise<{ ok: true; accountName?: string; resolved?: { accountName?: string } }> { return request("/api/v1/investor/payout-accounts/resolve", { method: "POST", body: JSON.stringify({ bankCode, accountNumber }) }); }
+
 export interface InvestorWithdrawalInput { amountNaira: number; bankCode: string; accountNumber: string; narration?: string; otpChallengeId: string; otpCode: string; }
 export async function withdrawInvestorWallet(input: InvestorWithdrawalInput): Promise<{ ok: true; withdrawal: { id: string; status: string }; message?: string; providerResponse?: unknown }> {
   return request("/api/v1/investor/wallet/withdraw", { method: "POST", body: JSON.stringify(input) });
@@ -420,9 +437,10 @@ export async function adminDecideKycRequirement(id: string, requirement: "bvn" |
 }
 
 export interface AdminLoansResponse { ok: true; loans: unknown[]; disbursedLoans: unknown[]; meta?: PaginationMeta; }
-export async function adminListLoans(limit = 50, offset = 0, status?: LoanStatus): Promise<AdminLoansResponse> {
+export async function adminListLoans(limit = 50, offset = 0, status?: LoanStatus, borrowerId?: string): Promise<AdminLoansResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) params.set("status", status);
+  if (borrowerId) params.set("borrowerId", borrowerId);
   return request(`/api/v1/admin/loans?${params.toString()}`);
 }
 
