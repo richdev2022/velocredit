@@ -1658,7 +1658,10 @@ function BorrowerKyc(props: any) {
 
   const status = kyc?.status ?? props.user?.kycStatus ?? "NOT_STARTED";
   const checklist = kyc?.checklist ?? {};
+  const categoryResults = kyc?.categoryResults ?? {};
   const completedSteps = [checklist.bvn, checklist.nin, checklist.liveness, checklist.proofOfAddress].filter(Boolean).length;
+  const categories = [["BVN", "bvn"], ["NIN", "nin"], ["Liveness", "liveness"], ["Proof of address", "proofOfAddress"], ["Passport", "passport"], ["Signature", "signature"]] as const;
+  const categoryStatus = (key: string) => categoryResults[key]?.status ?? (checklist[key] ? "VERIFIED" : "NOT_STARTED");
   return (
     <div className="space-y-6">
       <div>
@@ -1702,6 +1705,15 @@ function BorrowerKyc(props: any) {
           <KycStep label="Liveness check" done={Boolean(checklist.liveness)} />
           <KycStep label="Proof of address" done={Boolean(checklist.proofOfAddress)} />
         </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {categories.map(([label, key]) => {
+            const result = categoryResults[key];
+            const current = categoryStatus(key);
+            const rejected = current === "REJECTED";
+            return <div key={key} className={`rounded-xl border p-3 ${rejected ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/30"}`}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span><span className={`text-[10px] font-bold uppercase ${rejected ? "text-red-700 dark:text-red-300" : current === "VERIFIED" ? "text-emerald-700 dark:text-emerald-300" : "text-slate-500"}`}>{current.replace(/_/g, " ")}</span></div>{rejected && <p className="mt-2 text-xs leading-5 text-red-700 dark:text-red-300">{result?.reason || kyc?.rejectionReason || "Verification was not successful."}</p>}</div>;
+          })}
+        </div>
+        {kyc?.rejectionReason && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/15 dark:text-red-300"><strong>Review note:</strong> {kyc.rejectionReason}</div>}
       </section>
 
       {status !== "VERIFIED" && (

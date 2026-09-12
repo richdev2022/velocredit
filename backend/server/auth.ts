@@ -24,7 +24,7 @@ import {
 } from "./store.js";
 import { sendOtpSms, maskPhone, formatOtpMessage } from "./providers/kudi.js";
 // import { sendSms, maskPhone, formatOtpMessage } from "./providers/kudi.js"; // legacy generic SMS, replaced with Kudi Send OTP endpoint
-import { sendEmail } from "./email.js";
+import { sendEmail, welcomeEmail, loginAttemptEmail } from "./email.js";
 import { sendWhatsAppText, maskPhoneForWa } from "./providers/meta.js";
 
 const secret = env.JWT_SECRET ?? "local-development-secret-change-me-please-32chars-min";
@@ -380,6 +380,7 @@ export function resetKycCategory(userId: string, category: KycResetCategory): { 
   const cat = String(category).toUpperCase();
   const now = new Date().toISOString();
   if (cat === "BVN" || cat === "ALL") {
+    kyc.categoryResults = { ...(kyc.categoryResults ?? {}), BVN: { status: "NOT_STARTED", updatedAt: now } };
     kyc.bvn = undefined;
     kyc.bvnVerifiedAt = undefined;
     kyc.checklist.bvn = false;
@@ -390,6 +391,7 @@ export function resetKycCategory(userId: string, category: KycResetCategory): { 
     identityVerificationEvents.push(...keep);
   }
   if (cat === "NIN" || cat === "ALL") {
+    kyc.categoryResults = { ...(kyc.categoryResults ?? {}), NIN: { status: "NOT_STARTED", updatedAt: now } };
     kyc.nin = undefined;
     kyc.ninVerifiedAt = undefined;
     kyc.checklist.nin = false;
@@ -400,6 +402,7 @@ export function resetKycCategory(userId: string, category: KycResetCategory): { 
     identityVerificationEvents.push(...keep);
   }
   if (cat === "LIVENESS" || cat === "ALL") {
+    kyc.categoryResults = { ...(kyc.categoryResults ?? {}), LIVENESS: { status: "NOT_STARTED", updatedAt: now } };
     kyc.livenessVerifiedAt = undefined;
     kyc.checklist.liveness = false;
     kyc.selfieImageData = undefined;
@@ -409,6 +412,7 @@ export function resetKycCategory(userId: string, category: KycResetCategory): { 
     identityVerificationEvents.push(...keep);
   }
   if (cat === "ADDRESS" || cat === "ALL") {
+    kyc.categoryResults = { ...(kyc.categoryResults ?? {}), ADDRESS: { status: "NOT_STARTED", updatedAt: now } };
     kyc.checklist.proofOfAddress = false;
     const keepDocs = documents.filter((d) => !(d.userId === userId && (d.documentType === "PROOF_OF_ADDRESS")));
     documents.length = 0;
@@ -421,6 +425,7 @@ export function resetKycCategory(userId: string, category: KycResetCategory): { 
     kyc.submittedAt = undefined;
     kyc.verifiedAt = undefined;
     kyc.rejectionReason = undefined;
+    kyc.categoryResults = {};
     kyc.providerRequestId = undefined;
     kyc.providerRaw = undefined;
     kyc.verifiedDetails = undefined;

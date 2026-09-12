@@ -88,7 +88,8 @@ import {
   listBanks,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail } from "./email.js";
+import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
 const normalizePhone = (value: unknown): unknown => {
@@ -144,6 +145,23 @@ function paginate<T>(items: T[], query: Record<string, unknown>): { items: T[]; 
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 50));
   const offset = Math.max(0, Number(query.offset) || 0);
   return { items: items.slice(offset, offset + limit), meta: { total: items.length, limit, offset, hasMore: offset + limit < items.length } };
+}
+
+const kycCategoryForEvent: Record<string, KycCategory> = { BVN: "BVN", NIN: "NIN", LIVENESS: "LIVENESS", PASSPORT: "PASSPORT", ADDRESS: "ADDRESS", SIGNATURE: "SIGNATURE" };
+function providerReason(value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  return text.replace(/<[^>]*>/g, "").replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 500) || "The identity provider could not verify the submitted details.";
+}
+function setKycCategoryResult(kyc: any, category: KycCategory, status: KycCategoryResult["status"], reason?: string): void {
+  kyc.categoryResults = { ...(kyc.categoryResults ?? {}), [category]: { status, reason: reason ? providerReason(reason) : undefined, updatedAt: new Date().toISOString() } };
+}
+async function notifyKyc(user: { email: string; fullName: string }, status: "APPROVED" | "REJECTED", category?: string, reason?: string): Promise<void> {
+  const template = kycStatusEmail({ name: user.fullName, status, category, reason });
+  try { await sendEmail({ to: user.email, name: user.fullName, ...template }); } catch { /* notification failure must not block a KYC decision */ }
+}
+async function notifyLogin(user: { email: string; fullName: string }, req: AuthRequest | any): Promise<void> {
+  const template = loginAttemptEmail({ name: user.fullName, device: req.get("user-agent") || "Unknown device", ipAddress: req.ip || "Unknown IP", attemptedAt: new Date().toISOString() });
+  try { await sendEmail({ to: user.email, name: user.fullName, ...template }); } catch { /* notification failure must not block login */ }
 }
 const otpRequestSchema = z.object({
   action: z.enum([
@@ -305,6 +323,7 @@ router.post("/auth/login", async (req, res) => {
     }
   }
   user.lastLoginAt = new Date().toISOString();
+  await notifyLogin(user, req);
   res.json({
     ok: true,
     accessToken: issueToken(user),
@@ -340,6 +359,7 @@ router.post("/auth/login/verify-otp", async (req, res) => {
   const user = users.find((item) => item.id === result.userId && item.isActive !== false && item.otpLoginEnabled);
   if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
   user.lastLoginAt = new Date().toISOString();
+  await notifyLogin(user, req);
   res.json({ ok: true, accessToken: issueToken(user), user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, roles: user.roles, kycStatus: user.kycStatus, createdAt: user.createdAt } });
 });
 
@@ -541,6 +561,8 @@ router.post("/auth/register/verify-otp", async (req, res) => {
   user.isActive = true;
   user.otpVerifiedAt = new Date().toISOString();
   user.lastLoginAt = user.otpVerifiedAt;
+  const welcome = welcomeEmail({ name: user.fullName });
+  try { await sendEmail({ to: user.email, name: user.fullName, ...welcome }); } catch { /* account activation is independent of email delivery */ }
   res.json({
     ok: true,
     verified: true,
@@ -799,6 +821,7 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     ok: true,
     status: kyc.status,
     checklist: kyc.checklist,
+    categoryResults: kyc.categoryResults ?? {},
     bvnLastFour: kyc.bvn ? kyc.bvn.slice(-4) : undefined,
     ninLastFour: kyc.nin ? kyc.nin.slice(-4) : undefined,
     submittedAt: kyc.submittedAt,
@@ -901,6 +924,12 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     createdAt: new Date().toISOString(),
   };
   identityVerificationEvents.push(event);
+  setKycCategoryResult(kyc, "BVN", result.status === "SUCCESS" ? "VERIFIED" : "REJECTED", result.errorMessage);
+  if (result.status !== "SUCCESS") {
+    kyc.status = "REJECTED";
+    kyc.rejectionReason = providerReason(result.errorMessage);
+    if (user) { user.kycStatus = kyc.status; await notifyKyc(user, "REJECTED", "BVN", kyc.rejectionReason); }
+  }
   kyc.bvn = parsed.data.bvn;
   let otpChallengeForPhone: undefined | {
     challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; phoneLastFour: string; resendAvailableAt: string; resendSecondsRemaining: number; requiresPhoneVerification: true;
@@ -994,6 +1023,13 @@ router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image
   }
   const result = await verifyIdentityWithFace({ type, number, image: req.file.buffer.toString("base64"), dateOfBirth: typeof req.body.dateOfBirth === "string" ? req.body.dateOfBirth : undefined });
   identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: type ?? "LIVENESS", providerReference: result.providerReference, status: result.status, matchScore: result.matchScore, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
+  setKycCategoryResult(kyc, "LIVENESS", result.status === "SUCCESS" ? "VERIFIED" : "REJECTED", result.errorMessage);
+  if (result.status !== "SUCCESS") {
+    kyc.status = "REJECTED";
+    kyc.rejectionReason = providerReason(result.errorMessage);
+    const user = users.find((item) => item.id === req.user?.id);
+    if (user) { user.kycStatus = kyc.status; await notifyKyc(user, "REJECTED", "LIVENESS", kyc.rejectionReason); }
+  }
   let selfieImageData: string | undefined;
   if (result.status === "SUCCESS") {
     kyc.checklist.liveness = true;
@@ -1092,6 +1128,12 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     createdAt: new Date().toISOString(),
   };
   identityVerificationEvents.push(event);
+  setKycCategoryResult(kyc, "NIN", result.status === "SUCCESS" ? "VERIFIED" : "REJECTED", result.errorMessage);
+  if (result.status !== "SUCCESS") {
+    kyc.status = "REJECTED";
+    kyc.rejectionReason = providerReason(result.errorMessage);
+    if (user) { user.kycStatus = kyc.status; await notifyKyc(user, "REJECTED", "NIN", kyc.rejectionReason); }
+  }
   kyc.nin = parsed.data.nin;
   let ninOtpChallenge: undefined | {
     challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; phoneLastFour: string; resendAvailableAt: string; resendSecondsRemaining: number; requiresPhoneVerification: true;
@@ -2704,11 +2746,12 @@ router.get("/admin/kyc-cases", requireAuth, requireRole("ADMIN"), (_req, res) =>
   });
 });
 
-router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parsed = z
     .object({
       decision: z.enum(["VERIFIED", "PARTIALLY_VERIFIED", "REJECTED", "ACTION_REQUIRED", "SUSPENDED"]),
       note: z.string().max(1000).default(""),
+      rejectedReason: z.string().max(1000).optional(),
       checklistOverride: z
         .object({
           bvn: z.boolean().optional(),
@@ -2730,20 +2773,34 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
     return;
   }
   const before = { ...kyc };
+  if (parsed.data.decision === "REJECTED" && !String(parsed.data.rejectedReason ?? parsed.data.note).trim()) {
+    res.status(400).json({ ok: false, error: "A rejection reason is required" });
+    return;
+  }
   kyc.status = parsed.data.decision as KycStatus;
   kyc.reviewedBy = (req as AuthRequest).user?.id ?? "unknown-admin";
   kyc.reviewedAt = new Date().toISOString();
   if (parsed.data.decision === "VERIFIED" && !kyc.verifiedAt) kyc.verifiedAt = kyc.reviewedAt;
-  if (parsed.data.decision === "REJECTED") kyc.rejectionReason = parsed.data.note || "Admin rejected KYC";
+  if (parsed.data.decision === "REJECTED") {
+    kyc.rejectionReason = providerReason(parsed.data.rejectedReason || parsed.data.note);
+    const category = Object.entries(kyc.categoryResults ?? {}).find(([, value]) => value?.status === "REJECTED")?.[0];
+    if (category) setKycCategoryResult(kyc, category as KycCategory, "REJECTED", kyc.rejectionReason);
+  }
+  if (parsed.data.decision === "VERIFIED") {
+    for (const category of ["BVN", "NIN", "LIVENESS", "ADDRESS", "PASSPORT", "SIGNATURE"] as KycCategory[]) setKycCategoryResult(kyc, category, "VERIFIED");
+  }
   if (parsed.data.checklistOverride) Object.assign(kyc.checklist, parsed.data.checklistOverride);
   kyc.updatedAt = new Date().toISOString();
   if (parsed.data.checklistOverride) markKycChecklistComplete(kyc.userId);
   const user = users.find((u) => u.id === kyc.userId);
-  if (user) user.kycStatus = kyc.status;
+  if (user) {
+    user.kycStatus = kyc.status;
+    await notifyKyc(user, parsed.data.decision === "VERIFIED" ? "APPROVED" : "REJECTED", "KYC", kyc.rejectionReason);
+  }
   res.json({ ok: true, case: kyc, before });
 });
 
-router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parsed = z.object({
     requirement: z.enum(["bvn", "nin", "liveness", "proofOfAddress", "passport", "signature"]),
     approved: z.boolean(),
@@ -2754,8 +2811,12 @@ router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"
   if (!kyc) { res.status(404).json({ ok: false, error: "KYC case not found" }); return; }
   kyc.checklist[parsed.data.requirement] = parsed.data.approved;
   kyc.updatedAt = new Date().toISOString();
-  if (!parsed.data.approved) kyc.rejectionReason = parsed.data.note || `${parsed.data.requirement} requires attention`;
+  const category = parsed.data.requirement === "proofOfAddress" ? "ADDRESS" : parsed.data.requirement.toUpperCase() as KycCategory;
+  setKycCategoryResult(kyc, category, parsed.data.approved ? "VERIFIED" : "REJECTED", parsed.data.note);
+  if (!parsed.data.approved) kyc.rejectionReason = providerReason(parsed.data.note || `${parsed.data.requirement} requires attention`);
   markKycChecklistComplete(kyc.userId);
+  const user = users.find((item) => item.id === kyc.userId);
+  if (user) await notifyKyc(user, parsed.data.approved ? "APPROVED" : "REJECTED", category, kyc.rejectionReason);
   res.json({ ok: true, case: kyc });
 });
 

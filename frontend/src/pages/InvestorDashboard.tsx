@@ -58,6 +58,8 @@ type KycData = {
   bvn?: string;
   nin?: string;
   checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean; selfieUploaded?: boolean; liveness?: boolean };
+  categoryResults?: Record<string, { status?: string; reason?: string }>;
+  rejectionReason?: string;
   verifiedDetails?: Record<string, unknown>;
   identityPhoto?: string;
 };
@@ -1378,6 +1380,15 @@ function InvestorKyc(props: any) {
             style={{ width: `${progressPct}%` }}
           />
         </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {[['BVN', 'bvn'], ['NIN', 'nin'], ['Liveness', 'liveness'], ['Proof of address', 'proofOfAddress'], ['Passport', 'passport'], ['Signature', 'signature']].map(([label, key]) => {
+            const result = kyc?.categoryResults?.[key];
+            const current = result?.status || (checklist[key] ? 'VERIFIED' : 'NOT_STARTED');
+            const rejected = current === 'REJECTED';
+            return <div key={key} className={`rounded-xl border p-3 ${rejected ? 'border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-900/15' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/30'}`}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span><span className={`text-[10px] font-bold uppercase ${rejected ? 'text-red-700 dark:text-red-300' : current === 'VERIFIED' ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500'}`}>{String(current).replace(/_/g, ' ')}</span></div>{rejected && <p className="mt-2 text-xs leading-5 text-red-700 dark:text-red-300">{result?.reason || kyc?.rejectionReason || 'Verification was not successful.'}</p>}</div>;
+          })}
+        </div>
+        {kyc?.rejectionReason && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/15 dark:text-red-300"><strong>Review note:</strong> {kyc.rejectionReason}</div>}
         {user?.kycStatus !== "VERIFIED" && (
           <div className="mt-6 space-y-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
             <p className="text-sm font-semibold text-velo-900 dark:text-white">Complete your verification</p>

@@ -156,7 +156,7 @@ export async function addUserRole(role: Exclude<Role, "ADMIN">): Promise<{ ok: t
 }
 
 export interface KycChecklist { personalInfoCompleted: boolean; phoneVerified: boolean; bvnVerified: boolean; ninVerified: boolean; proofOfIdentityUploaded: boolean; proofOfAddressUploaded: boolean; selfieUploaded: boolean; }
-export interface KycResponse { ok: true; status: KycStatus; checklist: KycChecklist; verificationStatus?: "PENDING" | "SUCCESS" | "FAILED" | "MANUAL_REVIEW"; providerConfigured?: boolean; error?: string; verifiedDetails?: Record<string, unknown>; bvnLast4?: string; ninLast4?: string; submittedAt?: string; verifiedAt?: string; rejectedReason?: string; documents: unknown[]; verificationEvents: unknown[]; }
+export interface KycResponse { ok: true; status: KycStatus; checklist: KycChecklist; categoryResults?: Record<string, { status: string; reason?: string; updatedAt?: string }>; verificationStatus?: "PENDING" | "SUCCESS" | "FAILED" | "MANUAL_REVIEW"; providerConfigured?: boolean; error?: string; verifiedDetails?: Record<string, unknown>; bvnLast4?: string; ninLast4?: string; submittedAt?: string; verifiedAt?: string; rejectedReason?: string; documents: unknown[]; verificationEvents: unknown[]; }
 export async function getMyKyc(): Promise<KycResponse> { return request("/api/v1/me/kyc"); }
 
 export interface KycUpdateInput { statusOverride?: Extract<KycStatus, "IN_PROGRESS" | "PENDING_VERIFICATION">; checklist?: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean }; bvn?: string; nin?: string; }
