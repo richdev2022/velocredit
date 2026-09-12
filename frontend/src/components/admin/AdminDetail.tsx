@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  adminDisburseLoan,
   adminGetApplication,
   adminUpdateStatus,
   type AdminApplicationDetail,
@@ -19,11 +20,6 @@ interface AdminDetailProps {
   applicationId: string;
   onBack: () => void;
 }
-
-const ALL_STATUSES = [
-  "DRAFT", "IN_PROGRESS", "SUBMITTED", "UNDER_REVIEW",
-  "APPROVED", "REJECTED", "DISBURSED", "REPAID",
-];
 
 export default function AdminDetail({ applicationId, onBack }: AdminDetailProps) {
   const [app, setApp] = useState<AdminApplicationDetail | null>(null);
@@ -41,7 +37,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
       .then((data) => {
         if (cancelled) return;
         setApp(data);
-        setNewStatus(data.status);
+        setNewStatus("");
       })
       .catch((err) => {
         if (cancelled) return;
@@ -55,19 +51,35 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
   }, [applicationId]);
 
   async function handleUpdateStatus() {
-    if (!app || !newStatus || newStatus === app.status) return;
+    if (!app || !newStatus) return;
     setSaving(true);
     setSaveMsg(null);
     try {
-      const res = await adminUpdateStatus(app.applicationId, newStatus);
+      const res = await adminUpdateStatus(app.applicationId, newStatus as "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED");
       if (res.ok) {
         setApp({ ...app, status: res.status });
-        setSaveMsg("Status updated to " + res.status);
+        setNewStatus("");
+        setSaveMsg("Application updated to " + res.status.replace(/_/g, " "));
       } else {
         setSaveMsg("Failed to update status.");
       }
     } catch (err: any) {
       setSaveMsg(err?.message || "Failed to update status.");
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSaveMsg(null), 4000);
+    }
+  }
+
+  async function handleDisburse() {
+    if (!app) return;
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      await adminDisburseLoan(app.applicationId);
+      setSaveMsg("Disbursement submitted to Flutterwave for confirmation.");
+    } catch (err: any) {
+      setSaveMsg(err?.message || "Unable to initiate disbursement.");
     } finally {
       setSaving(false);
       setTimeout(() => setSaveMsg(null), 4000);
@@ -184,29 +196,28 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
           </div>
         </div>
 
-        {/* Status changer */}
         <div className="mt-5 pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-end gap-3">
-          <div className="flex-1">
-            <label className="velo-label" htmlFor="status-change">Change Status</label>
-            <select
-              id="status-change"
-              value={newStatus}
-              onChange={(e) => setNewStatus(e.target.value)}
-              className="velo-input"
-            >
-              {ALL_STATUSES.map((s) => (
-                <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
-              ))}
-            </select>
-          </div>
-          <button
-            type="button"
-            onClick={handleUpdateStatus}
-            disabled={saving || newStatus === app.status}
-            className="btn-primary"
-          >
-            {saving ? "Saving…" : "Update Status"}
-          </button>
+          {app.status !== "APPROVED" && app.status !== "REJECTED" && (
+            <>
+              <div className="flex-1">
+                <label className="velo-label" htmlFor="status-change">Application decision</label>
+                <select id="status-change" value={newStatus} onChange={(e) => setNewStatus(e.target.value)} className="velo-input">
+                  <option value="">Select a decision</option>
+                  <option value="APPROVED">Approve application</option>
+                  <option value="MORE_INFORMATION_REQUIRED">Request more information</option>
+                  <option value="REJECTED">Reject application</option>
+                </select>
+              </div>
+              <button type="button" onClick={handleUpdateStatus} disabled={saving || !newStatus} className="btn-primary">
+                {saving ? "Saving…" : "Apply decision"}
+              </button>
+            </>
+          )}
+          {app.status === "APPROVED" && (
+            <button type="button" onClick={handleDisburse} disabled={saving} className="btn-primary">
+              {saving ? "Submitting…" : "Disburse via Flutterwave"}
+            </button>
+          )}
         </div>
         {saveMsg && (
           <div className="mt-3 rounded-lg bg-emerald-50 border border-emerald-100 p-2.5 text-xs text-emerald-700">

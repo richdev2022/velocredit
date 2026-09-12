@@ -379,7 +379,7 @@ export async function requestCreditReport(otpChallengeId?: string, otpCode?: str
 export interface RepaymentInitResponse {
   ok: true;
   repayment: { id: string; loanId: string; amountNaira: number; txRef: string; status: PaymentStatus; };
-  checkout?: { type: "flutterwave_standard_checkout"; url: string; txRef: string; amountNaira: number; currency: "NGN"; };
+  checkout?: { type?: "flutterwave_standard_checkout"; url?: string; link?: string; txRef?: string; amountNaira?: number; currency?: "NGN"; };
   repaymentContext?: {
     isFullPayoff: boolean;
     minAllowedNaira: number;

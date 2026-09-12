@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { formatNaira } from "../../utils/loanCalculator";
 import {
   adminApprovePayout,
+  adminDisburseLoan,
   adminDecideKyc,
   adminDecideKycRequirement,
   adminGetReconciliation,
@@ -540,10 +541,22 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
     catch (err) { setError(err instanceof Error ? err.message : "Retry failed"); }
     finally { setBusy(""); }
   }
+  async function disburseLoan(applicationId: string) {
+    setBusy(applicationId);
+    try {
+      const response = await adminDisburseLoan(applicationId);
+      setDisbursedLoans((current) => [...current.filter((loan) => loan.id !== (response.loan as any).id), response.loan]);
+      await loadDisbursements();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to initiate disbursement");
+    } finally {
+      setBusy("");
+    }
+  }
   function disbursementsForLoan(loanAppId: string, loanRecordId?: string) {
     return disbursements.filter((d) => (loanRecordId && d.loanId === loanRecordId) || d.applicationId === loanAppId);
   }
-  return <Panel title="Loan management & disbursement tracking" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} applications · {disbursements.length} transfer records</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <Table headers={["Application / Loan", "Borrower", "Principal", "Application status", "Disbursements", "Created"]}>{rows.map((loanApp) => {
+  return <Panel title="Loan management & disbursement tracking" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} applications · {disbursements.length} transfer records</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <Table headers={["Application / Loan", "Borrower", "Principal", "Application status", "Disbursements", "Actions", "Created"]}>{rows.map((loanApp) => {
     const appId = loanApp.id;
     const matchingLoanRecord = disbursedLoans.find((l: any) => l.applicationId === appId || l.id === appId);
     const loanRecordId = matchingLoanRecord?.id;
@@ -588,6 +601,11 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
                   ))}
                 </div>)
               : <span className="text-xs text-slate-400 dark:text-slate-500">No disbursement records</span>}
+          </td>
+          <td className="px-3 py-3">
+            {loanApp.status === "APPROVED" && !matchingLoanRecord && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Disburse"}</button>}
+            {loanApp.status === "APPROVED" && matchingLoanRecord?.status === "DISBURSEMENT_PENDING" && !transfers.length && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Disburse"}</button>}
+            {loanApp.status !== "APPROVED" && <span className="text-xs text-slate-400 dark:text-slate-500">Approve to disburse</span>}
           </td>
           <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{loanApp.createdAt ? new Date(loanApp.createdAt).toLocaleDateString() : "—"}</td>
         </tr>

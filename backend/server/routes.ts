@@ -176,13 +176,19 @@ async function sendLoanEmails(application: (typeof loanApplications)[number], ev
   const borrower = users.find((user) => user.id === application.borrowerId);
   const borrowerName = borrower?.fullName ?? String(snapshot.fullName ?? "Borrower");
   const borrowerEmail = borrower?.email ?? String(snapshot.email ?? "");
-  const admins = users.filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || (user.roles.includes("LOAN_MANAGER") && user.adminPermissions?.includes(loanNotificationPermission))));
-  const recipients = [...admins.map((user) => ({ email: user.email, name: user.fullName })), ...(env.ADMIN_EMAIL ? [{ email: env.ADMIN_EMAIL, name: "Velo Administrator" }] : [])];
-  const uniqueRecipients = recipients.filter((recipient, index, all) => all.findIndex((item) => item.email.toLowerCase() === recipient.email.toLowerCase()) === index);
   const amountNaira = Number(application.amountNaira ?? 0);
-  const messages = event === "SUBMITTED"
-    ? [{ email: borrowerEmail, name: borrowerName, ...loanApplicationSubmittedEmail({ name: borrowerName, applicationId: application.applicationId, amountNaira, recipient: "borrower" }) }, ...uniqueRecipients.map((recipient) => ({ ...recipient, ...loanApplicationSubmittedEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira, recipient: "reviewer" }) }))]
-    : [{ email: borrowerEmail, name: borrowerName, ...loanDecisionEmail({ name: borrowerName, applicationId: application.applicationId, status: event, amountNaira, note: application.manualNote }) }, ...uniqueRecipients.map((recipient) => ({ ...recipient, ...loanDecisionEmail({ name: recipient.name, applicationId: application.applicationId, status: event, amountNaira, note: application.manualNote }) }))];
+  const borrowerMessage = event === "SUBMITTED"
+    ? loanApplicationSubmittedEmail({ name: borrowerName, applicationId: application.applicationId, amountNaira, recipient: "borrower" })
+    : loanDecisionEmail({ name: borrowerName, applicationId: application.applicationId, status: event, amountNaira, note: application.manualNote });
+  const messages = [{ email: borrowerEmail, name: borrowerName, ...borrowerMessage }];
+
+  if (event === "SUBMITTED") {
+    const admins = users.filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || (user.roles.includes("LOAN_MANAGER") && user.adminPermissions?.includes(loanNotificationPermission))));
+    const recipients = [...admins.map((user) => ({ email: user.email, name: user.fullName })), ...(env.ADMIN_EMAIL ? [{ email: env.ADMIN_EMAIL, name: "Velo Administrator" }] : [])];
+    const uniqueRecipients = recipients.filter((recipient, index, all) => all.findIndex((item) => item.email.toLowerCase() === recipient.email.toLowerCase()) === index);
+    messages.push(...uniqueRecipients.map((recipient) => ({ ...recipient, ...loanApplicationSubmittedEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira, recipient: "reviewer" }) })));
+  }
+
   await Promise.all(messages.filter((message) => message.email).map(async (message) => { try { await sendEmail({ to: message.email, name: message.name, subject: message.subject, html: message.html }); } catch { /* notification failure must not block loan processing */ } }));
 }
 const otpRequestSchema = z.object({
@@ -206,10 +212,6 @@ const passwordResetConfirmSchema = z.object({
 const bvnVerifySchema = z.object({ bvn: z.string().regex(/^\d{11}$/, "BVN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS","WHATSAPP"]).optional() });
 const ninVerifySchema = z.object({ nin: z.string().regex(/^\d{11}$/, "NIN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS","WHATSAPP"]).optional() });
 const payoutAccountSchema = z.object({ accountName: z.string().min(2), accountNumber: z.string().regex(/^\d{10}$/, "Account number must be 10 digits"), bankCode: z.string().min(2), bankName: z.string().optional() });
-const borrowerDisbursementAccountSchema = z.object({
-  accountName: z.string().min(2),
-  accountNumber: z.string().regex(/^\d{10}$/, "Account number must be 10 digits"),
-});
 const createInvestmentSchema = z.object({ amountNaira: z.number().positive().finite(), planId: z.string().min(1).optional(), tenureDays: z.number().int().positive().default(90), annualRatePercent: z.number().nonnegative().default(12) });
 const earlyLiquiditySchema = z.object({ otpChallengeId: z.string().optional(), otpCode: z.string().optional() });
 const loanApplicationSchema = z.object({
@@ -1853,7 +1855,7 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), (req: Au
   const userApplications = loanApplications.filter((item) => item.borrowerId === req.user!.id);
   const userLoans = loans.filter((item) => item.borrowerId === req.user!.id);
   const userRepayments = repayments.filter((item) => item.borrowerId === req.user!.id);
-  const disbursementAccount = payoutAccounts.find((item) => item.userId === req.user!.id) ?? null;
+  const disbursementAccount = disbursementAccounts.find((item) => item.borrowerId === req.user!.id) ?? null;
   res.json({
     ok: true,
     applications: userApplications,
@@ -1861,41 +1863,6 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), (req: Au
     repayments: userRepayments,
     disbursementAccount,
   });
-});
-
-router.put("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
-  const hasSubmittedApplication = loanApplications.some(
-    (item) =>
-      item.borrowerId === req.user!.id &&
-      (Boolean(item.submittedAt) || !["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(item.status))
-  );
-  if (hasSubmittedApplication) {
-    res.status(409).json({ ok: false, error: "The disbursement account cannot be changed after submitting a loan application." });
-    return;
-  }
-
-  const parsed = borrowerDisbursementAccountSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ ok: false, error: parsed.error.flatten() });
-    return;
-  }
-
-  const existing = payoutAccounts.find((item) => item.userId === req.user!.id);
-  const now = new Date().toISOString();
-  const account = {
-    id: existing?.id ?? randomUUID(),
-    userId: req.user!.id,
-    bankCode: "VELO",
-    bankName: "Velo",
-    ...parsed.data,
-    status: "PENDING_VERIFICATION" as const,
-    updatedAt: now,
-    createdAt: existing?.createdAt ?? now,
-  };
-  if (existing) Object.assign(existing, account);
-  else payoutAccounts.push(account);
-
-  res.status(200).json({ ok: true, disbursementAccount: account });
 });
 
 router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), (_req, res) => {
@@ -2434,7 +2401,14 @@ router.post("/borrower/loans/:loanId/repayments", requireAuth, requireRole("BORR
     res.status(201).json({
       ok: true,
       repayment,
-      checkout,
+      checkout: {
+        type: "flutterwave_standard_checkout",
+        url: checkout.data?.link,
+        link: checkout.data?.link,
+        txRef,
+        amountNaira: repayment.amountNaira,
+        currency: repayment.currency,
+      },
       repaymentContext: {
         isFullPayoff,
         minAllowedNaira: minAllowed,
@@ -3106,13 +3080,15 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     res.status(409).json({ ok: false, error: "Loan manager approval is required before disbursement" });
     return;
   }
-  const snapshot = (application?.customerSnapshot ?? {}) as {
-    fullName?: string;
-    disbursementAccount?: { accountNumber?: string; bankCode?: string; accountName?: string };
-  };
-  const account = snapshot.disbursementAccount;
-  if (!account?.accountNumber || !account.bankCode) {
-    res.status(400).json({ ok: false, error: "Verified disbursement account details are required" });
+  const snapshot = (application?.customerSnapshot ?? {}) as { fullName?: string };
+  const account = disbursementAccounts.find((item) => item.borrowerId === loan.borrowerId);
+  if (!account || account.status !== "ACTIVE") {
+    res.status(400).json({ ok: false, error: "An active, verified borrower disbursement account is required" });
+    return;
+  }
+  const existingTransfer = loanDisbursements.find((item) => item.loanId === loan.id && ["PROCESSING", "PENDING", "SUCCESSFUL"].includes(item.status));
+  if (existingTransfer) {
+    res.status(409).json({ ok: false, error: "A disbursement is already in progress or completed for this loan" });
     return;
   }
   try {

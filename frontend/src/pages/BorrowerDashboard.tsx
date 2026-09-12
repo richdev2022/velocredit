@@ -217,11 +217,12 @@ export default function BorrowerDashboard() {
     setError("");
     try {
       const res = await initializeLoanRepayment(repayModalLoan.id, amountNaira);
-      if (res.checkout?.url) {
-        window.location.assign(res.checkout.url);
+      const checkoutUrl = res.checkout?.url || res.checkout?.link;
+      if (checkoutUrl) {
+        window.location.assign(checkoutUrl);
       } else {
-          setRepayModeMsg(res.error || res.message || "Payment checkout not available right now");
-        }
+        setRepayModeMsg(res.error || res.message || "Payment checkout not available right now");
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unable to initiate repayment";
       if (/Minimum|outstanding|No repayment needed/.test(msg)) {
