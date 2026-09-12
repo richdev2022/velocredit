@@ -7,6 +7,8 @@ export type DocumentSlot =
   | "identificationDocument"
   | "proofOfAddress"
   | "signature"
+  | "witnessPassport"
+  | "witnessSignature"
   | "collateralMedia"
   | "signedAgreement";
 

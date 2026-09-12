@@ -3,24 +3,57 @@
 // On-screen preview of the generated agreement. Styled with print-friendly CSS.
 // ============================================================================
 
+import { useEffect, useRef, useState } from "react";
+
 interface AgreementPreviewProps {
   html: string;
+  onReadToEnd?: (read: boolean) => void;
 }
 
-export default function AgreementPreview({ html }: AgreementPreviewProps) {
+export default function AgreementPreview({ html, onReadToEnd }: AgreementPreviewProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [readToEnd, setReadToEnd] = useState(false);
+
+  useEffect(() => {
+    setReadToEnd(false);
+    onReadToEnd?.(false);
+    const content = contentRef.current;
+    if (!content) return;
+    const updateReadState = () => {
+      const read = content.scrollTop + content.clientHeight >= content.scrollHeight - 8;
+      setReadToEnd(read);
+      onReadToEnd?.(read);
+    };
+    updateReadState();
+    content.addEventListener("scroll", updateReadState, { passive: true });
+    return () => content.removeEventListener("scroll", updateReadState);
+  }, [html, onReadToEnd]);
+
+  function printAgreement() {
+    document.body.classList.add("printing-agreement");
+    window.setTimeout(() => {
+      window.print();
+      document.body.classList.remove("printing-agreement");
+    }, 0);
+  }
+
   return (
-    <div className="velo-card overflow-hidden">
-      <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-b border-slate-100 bg-slate-50/50">
+    <div className="agreement-print-target velo-card overflow-hidden">
+      <div className="no-print flex items-center justify-between px-4 sm:px-5 py-3 border-b border-slate-100 bg-slate-50/50">
         <div>
           <h3 className="text-sm font-semibold text-velo-900">Agreement Preview</h3>
-          <p className="text-xs text-slate-500">Scroll to read. Download the PDF to sign.</p>
+          <p className="text-xs text-slate-500">Scroll to read the complete agreement before continuing.</p>
         </div>
-        <span className="badge bg-velo-50 text-velo-700">Ready</span>
+        <button type="button" onClick={printAgreement} className="btn-secondary text-xs">Print agreement</button>
       </div>
       <div
+        ref={contentRef}
         className="agreement-print max-h-[460px] overflow-y-auto p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content"
         dangerouslySetInnerHTML={{ __html: agreementCss() + html }}
       />
+      <div className="no-print border-t border-slate-100 px-4 py-2 text-xs text-slate-500" aria-live="polite">
+        {readToEnd ? "You have reached the end of the agreement." : "Scroll to the end of the agreement to enable acknowledgement."}
+      </div>
     </div>
   );
 }
@@ -166,6 +199,8 @@ function agreementCss(): string {
     .en-foot { font-weight: 700; color: #0C2947; font-size: 11px; }
 
     .agreement-content { word-break: break-word; overflow-wrap: break-word; }
+    .agreement-media { display: block; max-width: 160px; max-height: 110px; object-fit: contain; border: 1px solid #CBD5E1; border-radius: 6px; margin: 8px 0; }
+    .media-placeholder { color: #64748b; font-size: 11px; font-style: italic; margin: 8px 0; }
 
     @media print {
       .agreement-content { max-height: none !important; overflow: visible !important; }

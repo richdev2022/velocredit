@@ -100,6 +100,12 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
 }
 
+function documentImage(document: { data?: string; type?: string } | undefined, label: string): string {
+  if (!document?.data) return `<div class="media-placeholder">${escapeHtml(label)} not uploaded</div>`;
+  const type = document.type?.startsWith("image/") ? document.type : "image/png";
+  return `<img class="agreement-media" src="data:${type};base64,${document.data}" alt="${escapeHtml(label)}" />`;
+}
+
 function maskBvn(bvn?: string): string {
   if (!bvn || bvn.length < 11) return "—";
   return `*****${bvn.slice(-3)}`;
@@ -142,6 +148,11 @@ export function generateLoanAgreement(
     app.applicantType === "BUSINESS" && repPosition !== "—"
       ? `Signatory Position: ${repPosition}`
       : "Capacity: Borrower";
+  const borrowerPassport = app.documents?.identificationDocument;
+  const borrowerSignature = app.documents?.signature;
+  const witness = app.witness || { fullName: "", phone: "" };
+  const witnessPassport = app.documents?.witnessPassport;
+  const witnessSignature = app.documents?.witnessSignature;
 
   const bold = (v: string, cls = "val") => `<strong class="${cls}">${v}</strong>`;
 
@@ -211,6 +222,8 @@ export function generateLoanAgreement(
       }
       <div class="pn-line">Identification: ${bold(idType + " — " + idNumber)}</div>
       ${repPosition !== "—" ? `<div class="pn-line">Authorised Rep Position: ${bold(repPosition)}</div>` : ""}
+      <div class="pn-line"><b>Passport / ID:</b></div>
+      ${documentImage(borrowerPassport, "Borrower passport or identification")}
       <div class="pn-desc">(Hereinafter the "Borrower")</div>
     </div>
   </div>
@@ -308,6 +321,7 @@ export function generateLoanAgreement(
       <h3 class="agr-h3">SIGNED FOR AND ON BEHALF OF THE BORROWER</h3>
       <p class="pn-name">${borrowerName}</p>
       <div class="sign-block">
+        ${documentImage(borrowerSignature, "Borrower signature")}
         <div class="sign-line"></div>
         <div class="sign-label">BORROWER'S SIGNATURE</div>
         <div class="sign-sub">${signatoryRoleLine}</div>
@@ -319,15 +333,18 @@ export function generateLoanAgreement(
     <div class="exec-witness">
       <hr class="agr-hr" />
       <h3 class="agr-h3">WITNESS</h3>
-      <p class="pn-sub">Please complete the witness details below.</p>
+      <p class="pn-sub">Witness details supplied with this application.</p>
+      <div class="pn-line"><b>Full Name:</b> ${bold(escapeHtml(witness.fullName || "—"))}</div>
+      <div class="pn-line"><b>Phone Number:</b> ${bold(escapeHtml(witness.phone || "—"))}</div>
+      <div class="pn-line"><b>Passport:</b></div>
+      ${documentImage(witnessPassport, "Witness passport")}
       <div class="sign-block">
+        ${documentImage(witnessSignature, "Witness signature")}
         <div class="sign-line"></div>
         <div class="sign-label">WITNESS'S SIGNATURE</div>
         <div class="sign-sub">Witness to the Borrower's signature</div>
         <div class="sign-date">Date: ____________________</div>
       </div>
-      <div class="blank-field">Witness Full Name (Print) <span class="blank-underline"></span></div>
-      <div class="blank-field">Witness Phone Number <span class="blank-underline"></span></div>
     </div>
   </div>
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { requestOtp, withdrawInvestorWallet, type OtpChannel } from "../services/apiClient";
 
 type Props = { available: number; onSuccess: (message: string) => void };
@@ -11,17 +11,29 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
   const [channel, setChannel] = useState<OtpChannel>("EMAIL");
   const [challengeId, setChallengeId] = useState("");
   const [otpCode, setOtpCode] = useState("");
+  const [resendAvailableAt, setResendAvailableAt] = useState("");
+  const [resendSecondsRemaining, setResendSecondsRemaining] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const validDestination = Number(amount) > 0 && Number(amount) <= available && bankCode.trim().length >= 2 && /^\d{10}$/.test(accountNumber);
 
+  useEffect(() => {
+    if (!resendAvailableAt) return;
+    const updateCountdown = () => {
+      setResendSecondsRemaining(Math.max(0, Math.ceil((new Date(resendAvailableAt).getTime() - Date.now()) / 1000)));
+    };
+    updateCountdown();
+    const timer = window.setInterval(updateCountdown, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendAvailableAt]);
+
   async function sendOtp() {
-    if (!validDestination) return;
+    if (!validDestination || (challengeId && resendSecondsRemaining > 0)) return;
     setBusy(true); setError("");
     try {
       const result = await requestOtp("WITHDRAWAL", channel);
-      setChallengeId(result.challengeId); setOtpCode("");
+      setChallengeId(result.challengeId); setOtpCode(""); setResendAvailableAt(result.resendAvailableAt); setResendSecondsRemaining(result.resendSecondsRemaining);
     } catch (err) { setError(err instanceof Error ? err.message : "Unable to send OTP"); }
     finally { setBusy(false); }
   }
@@ -33,7 +45,7 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
     try {
       const result = await withdrawInvestorWallet({ amountNaira: Number(amount), bankCode: bankCode.trim(), accountNumber, narration: narration || undefined, otpChallengeId: challengeId, otpCode });
       onSuccess(`Withdrawal ${result.withdrawal.id} is pending approval.`);
-      setAmount(""); setBankCode(""); setAccountNumber(""); setNarration(""); setChallengeId(""); setOtpCode("");
+      setAmount(""); setBankCode(""); setAccountNumber(""); setNarration(""); setChallengeId(""); setOtpCode(""); setResendAvailableAt(""); setResendSecondsRemaining(0);
     } catch (err) { setError(err instanceof Error ? err.message : "Unable to submit withdrawal"); }
     finally { setBusy(false); }
   }
@@ -47,7 +59,7 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
       <label className="block"><span className="velo-label">Account number</span><input className="velo-input mt-1" inputMode="numeric" maxLength={10} value={accountNumber} onChange={(event) => setAccountNumber(event.target.value.replace(/\D/g, ""))} placeholder="10-digit account number" required /></label>
       <label className="block"><span className="velo-label">Narration (optional)</span><input className="velo-input mt-1" maxLength={100} value={narration} onChange={(event) => setNarration(event.target.value)} placeholder="Withdrawal" /></label>
       <div className="sm:col-span-2"><span className="velo-label">Send OTP via</span><div className="mt-2 flex flex-wrap gap-2">{(["EMAIL", "SMS", "WHATSAPP"] as OtpChannel[]).map((option) => <button key={option} type="button" onClick={() => setChannel(option)} className={`rounded-lg border px-3 py-2 text-sm font-semibold ${channel === option ? "border-velo-500 bg-velo-50 text-velo-700" : "border-slate-200 text-slate-600"}`}>{option === "EMAIL" ? "Email" : option === "SMS" ? "SMS" : "WhatsApp"}</button>)}</div></div>
-      {!challengeId ? <button type="button" className="btn-secondary sm:w-fit" disabled={busy || !validDestination} onClick={() => void sendOtp()}>{busy ? "Sending…" : "Request OTP"}</button> : <><label className="block sm:col-span-2"><span className="velo-label">OTP code</span><input className="velo-input mt-1 max-w-xs text-center text-lg tracking-[0.35em]" inputMode="numeric" maxLength={6} value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, ""))} placeholder="000000" required /></label><button type="button" className="btn-secondary sm:w-fit" disabled={busy || !validDestination} onClick={() => void sendOtp()}>Resend OTP</button></>}
+      {!challengeId ? <button type="button" className="btn-secondary sm:w-fit" disabled={busy || !validDestination} onClick={() => void sendOtp()}>{busy ? "Sending…" : "Request OTP"}</button> : <><label className="block sm:col-span-2"><span className="velo-label">OTP code</span><input className="velo-input mt-1 max-w-xs text-center text-lg tracking-[0.35em]" inputMode="numeric" maxLength={6} value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, ""))} placeholder="000000" required /></label><div className="flex items-center gap-3"><button type="button" className="btn-secondary sm:w-fit" disabled={busy || !validDestination || resendSecondsRemaining > 0} onClick={() => void sendOtp()}>{busy ? "Sending…" : resendSecondsRemaining > 0 ? `Resend OTP in ${resendSecondsRemaining}s` : "Resend OTP"}</button>{resendSecondsRemaining > 0 && <span className="text-xs text-slate-500" aria-live="polite">Resend available in {resendSecondsRemaining}s</span>}</div></>}
       <div className="sm:col-span-2 flex flex-wrap items-center gap-3"><button className="btn-primary" disabled={busy || !validDestination || !challengeId || otpCode.length !== 6}>{busy ? "Submitting…" : "Confirm withdrawal"}</button><span className="text-xs text-slate-500">Available: ₦{available.toLocaleString("en-NG")}</span></div>
       {error && <p className="sm:col-span-2 text-sm text-red-700 dark:text-red-400">{error}</p>}
     </form>
