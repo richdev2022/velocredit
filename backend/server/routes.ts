@@ -100,6 +100,11 @@ const normalizePhone = (value: unknown): unknown => {
   return digits;
 };
 
+function loginOtpPhone(phone: string | undefined): string | undefined {
+  const normalized = normalizePhone(phone);
+  return typeof normalized === "string" && /^0\d{10}$/.test(normalized) ? normalized : undefined;
+}
+
 function recordAdminAudit(req: AuthRequest, action: string, resourceType: string, resourceId: string | undefined, metadata?: Record<string, unknown>): void {
   auditLogs.push({
     id: randomUUID(),
@@ -334,8 +339,14 @@ router.post("/auth/login", async (req, res) => {
     return;
   }
   if (user.otpLoginEnabled) {
+    const channel = user.preferredOtpChannel ?? "EMAIL";
+    const phone = loginOtpPhone(user.phone);
+    if (channel === "SMS" && !phone) {
+      res.status(400).json({ ok: false, error: "A valid Nigerian phone number is required for SMS two-step login" });
+      return;
+    }
     try {
-      const challenge = await createOtpChallenge(user.id, "LOGIN_STEP_UP", user.phone, user.email, user.preferredOtpChannel ?? "EMAIL");
+      const challenge = await createOtpChallenge(user.id, "LOGIN_STEP_UP", phone, user.email, channel);
       res.json({ ok: true, requiresOtp: true, challengeId: challenge.id, expiresAt: challenge.expiresAt, channel: challenge.channel, resendAvailableAt: challenge.resendAvailableAt, resendSecondsRemaining: challenge.resendSecondsRemaining, user: { id: user.id, email: user.email, fullName: user.fullName, roles: user.roles } });
       return;
     } catch (error) {
@@ -366,8 +377,14 @@ router.post("/auth/login/resend-otp", async (req, res) => {
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const user = users.find((item) => item.id === parsed.data.userId && item.isActive !== false && item.otpLoginEnabled);
   if (!user) { res.status(404).json({ ok: false, error: "Login verification is not available" }); return; }
+  const channel = parsed.data.channel ?? user.preferredOtpChannel ?? "EMAIL";
+  const phone = loginOtpPhone(user.phone);
+  if (channel === "SMS" && !phone) {
+    res.status(400).json({ ok: false, error: "A valid Nigerian phone number is required for SMS two-step login" });
+    return;
+  }
   try {
-    const challenge = await createOtpChallenge(user.id, "LOGIN_STEP_UP", user.phone, user.email, parsed.data.channel ?? user.preferredOtpChannel ?? "EMAIL");
+    const challenge = await createOtpChallenge(user.id, "LOGIN_STEP_UP", phone, user.email, channel);
     res.status(201).json({ ok: true, challengeId: challenge.id, expiresAt: challenge.expiresAt, channel: challenge.channel, resendAvailableAt: challenge.resendAvailableAt, resendSecondsRemaining: challenge.resendSecondsRemaining });
   } catch (error) {
     if (error instanceof OtpRateLimitError) { res.status(429).json({ ok: false, error: error.message, resendAvailableAt: error.resendAvailableAt, resendSecondsRemaining: error.resendSecondsRemaining }); return; }
@@ -505,8 +522,13 @@ router.post("/auth/otp/request", requireAuth, async (req: AuthRequest, res) => {
     res.status(404).json({ ok: false, error: "User not found" });
     return;
   }
+  const phone = loginOtpPhone(user.phone);
+  if (parsed.data.channel === "SMS" && !phone) {
+    res.status(400).json({ ok: false, error: "A valid Nigerian phone number is required for SMS verification" });
+    return;
+  }
   try {
-    const challenge = await createOtpChallenge(user.id, parsed.data.action, user.phone, user.email, parsed.data.channel);
+    const challenge = await createOtpChallenge(user.id, parsed.data.action, phone, user.email, parsed.data.channel);
     res.status(201).json({
       ok: true,
       challengeId: challenge.id,
@@ -701,6 +723,12 @@ router.put("/user/settings", requireAuth, (req: AuthRequest, res) => {
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const user = users.find((item) => item.id === req.user?.id);
   if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  const preferredOtpChannel = parsed.data.preferredOtpChannel ?? user.preferredOtpChannel ?? "EMAIL";
+  const otpLoginEnabled = parsed.data.otpLoginEnabled ?? (user.otpLoginEnabled === true);
+  if (otpLoginEnabled && preferredOtpChannel === "SMS" && !loginOtpPhone(user.phone)) {
+    res.status(400).json({ ok: false, error: "Add a valid Nigerian phone number before enabling SMS two-step login" });
+    return;
+  }
   if (parsed.data.preferredOtpChannel !== undefined) user.preferredOtpChannel = parsed.data.preferredOtpChannel;
   if (parsed.data.otpLoginEnabled !== undefined) user.otpLoginEnabled = parsed.data.otpLoginEnabled;
   user.updatedAt = new Date().toISOString();
@@ -715,7 +743,7 @@ router.patch("/me", requireAuth, (req: AuthRequest, res) => {
   }
   const schema = z.object({
     fullName: z.string().min(2).max(120).optional(),
-    phone: z.string().min(7).max(20).optional(),
+    phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")).optional(),
     dateOfBirth: z.string().optional(),
     residentialAddress: z.record(z.unknown()).optional(),
     occupation: z.string().optional(),
