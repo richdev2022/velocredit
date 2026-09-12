@@ -751,7 +751,8 @@ router.post("/me/roles/add", requireAuth, (req: AuthRequest, res) => {
 
 router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   const kyc = findOrCreateKycCase(req.user!.id);
-  if (!kyc.checklist.proofOfAddress && kyc.status === "PENDING_VERIFICATION") {
+  const requiredChecks = ["bvn", "nin", "liveness", "proofOfAddress", "signature"] as const;
+  if (!requiredChecks.every((key) => kyc.checklist[key]) && ["PENDING_VERIFICATION", "VERIFIED"].includes(kyc.status)) {
     kyc.status = "IN_PROGRESS";
     kyc.submittedAt = undefined;
     kyc.updatedAt = new Date().toISOString();
@@ -2774,7 +2775,8 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
   }
   const before = { ...kyc };
   const requiredChecks = ["bvn", "nin", "liveness", "proofOfAddress", "signature"] as const;
-  if (parsed.data.decision === "VERIFIED" && !requiredChecks.every((key) => kyc.checklist[key])) {
+  const proposedChecklist = { ...kyc.checklist, ...parsed.data.checklistOverride };
+  if (parsed.data.decision === "VERIFIED" && !requiredChecks.every((key) => proposedChecklist[key])) {
     res.status(400).json({ ok: false, error: "Every required KYC check must be approved before verifying the overall KYC status." });
     return;
   }
@@ -2782,6 +2784,7 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
     res.status(400).json({ ok: false, error: "A rejection reason is required" });
     return;
   }
+  if (parsed.data.checklistOverride) Object.assign(kyc.checklist, parsed.data.checklistOverride);
   kyc.status = parsed.data.decision as KycStatus;
   kyc.reviewedBy = (req as AuthRequest).user?.id ?? "unknown-admin";
   kyc.reviewedAt = new Date().toISOString();
@@ -2794,7 +2797,6 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
   if (parsed.data.decision === "VERIFIED") {
     for (const category of ["BVN", "NIN", "LIVENESS", "ADDRESS", "SIGNATURE"] as KycCategory[]) setKycCategoryResult(kyc, category, "VERIFIED");
   }
-  if (parsed.data.checklistOverride) Object.assign(kyc.checklist, parsed.data.checklistOverride);
   kyc.updatedAt = new Date().toISOString();
   if (parsed.data.checklistOverride) markKycChecklistComplete(kyc.userId);
   const user = users.find((u) => u.id === kyc.userId);

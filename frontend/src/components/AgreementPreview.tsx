@@ -39,7 +39,7 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
       </div>
       <div
         ref={contentRef}
-        className="agreement-print p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content"
+        className="agreement-print max-h-[70vh] overflow-y-auto p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content"
         dangerouslySetInnerHTML={{ __html: agreementCss() + html }}
       />
       <div className="no-print border-t border-slate-100 px-4 py-2 text-xs text-slate-500" aria-live="polite">

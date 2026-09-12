@@ -679,6 +679,7 @@ export default function InvestorDashboard() {
               totalCapital={totalCapital}
               returnRate={returnRate}
               investments={investments}
+              data={data}
               kyc={kyc}
               transactions={transactions}
               openAction={openAction}
@@ -842,8 +843,17 @@ export default function InvestorDashboard() {
 }
 
 function InvestorOverview(props: any) {
-  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, returnRate, investments, kyc, transactions, openAction, action, plans, openFundModal, openInvestModal, goToTransactions } = props;
+  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, returnRate, investments, data, kyc, transactions, openAction, action, plans, openFundModal, openInvestModal, goToTransactions } = props;
   const payoutCount = transactions?.payouts?.length ?? 0;
+  const checklist = kyc?.checklist ?? {};
+  const onboardingRequirements: readonly [string, string, boolean][] = [
+    ["Identity info", "Legal name, DOB, contact", Boolean(checklist.bvn || checklist.nin)],
+    ["BVN verification", "11-digit bank verification", Boolean(checklist.bvn)],
+    ["NIN verification", "National ID number check", Boolean(checklist.nin)],
+    ["Proof of address", "Utility bill or statement", Boolean(checklist.proofOfAddress)],
+    ["Payout account", "Bank account for returns", Boolean(data?.payoutAccount?.status === "VERIFIED")],
+  ];
+  const completedOnboardingRequirements = onboardingRequirements.filter(([, , completed]) => completed).length;
   return (
     <div className="space-y-6">
         <div>
@@ -1643,7 +1653,7 @@ function InvestorKyc(props: any) {
                 )}
               </div>
               <label className={`group relative flex flex-col items-center justify-center gap-2 w-full min-h-[120px] rounded-2xl border-2 border-dashed cursor-pointer transition-all px-5 py-4 text-center ${kycBusy === "SIGNATURE" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : checklist.signature ? "border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-400 dark:border-emerald-700/60 dark:bg-emerald-900/10 dark:hover:bg-emerald-900/20" : "border-slate-300 bg-slate-50 hover:border-velo-500 hover:bg-velo-50/50 hover:shadow-sm dark:border-slate-600 dark:bg-slate-900/30 dark:hover:border-velo-400 dark:hover:bg-velo-950/20"}`}>
-                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "SIGNATURE"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSignature(file); }} />
+                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "SIGNATURE" || kyc?.status === "VERIFIED"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSignature(file); }} />
                 <div className={`flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${checklist.signature ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-200 dark:group-hover:bg-emerald-800/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 group-hover:bg-velo-100 dark:group-hover:bg-velo-900/40 group-hover:text-velo-600 dark:group-hover:text-velo-400"}`}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                     <path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1651,7 +1661,7 @@ function InvestorKyc(props: any) {
                 </div>
                 <div>
                   <div className={`text-sm font-semibold ${checklist.signature ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-300"}`}>
-                    {kycBusy === "SIGNATURE" ? "Uploading…" : checklist.signature ? "Signature attached · click to replace" : "Click to upload signature"}
+                    {kycBusy === "SIGNATURE" ? "Uploading…" : kyc?.status === "VERIFIED" ? "Signature verified and locked" : checklist.signature ? "Signature attached · click to replace" : "Click to upload signature"}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">PDF, JPG, or PNG — clear image of your handwritten signature.</div>
                 </div>
@@ -1673,7 +1683,7 @@ function InvestorKyc(props: any) {
                 )}
               </div>
               <label className={`group relative flex flex-col items-center justify-center gap-2 w-full min-h-[120px] rounded-2xl border-2 border-dashed cursor-pointer transition-all px-5 py-4 text-center ${kycBusy === "PROOF_OF_ADDRESS" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : checklist.proofOfAddress ? "border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-400 dark:border-emerald-700/60 dark:bg-emerald-900/10 dark:hover:bg-emerald-900/20" : "border-slate-300 bg-slate-50 hover:border-velo-500 hover:bg-velo-50/50 hover:shadow-sm dark:border-slate-600 dark:bg-slate-900/30 dark:hover:border-velo-400 dark:hover:bg-velo-950/20"}`}>
-                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />
+                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "PROOF_OF_ADDRESS" || kyc?.status === "VERIFIED"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadProofOfAddress(file); }} />
                 <div className={`flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${checklist.proofOfAddress ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-200 dark:group-hover:bg-emerald-800/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 group-hover:bg-velo-100 dark:group-hover:bg-velo-900/40 group-hover:text-velo-600 dark:group-hover:text-velo-400"}`}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                     <path d="M12 16V4m0 0L7 9m5-5l5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1682,7 +1692,7 @@ function InvestorKyc(props: any) {
                 </div>
                 <div>
                   <div className={`text-sm font-semibold ${checklist.proofOfAddress ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-300"}`}>
-                    {kycBusy === "PROOF_OF_ADDRESS" ? "Uploading…" : checklist.proofOfAddress ? "File attached · click to replace" : "Click to upload document"}
+                    {kycBusy === "PROOF_OF_ADDRESS" ? "Uploading…" : kyc?.status === "VERIFIED" ? "Proof of address verified and locked" : checklist.proofOfAddress ? "File attached · click to replace" : "Click to upload document"}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">PDF, JPG, or PNG — recent utility bill or bank statement.</div>
                 </div>
@@ -2111,8 +2121,8 @@ function InvestorPayoutSection(props: any) {
   useEffect(() => { void loadBanks(); void reloadAccounts(); }, [userId]);
 
   useEffect(() => {
-    if (selectedBank && accountNumber.length === 10 && !resolvedName && !resolveError && busy !== "resolve") void resolveAccount();
-  }, [selectedBank, accountNumber]);
+    if (selectedBank && /^\d{10}$/.test(accountNumber) && !resolvedName && !resolveError && busy !== "resolve") void resolveAccount();
+  }, [selectedBank, accountNumber, resolvedName, resolveError, busy]);
 
   async function resolveAccount() {
     if (!selectedBank || accountNumber.length < 10) return;
@@ -2140,7 +2150,7 @@ function InvestorPayoutSection(props: any) {
     try {
       const bankName = banks.find(b => b.code === selectedBank)?.name;
       const res = await fetch(`${config.apiUrl}/api/v1/investor/payout-accounts`, {
-        method: accounts.length ? "PUT" : "POST",
+        method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${getAccessToken()}` },
         body: JSON.stringify({ bankCode: selectedBank, bankName, accountNumber, accountName: resolvedName }),
       });

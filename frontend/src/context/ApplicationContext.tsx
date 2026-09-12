@@ -262,7 +262,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       calculation: null,
       documents: {},
       witness: { fullName: "", phone: "" },
-      agreement: { generatedAt: null, generatedHtml: null, signedAgreementAccepted: false },
+      agreement: { generatedAt: null, executionDate: null, generatedHtml: null, signedAgreementAccepted: false },
       createdAt: now,
       updatedAt: now,
       submittedAt: null,

@@ -15,22 +15,27 @@ export default function AgreementSection() {
   const [stage, setStage] = useState<Stage>(() => application?.agreement?.generatedHtml ? "generated" : "not-generated");
   const [readToEnd, setReadToEnd] = useState(false);
 
+  useEffect(() => {
+    if (stage === "not-generated" || !application || !application.agreement.generatedHtml || !calculation) return;
+    const currentApplication = application;
+    const { html } = generateLoanAgreement(currentApplication, calculation);
+    if (html !== currentApplication.agreement.generatedHtml) patchAgreement({ generatedHtml: html });
+  }, [application, calculation, patchAgreement, stage]);
+
+  const handleReadToEnd = useCallback((read: boolean) => setReadToEnd(read), []);
+
   if (!application || !calculation) return null;
+  const currentApplication = application;
+  const currentCalculation = calculation;
 
   function handleGenerate() {
     const executionDate = new Date().toISOString();
-    const { html } = generateLoanAgreement({ ...application, agreement: { ...application.agreement, executionDate } }, calculation);
+    const agreement = { ...currentApplication.agreement, executionDate };
+    const { html } = generateLoanAgreement({ ...currentApplication, agreement }, currentCalculation);
     patchAgreement({ generatedAt: executionDate, executionDate, generatedHtml: html });
     setStage("generated");
   }
 
-  useEffect(() => {
-    if (stage === "not-generated" || !application.agreement?.generatedHtml) return;
-    const { html } = generateLoanAgreement(application, calculation);
-    if (html !== application.agreement.generatedHtml) patchAgreement({ generatedHtml: html });
-  }, [application, calculation, patchAgreement, stage]);
-
-  const handleReadToEnd = useCallback((read: boolean) => setReadToEnd(read), []);
 
   function handleAcceptConsent(checked: boolean) {
     if (!readToEnd) return;
@@ -38,7 +43,7 @@ export default function AgreementSection() {
   }
 
   function handleContinue() {
-    if (!readToEnd || !application.agreement?.signedAgreementAccepted || stage !== "generated") return;
+    if (!readToEnd || !currentApplication.agreement.signedAgreementAccepted || stage !== "generated") return;
     markSectionStatus("agreement", "completed");
     navigate("/apply/dashboard");
   }

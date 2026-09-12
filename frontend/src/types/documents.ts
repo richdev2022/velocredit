@@ -29,6 +29,8 @@ export interface UploadedDocument {
   status: "queued" | "uploading" | "uploaded" | "error";
   /** Drive file URL returned by the backend, once uploaded */
   driveUrl?: string;
+  /** Preview URL supplied by the backend for image documents */
+  previewUrl?: string;
   /** Error message, if any */
   error?: string;
   /** When the document was added */
