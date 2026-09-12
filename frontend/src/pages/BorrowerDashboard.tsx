@@ -56,6 +56,11 @@ type CreditData = {
   };
 };
 
+function MenuIcon({ name }: { name: string }) {
+  const paths: Record<string, React.ReactNode> = { grid: <><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></>, document: <><path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></>, wallet: <><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18M16 15h2"/></>, star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>, check: <path d="m5 12 4 4L19 6"/>, bank: <><path d="M3 10h18M5 10v8m4-8v8m6-8v8m4-8v8M3 20h18L12 4 3 10Z"/></>, user: <><circle cx="12" cy="8" r="3"/><path d="M5 21c.8-4 3.1-6 7-6s6.2 2 7 6"/></> };
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.grid}</svg>;
+}
+
 export default function BorrowerDashboard() {
   const { user, addUserRole } = useAuth();
   const navigate = useNavigate();
@@ -76,13 +81,13 @@ export default function BorrowerDashboard() {
   const [repayModeMsg, setRepayModeMsg] = useState("");
 
   const borrowerMenu: Array<{ key: typeof view; label: string; icon: string; hint?: string }> = [
-    { key: "overview", label: "Overview", icon: "🏠", hint: "Summary & KPIs" },
-    { key: "applications", label: "Applications", icon: "📝", hint: "Loan requests" },
-    { key: "repayments", label: "Repayments", icon: "💸", hint: "Schedules & history" },
-    { key: "credit", label: "Credit score", icon: "⭐", hint: "Score & factors" },
-    { key: "kyc", label: "Verification", icon: "✅", hint: "Identity checks" },
-    { key: "account", label: "Disbursement", icon: "🏦", hint: "Bank account" },
-    { key: "profile", label: "Profile", icon: "👤", hint: "Personal information" },
+    { key: "overview", label: "Overview", icon: "grid", hint: "Summary & KPIs" },
+    { key: "applications", label: "Applications", icon: "document", hint: "Loan requests" },
+    { key: "repayments", label: "Repayments", icon: "wallet", hint: "Schedules & history" },
+    { key: "credit", label: "Credit score", icon: "star", hint: "Score & factors" },
+    { key: "kyc", label: "Verification", icon: "check", hint: "Identity checks" },
+    { key: "account", label: "Disbursement", icon: "bank", hint: "Bank account" },
+    { key: "profile", label: "Profile", icon: "user", hint: "Personal information" },
   ];
 
   useEffect(() => {
@@ -290,7 +295,7 @@ export default function BorrowerDashboard() {
                       }`}
                     >
                       <span className={`text-xl shrink-0 ${isActive ? "" : "opacity-90"}`}>
-                        {item.icon}
+                        <MenuIcon name={item.icon} />
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className={`text-sm font-bold ${isActive ? "" : "group-hover:font-extrabold"}`}>

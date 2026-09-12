@@ -26,6 +26,7 @@ import {
   getAccessToken,
 } from "../services/apiClient";
 import { config } from "../utils/config";
+import { documentDownloadUrl, documentPreviewUrl } from "../utils/documentLinks";
 
 const money = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -62,6 +63,7 @@ type KycData = {
   rejectionReason?: string;
   verifiedDetails?: Record<string, unknown>;
   identityPhoto?: string;
+  documents?: Array<{ id?: string; documentType?: string; fileName?: string; mimeType?: string; sizeBytes?: number; status?: string; createdAt?: string; uploadedAt?: string; provider?: string; providerFileId?: string; previewUrl?: string; downloadUrl?: string }>;
 };
 type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number };
 
@@ -101,13 +103,13 @@ export default function InvestorDashboard() {
   const [view, setView] = useState("overview" as "overview" | "wallet" | "investments" | "kyc" | "transactions" | "payout" | "profile");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const investorMenu: Array<{ key: typeof view; label: string; icon: string; hint?: string }> = [
-    { key: "overview", label: "Overview", icon: "🏠", hint: "Summary & KPIs" },
-    { key: "wallet", label: "Wallet", icon: "💳", hint: "Fund & withdraw" },
-    { key: "investments", label: "Investments", icon: "📈", hint: "Plans & positions" },
-    { key: "kyc", label: "Verification", icon: "✅", hint: "BVN / NIN / Liveness" },
-    { key: "transactions", label: "Transactions", icon: "🧾", hint: "Transactions & history" },
-    { key: "payout", label: "Payout account", icon: "🏦", hint: "Bank details" },
-    { key: "profile", label: "Profile", icon: "👤", hint: "Personal information" },
+    { key: "overview", label: "Overview", icon: "grid", hint: "Summary & KPIs" },
+    { key: "wallet", label: "Wallet", icon: "wallet", hint: "Fund & withdraw" },
+    { key: "investments", label: "Investments", icon: "chart", hint: "Plans & positions" },
+    { key: "kyc", label: "Verification", icon: "check", hint: "BVN / NIN / Liveness" },
+    { key: "transactions", label: "Transactions", icon: "document", hint: "Transactions & history" },
+    { key: "payout", label: "Payout account", icon: "bank", hint: "Bank details" },
+    { key: "profile", label: "Profile", icon: "user", hint: "Personal information" },
   ];
   const [otpMethodPickerFor, setOtpMethodPickerFor] = useState(null as "BVN" | "NIN" | null);
   const [otpPickerState, setOtpPickerState] = useState<{ phase: "idle" | "sending" | "success" | "error"; channel?: "SMS" | "WHATSAPP"; message?: string }>({ phase: "idle" });
@@ -343,7 +345,7 @@ export default function InvestorDashboard() {
     setKycError("");
     try {
       const response = await uploadKycDocument("PROOF_OF_ADDRESS", file);
-      setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"] }));
+      setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"], documents: [...(current?.documents || []).filter((doc) => doc.documentType !== "PROOF_OF_ADDRESS"), response.document] }));
       setMessage("Proof of address uploaded. Submit it for review when BVN and NIN are verified.");
     } catch (err) {
       setKycError(err instanceof Error ? err.message : "Unable to upload proof of address");
@@ -357,7 +359,7 @@ export default function InvestorDashboard() {
     setKycError("");
     try {
       const response = await uploadKycDocument("SIGNATURE", file);
-      setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"] }));
+      setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"], documents: [...(current?.documents || []).filter((doc) => doc.documentType !== "SIGNATURE"), response.document] }));
       setMessage("Signature uploaded successfully.");
     } catch (err) {
       setKycError(err instanceof Error ? err.message : "Unable to upload signature");
@@ -604,7 +606,7 @@ export default function InvestorDashboard() {
                           : "text-slate-600 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-slate-800/60 hover:text-velo-900 dark:hover:text-white"
                       }`}
                     >
-                      <span className={`text-xl shrink-0 ${active ? "" : "opacity-90"}`}>{item.icon}</span>
+                      <span className={`text-xl shrink-0 ${active ? "" : "opacity-90"}`}><MenuIcon name={item.icon} /></span>
                       <div className="flex-1 min-w-0">
                         <div className={`text-sm font-bold ${active ? "" : "group-hover:font-extrabold"}`}>{item.label}</div>
                         {item.hint && (
@@ -1311,6 +1313,15 @@ function InvestorInvestments(props: any) {
   );
 }
 
+function MenuIcon({ name }: { name: string }) {
+  const paths: Record<string, React.ReactNode> = { grid: <><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></>, wallet: <><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18M16 15h2"/></>, chart: <><path d="M4 19V5M4 19h16"/><path d="m7 15 4-4 3 2 5-7"/></>, check: <path d="m5 12 4 4L19 6"/>, document: <><path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></>, bank: <path d="M3 10h18M5 10v8m4-8v8m6-8v8m4-8v8M3 20h18L12 4 3 10Z"/>, user: <><circle cx="12" cy="8" r="3"/><path d="M5 21c.8-4 3.1-6 7-6s6.2 2 7 6"/></> };
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.grid}</svg>;
+}
+
+function FileIcon() {
+  return <svg width="28" height="28" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-400" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.6"/><path d="M8 13h8M8 17h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>;
+}
+
 function InvestorKyc(props: any) {
   const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, uploadSignature, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState } = props;
   const [error, setError] = useState("");
@@ -1707,6 +1718,23 @@ function InvestorKyc(props: any) {
                 <span>Proof of address can be utility bill, bank statement, house rent receipt that indicate the resident address and not older than 3 months.</span>
               </div>
             </div>
+            {kyc?.documents?.length ? (
+              <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                <h3 className="text-sm font-semibold text-velo-900 dark:text-white">Uploaded documents</h3>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {kyc.documents.map((doc: NonNullable<KycData["documents"]>[number]) => {
+                    const previewUrl = documentPreviewUrl(doc);
+                    const downloadUrl = documentDownloadUrl(doc);
+                    const isImage = /^image\//i.test(doc.mimeType || "");
+                    return <div key={doc.id || doc.documentType} className="flex items-center gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                      {isImage && previewUrl ? <img src={previewUrl} alt={doc.fileName || doc.documentType || "Uploaded document"} className="h-12 w-12 rounded-md object-cover" /> : <FileIcon />}
+                      <div className="min-w-0 flex-1"><div className="truncate text-xs font-semibold text-slate-800 dark:text-slate-200">{doc.fileName || doc.documentType || "Uploaded document"}</div><div className="text-[11px] text-slate-500">{doc.status || "Uploaded"}</div></div>
+                      <div className="flex shrink-0 gap-2">{previewUrl && <a href={previewUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-velo-600 hover:underline">Preview</a>}{downloadUrl && <a href={downloadUrl} download={doc.fileName} className="text-xs font-semibold text-slate-600 hover:underline">Download</a>}</div>
+                    </div>;
+                  })}
+                </div>
+              </div>
+            ) : null}
             <button type="button" onClick={submitAddressReview} disabled={!canSubmitAddressReview || busy || (kyc?.status === "PENDING_VERIFICATION" && Boolean(checklist.proofOfAddress))} className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50">
               {busy ? "Submitting…" : kyc?.status === "PENDING_VERIFICATION" && checklist.proofOfAddress ? "Under review" : "Submit documents for review"}
             </button>
