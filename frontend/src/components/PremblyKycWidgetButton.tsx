@@ -1,6 +1,7 @@
 import useIdentityPayKYC from "prembly-react-kyc";
 import { useMemo, useState } from "react";
 import { completePremblyWidgetVerification } from "../services/apiClient";
+import { useAuth } from "../context/AuthContext";
 
 interface Props {
   fullName?: string;
@@ -60,19 +61,23 @@ function extractSelfieImage(response: { data?: Record<string, unknown> }): strin
 }
 
 export default function PremblyKycWidgetButton({ fullName, email, phone, idType, idNumber, onResult }: Props) {
-  const [firstName = "", ...lastNames] = (fullName ?? "").trim().split(/\s+/);
+  const { user } = useAuth();
+  const resolvedEmail = (email ?? user?.email ?? "").trim();
+  const resolvedPhone = (phone ?? user?.phone ?? "").trim();
+  const normalizedPhone = resolvedPhone.replace(/[^\d+]/g, "");
+  const [firstName = "", ...lastNames] = (fullName ?? user?.fullName ?? "").trim().split(/\s+/);
   const widgetId = import.meta.env.VITE_PREMBLY_WIDGET_ID;
   const widgetKey = import.meta.env.VITE_PREMBLY_WIDGET_KEY;
   const cleanId = (idNumber ?? "").replace(/[^\d]/g, "");
-  const canRenderWidget = Boolean(widgetId && widgetKey && /^\d{11}$/.test(cleanId));
+  const canRenderWidget = Boolean(widgetId && widgetKey && /^\d{11}$/.test(cleanId) && firstName && resolvedEmail && normalizedPhone);
   const [sending, setSending] = useState(false);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
 
   const verifyWithPrembly = useIdentityPayKYC(useMemo(() => ({
     first_name: firstName,
     last_name: lastNames.join(" "),
-    email: email ?? "",
-    phone,
+    email: resolvedEmail,
+    phone: normalizedPhone,
     widget_key: widgetKey ?? "",
     widget_id: widgetId ?? "",
     metadata: { id_type: idType, id_number: cleanId },
@@ -102,7 +107,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
         setSending(false);
       });
     },
-  }), [cleanId, email, firstName, idType, lastNames, onResult, phone, widgetId, widgetKey]));
+  }), [cleanId, firstName, idType, lastNames, normalizedPhone, onResult, resolvedEmail, widgetId, widgetKey]));
 
   if (!widgetId || !widgetKey) {
     return (
@@ -124,12 +129,27 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
       </button>
     );
   }
+  function handleStart() {
+    if (!canRenderWidget) {
+      setLastError("Add your name, email, and phone number before starting the liveness check.");
+      return;
+    }
+    setSending(true);
+    setLastError(undefined);
+    try {
+      verifyWithPrembly();
+    } catch (error) {
+      setSending(false);
+      setLastError(error instanceof Error ? error.message : "Unable to start the liveness check.");
+    }
+  }
+
   return (
-    <div className="space-y-2 w-full">
+    <div className="w-full space-y-2">
       <button
         type="button"
-        onClick={verifyWithPrembly}
-        disabled={!canRenderWidget || sending}
+        onClick={handleStart}
+        disabled={sending}
         className="btn-primary inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-2 px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-60"
       >
         {sending ? (
@@ -147,7 +167,8 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
           </>
         )}
       </button>
-      {lastError && <p className="text-xs font-medium text-red-600">{lastError}</p>}
+      {!canRenderWidget && !lastError && <p className="text-xs text-slate-500">Your account contact details are required to start the secure camera check.</p>}
+      {lastError && <p className="break-words text-xs font-medium text-red-600">{lastError}</p>}
     </div>
   );
 }
