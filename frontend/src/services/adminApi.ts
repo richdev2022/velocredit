@@ -58,7 +58,7 @@ export async function adminUpdateStatus(id: string, status: string) { const deci
 export async function adminListStats(): Promise<AdminStats> { const response = await request<{ totals: Record<string, number> }>("/api/v1/admin/summary"); return { counts: {}, total: response.totals.users || 0, totalLoanAmount: 0, totalRepayment: 0, totalLoanDisbursed: 0, realizedRevenue: 0, awaitingRevenue: response.totals.pendingPayments || 0 }; }
 export async function adminSaveConfig(overrides: AdminConfigOverride) { return overrides; }
 export async function adminResetConfig() { return { ok: true }; }
-export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loans", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
+export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loans", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
 export type AdminPermission = typeof ADMIN_PERMISSIONS[number];
 export interface LoanManager { id: string; email: string; fullName: string; phone: string; role: "LOAN_MANAGER"; adminPermissions?: AdminPermission[]; isActive?: boolean; createdAt: string; }
 export async function adminListLoanManagers(): Promise<{ ok: true; managers: LoanManager[] }> { return request("/api/v1/admin/loan-managers"); }
@@ -193,6 +193,8 @@ export interface InvestorWithdrawal {
   createdAt: string;
   updatedAt: string;
   processedAt?: string;
+  retryCount?: number;
+  lastAttemptAt?: string;
 }
 
 export async function adminListWithdrawals(opts: { investorId?: string; status?: string; limit?: number; offset?: number } = {}): Promise<{
@@ -210,15 +212,8 @@ export async function adminListWithdrawals(opts: { investorId?: string; status?:
   return request(`${basePath}?${params.toString()}`);
 }
 
-export async function adminApproveWithdrawal(withdrawalId: string): Promise<{ ok: true; withdrawal: InvestorWithdrawal; providerResponse?: unknown }> {
-  return request(`/api/v1/admin/withdrawals/${encodeURIComponent(withdrawalId)}/approve`, { method: "PUT" });
-}
-
-export async function adminRejectWithdrawal(withdrawalId: string, reason?: string): Promise<{ ok: true; withdrawal: InvestorWithdrawal }> {
-  return request(`/api/v1/admin/withdrawals/${encodeURIComponent(withdrawalId)}/reject`, {
-    method: "PUT",
-    body: JSON.stringify({ reason }),
-  });
+export async function adminRetryWithdrawal(withdrawalId: string): Promise<{ ok: true; withdrawal: InvestorWithdrawal; providerResponse?: unknown; message?: string }> {
+  return request(`/api/v1/admin/withdrawals/${encodeURIComponent(withdrawalId)}/retry`, { method: "POST" });
 }
 
 export type DisbursementStatus = "PENDING" | "PROCESSING" | "SUCCESSFUL" | "FAILED" | "PENDING_APPROVAL";

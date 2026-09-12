@@ -88,7 +88,7 @@ import {
   listBanks,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
@@ -162,6 +162,28 @@ async function notifyKyc(user: { email: string; fullName: string }, status: "APP
 async function notifyLogin(user: { email: string; fullName: string }, req: AuthRequest | any): Promise<void> {
   const template = loginAttemptEmail({ name: user.fullName, device: req.get("user-agent") || "Unknown device", ipAddress: req.ip || "Unknown IP", attemptedAt: new Date().toISOString() });
   try { await sendEmail({ to: user.email, name: user.fullName, ...template }); } catch { /* notification failure must not block login */ }
+}
+
+const loanNotificationPermission = "loan_notifications" as const;
+function hasUnresolvedBorrowing(userId: string, excludeApplicationId?: string): boolean {
+  const openApplication = loanApplications.some((application) => application.borrowerId === userId && application.id !== excludeApplicationId && ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED"].includes(application.status));
+  const openLoan = loans.some((loan) => loan.borrowerId === userId && !["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(loan.status));
+  return openApplication || openLoan;
+}
+
+async function sendLoanEmails(application: (typeof loanApplications)[number], event: "SUBMITTED" | "APPROVED" | "REJECTED"): Promise<void> {
+  const snapshot = application.customerSnapshot ?? {};
+  const borrower = users.find((user) => user.id === application.borrowerId);
+  const borrowerName = borrower?.fullName ?? String(snapshot.fullName ?? "Borrower");
+  const borrowerEmail = borrower?.email ?? String(snapshot.email ?? "");
+  const admins = users.filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || (user.roles.includes("LOAN_MANAGER") && user.adminPermissions?.includes(loanNotificationPermission))));
+  const recipients = [...admins.map((user) => ({ email: user.email, name: user.fullName })), ...(env.ADMIN_EMAIL ? [{ email: env.ADMIN_EMAIL, name: "Velo Administrator" }] : [])];
+  const uniqueRecipients = recipients.filter((recipient, index, all) => all.findIndex((item) => item.email.toLowerCase() === recipient.email.toLowerCase()) === index);
+  const amountNaira = Number(application.amountNaira ?? 0);
+  const messages = event === "SUBMITTED"
+    ? [{ email: borrowerEmail, name: borrowerName, ...loanApplicationSubmittedEmail({ name: borrowerName, applicationId: application.applicationId, amountNaira, recipient: "borrower" }) }, ...uniqueRecipients.map((recipient) => ({ ...recipient, ...loanApplicationSubmittedEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira, recipient: "reviewer" }) }))]
+    : [{ email: borrowerEmail, name: borrowerName, ...loanDecisionEmail({ name: borrowerName, applicationId: application.applicationId, status: event, amountNaira, note: application.manualNote }) }, ...uniqueRecipients.map((recipient) => ({ ...recipient, ...loanDecisionEmail({ name: recipient.name, applicationId: application.applicationId, status: event, amountNaira, note: application.manualNote }) }))];
+  await Promise.all(messages.filter((message) => message.email).map(async (message) => { try { await sendEmail({ to: message.email, name: message.name, subject: message.subject, html: message.html }); } catch { /* notification failure must not block loan processing */ } }));
 }
 const otpRequestSchema = z.object({
   action: z.enum([
@@ -1917,6 +1939,10 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     return;
   }
   const input = parsed.data;
+  if (hasUnresolvedBorrowing(req.user!.id)) {
+    res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
+    return;
+  }
   const kyc = findOrCreateKycCase(req.user!.id);
   if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
     res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
@@ -2179,7 +2205,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
   res.json({ ok: true, application });
 });
 
-router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
   if (!application) {
     res.status(404).json({ ok: false, error: "Application not found" });
@@ -2190,9 +2216,15 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
     res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
     return;
   }
+  if (hasUnresolvedBorrowing(req.user!.id, application.id)) {
+    res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
+    return;
+  }
+  const wasSubmitted = Boolean(application.submittedAt);
   application.status = "SUBMITTED";
   application.submittedAt = application.submittedAt ?? new Date().toISOString();
   application.updatedAt = new Date().toISOString();
+  if (!wasSubmitted) await sendLoanEmails(application, "SUBMITTED");
   res.json({ ok: true, application });
 });
 
@@ -2861,7 +2893,7 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), (req, res)
   });
 });
 
-router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parsed = z
     .object({
       decision: z.enum(["APPROVED", "REJECTED", "MORE_INFORMATION_REQUIRED"]),
@@ -2872,11 +2904,12 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const application = loanApplications.find((a) => a.id === req.params.loanId);
+  const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
   if (!application) {
     res.status(404).json({ ok: false, error: "Loan application not found" });
     return;
   }
+  const previousStatus = application.status;
   application.manualDecision = parsed.data.decision;
   application.manualNote = parsed.data.note;
   application.updatedAt = new Date().toISOString();
@@ -2939,10 +2972,12 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
     application.status = "MORE_INFORMATION_REQUIRED";
   }
   application.updatedAt = new Date().toISOString();
+  if (parsed.data.decision === "APPROVED" && previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
+  if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") await sendLoanEmails(application, "REJECTED");
   res.json({ ok: true, application });
 });
 
-router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parsed = z.object({
     decision: z.enum(["APPROVED", "REJECTED"]),
     note: z.string().max(2000).default(""),
@@ -2963,6 +2998,7 @@ router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("
     return;
   }
   seedLoanStageStatuses(application);
+  const previousStatus = application.status;
   const now = new Date().toISOString();
   application.stageStatuses[stageKey] = parsed.data.decision;
   if (parsed.data.decision === "REJECTED") {
@@ -2977,10 +3013,12 @@ router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("
     application.approvedAt = application.approvedAt ?? now;
     application.manualDecision = "APPROVED";
   }
+  if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") await sendLoanEmails(application, "REJECTED");
+  if (allApproved && previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
   res.json({ ok: true, application, allStagesApproved: allApproved });
 });
 
-router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parsed = z.object({ note: z.string().max(2000).default("") }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -2992,6 +3030,7 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
     return;
   }
   seedLoanStageStatuses(application);
+  const previousStatus = application.status;
   const now = new Date().toISOString();
   for (const stage of LOAN_STAGES) application.stageStatuses[stage.key] = "APPROVED";
   application.stageRejectionNotes = {};
@@ -3051,6 +3090,7 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
       createdAt: now,
     });
   }
+  if (previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
   res.json({ ok: true, application });
 });
 
@@ -3423,6 +3463,63 @@ router.get("/payments/flutterwave/return", (req, res) => {
 });
 
 
+function reverseInvestorWithdrawal(withdrawal: (typeof investorWithdrawals)[number], reason: string): void {
+  const wallet = findWallet(withdrawal.investorId);
+  if (wallet) {
+    appendLedger(wallet, {
+      entryType: "WITHDRAWAL_REVERSAL",
+      referenceId: withdrawal.id,
+      amountMinor: Math.round(Number(withdrawal.amountNaira) * 100),
+      direction: "CREDIT",
+      description: `Withdrawal reversal - ${reason}`,
+    });
+  }
+  const feeMinor = Math.round(Number(withdrawal.feeNaira) * 100);
+  if (feeMinor > 0) {
+    appendAdminLedger({
+      entryType: "REVERSAL",
+      referenceId: withdrawal.id,
+      investorId: withdrawal.investorId,
+      amountMinor: feeMinor,
+      direction: "DEBIT",
+      description: "Reverse withdrawal fee due to failed transfer",
+    });
+  }
+}
+
+async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals)[number]): Promise<{ transfer?: Record<string, unknown>; error?: string }> {
+  withdrawal.status = "PROCESSING";
+  withdrawal.retryCount = (withdrawal.retryCount ?? 0) + 1;
+  withdrawal.lastAttemptAt = new Date().toISOString();
+  withdrawal.updatedAt = withdrawal.lastAttemptAt;
+  try {
+    const transfer = await createInvestorPayout({
+      txRef: `WITHDRAWAL-${withdrawal.id}`,
+      amountNaira: Number(withdrawal.netNaira),
+      accountNumber: String(withdrawal.accountNumber),
+      accountBank: String(withdrawal.bankCode),
+      beneficiaryName: String(withdrawal.accountName),
+      narration: withdrawal.narration || `Velo investor withdrawal ${withdrawal.id}`,
+    });
+    const providerStatus = String(transfer.status ?? "").toLowerCase();
+    if (providerStatus !== "success") throw new Error(transfer.message || "Withdrawal provider rejected the transfer");
+    withdrawal.status = "SUCCESSFUL";
+    withdrawal.providerTransfer = transfer as unknown as Record<string, unknown>;
+    withdrawal.providerReference = String((transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? (transfer as unknown as { data?: { id?: number | string } }).data?.id ?? "");
+    withdrawal.error = undefined;
+    withdrawal.processedAt = new Date().toISOString();
+    withdrawal.updatedAt = withdrawal.processedAt;
+    return { transfer: transfer as unknown as Record<string, unknown> };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Withdrawal provider unavailable";
+    withdrawal.status = "FAILED";
+    withdrawal.error = message;
+    withdrawal.updatedAt = new Date().toISOString();
+    reverseInvestorWithdrawal(withdrawal, message);
+    return { error: message };
+  }
+}
+
 // ===============================
 // Investor withdrawal endpoint
 // ===============================
@@ -3516,13 +3613,16 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     bankName: resolvedBankName,
     accountNumber: parsed.data.accountNumber,
     accountName: resolvedAccountName,
-    status: "PENDING_APPROVAL" as const,
+    status: "PROCESSING" as const,
     narration: parsed.data.narration,
+    retryCount: 0,
+    lastAttemptAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
   investorWithdrawals.push(withdrawalEntry);
   debitEntry.referenceId = withdrawalId;
+  const execution = await executeInvestorWithdrawal(withdrawalEntry);
   const emailTpl = investorWithdrawalEmail({
     investorName: investor.fullName,
     withdrawalId,
@@ -3558,6 +3658,8 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
   res.json({
     ok: true,
     withdrawal: withdrawalEntry,
+    message: execution.error ? "Withdrawal failed and the wallet balance was restored." : "Withdrawal submitted successfully.",
+    providerResponse: execution.transfer,
     feeBreakdown: {
       flatNaira: Math.round(flatMinor) / 100,
       percentNaira: Math.round(feePercentMinor) / 100,
@@ -3770,74 +3872,49 @@ router.get("/admin/withdrawals", requireAuth, requireRole("ADMIN"), async (req, 
   res.json({ ok: true, total: items.length, withdrawals: items.slice(offset, offset + limit) });
 });
 
-router.put("/admin/withdrawals/:withdrawalId/approve", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+router.post("/admin/withdrawals/:withdrawalId/retry", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const withdrawalId = String(req.params.withdrawalId);
-  const w = investorWithdrawals.find((x) => x.id === withdrawalId);
-  if (!w) {
+  const withdrawal = investorWithdrawals.find((item) => item.id === withdrawalId);
+  if (!withdrawal) {
     res.status(404).json({ ok: false, error: "Withdrawal not found" });
     return;
   }
-  if (w.status !== "PENDING_APPROVAL") {
-    res.status(400).json({ ok: false, error: `Withdrawal already ${w.status}` });
+  if (withdrawal.status !== "FAILED") {
+    res.status(400).json({ ok: false, error: `Only failed withdrawals can be retried. Current status: ${withdrawal.status}` });
     return;
   }
-  try {
-    const netNaira = Number(w.netNaira);
-    const transfer = await createInvestorPayout({
-      txRef: `WITHDRAWAL-${w.id.slice(0, 8)}`,
-      amountNaira: netNaira,
-      accountNumber: String(w.accountNumber),
-      accountBank: String(w.bankCode),
-      beneficiaryName: String(w.accountName),
-      narration: `Velo investor withdrawal ${w.id}`,
-    });
-    w.status = "PROCESSING";
-    w.providerTransfer = transfer as any;
-    w.updatedAt = new Date().toISOString();
-    res.json({ ok: true, withdrawal: w, providerResponse: transfer });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-router.put("/admin/withdrawals/:withdrawalId/reject", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
-  const schema = z.object({ reason: z.string().max(200).optional() });
-  const parsed = schema.safeParse(req.body);
-  const { withdrawalId } = req.params;
-  const w = investorWithdrawals.find((x) => x.id === withdrawalId);
-  if (!w) {
-    res.status(404).json({ ok: false, error: "Withdrawal not found" });
+  const wallet = findWallet(withdrawal.investorId);
+  const amountMinor = Math.round(Number(withdrawal.amountNaira) * 100);
+  if (!wallet || wallet.availableMinor < amountMinor) {
+    res.status(400).json({ ok: false, error: "Insufficient wallet balance to retry this withdrawal" });
     return;
   }
-  if (w.status === "SUCCESSFUL") {
-    res.status(400).json({ ok: false, error: "Cannot reject already completed withdrawal" });
-    return;
-  }
-  const wallet = findWallet(w.investorId);
-  const amountMinor = Math.round(Number(w.amountNaira) * 100);
-  if (wallet) {
-    appendLedger(wallet, {
-      entryType: "WITHDRAWAL_REVERSAL",
-      referenceId: w.id,
-      amountMinor,
-      direction: "CREDIT",
-      description: `Withdrawal reversal - ${parsed.data?.reason ?? "Rejected by admin"}`,
-    });
-  }
-  const feeMinor = Math.round(Number(w.feeNaira) * 100);
-  if (feeMinor > 0) {
+  appendLedger(wallet, {
+    entryType: "WITHDRAWAL_INITIATED",
+    referenceId: withdrawal.id,
+    amountMinor,
+    direction: "DEBIT",
+    description: `Withdrawal retry to ${withdrawal.bankName} *${withdrawal.accountNumber.slice(-4)}`,
+    metadata: { bankCode: withdrawal.bankCode, accountNumber: withdrawal.accountNumber, feeMinor: Math.round(Number(withdrawal.feeNaira) * 100), netMinor: Math.round(Number(withdrawal.netNaira) * 100) },
+  });
+  const retryFeeMinor = Math.round(Number(withdrawal.feeNaira) * 100);
+  if (retryFeeMinor > 0) {
     appendAdminLedger({
-      entryType: "REVERSAL",
-      referenceId: w.id,
-      investorId: w.investorId,
-      amountMinor: feeMinor,
-      direction: "DEBIT",
-      description: "Reverse withdrawal fee due to rejection",
+      entryType: "WITHDRAWAL_FEE",
+      investorId: withdrawal.investorId,
+      referenceId: withdrawal.id,
+      amountMinor: retryFeeMinor,
+      direction: "CREDIT",
+      description: "Withdrawal fee collected on retry",
     });
   }
-  w.status = "REJECTED";
-  w.updatedAt = new Date().toISOString();
-  res.json({ ok: true, withdrawal: w });
+  const execution = await executeInvestorWithdrawal(withdrawal);
+  res.json({
+    ok: true,
+    withdrawal,
+    message: execution.error ? "Withdrawal retry failed and the wallet balance was restored." : "Withdrawal retry submitted successfully.",
+    providerResponse: execution.transfer,
+  });
 });
 
 router.get("/providers/flutterwave/banks", requireAuth, async (_req, res) => {

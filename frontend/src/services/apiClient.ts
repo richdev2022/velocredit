@@ -267,7 +267,7 @@ export async function requestEarlyLiquidity(input: LiquidityRequestInput): Promi
 }
 
 export interface InvestorWithdrawalInput { amountNaira: number; bankCode: string; accountNumber: string; narration?: string; otpChallengeId: string; otpCode: string; }
-export async function withdrawInvestorWallet(input: InvestorWithdrawalInput): Promise<{ ok: true; withdrawal: { id: string; status: string } }> {
+export async function withdrawInvestorWallet(input: InvestorWithdrawalInput): Promise<{ ok: true; withdrawal: { id: string; status: string }; message?: string; providerResponse?: unknown }> {
   return request("/api/v1/investor/wallet/withdraw", { method: "POST", body: JSON.stringify(input) });
 }
 

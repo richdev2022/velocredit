@@ -27,6 +27,17 @@ type DashboardData = {
     disbursedAt?: string;
     maturityDate?: string;
   }>;
+  loans?: Array<{
+    id?: string;
+    status?: string;
+    amountNaira?: number;
+    outstandingNaira?: number;
+    principalNaira?: number;
+    applicationId?: string;
+    tenureDays?: number;
+    disbursedAt?: string;
+    dueAt?: string;
+  }>;
   payments?: Array<{ status?: string; amountNaira?: number }>;
   repayments?: Array<{
     id?: string;
@@ -103,9 +114,9 @@ export default function BorrowerDashboard() {
         const d = dashboard as unknown as DashboardData;
         setData({
           ...d,
-          applications: Array.isArray((loans as { loans?: unknown[] }).loans)
-            ? ((loans as { loans: unknown[] }).loans as DashboardData["applications"])
-            : d.applications,
+          loans: Array.isArray((loans as { loans?: unknown[] }).loans)
+            ? ((loans as { loans: unknown[] }).loans as DashboardData["loans"])
+            : [],
           creditHistory: (history as { events?: unknown[] }).events ?? [],
         });
         setCredit(score as CreditData);
@@ -113,16 +124,15 @@ export default function BorrowerDashboard() {
       .catch((err) => setError(err instanceof Error ? err.message : "Unable to load borrower data"));
   }, [user]);
 
-  const active = data?.applications?.find((loan) =>
-    ["ACTIVE", "DISBURSED", "PAST_DUE"].includes(String(loan.status))
+  const active = data?.loans?.find((loan) =>
+    ["DISBURSEMENT_PENDING", "ACTIVE", "DISBURSED", "PAST_DUE", "DEFAULTED"].includes(String(loan.status))
   );
   const applicationStatus = data?.applications?.[0]?.status ?? "NOT_STARTED";
-  const hasSubmittedApplication =
-    data?.applications?.some(
-      (application) =>
-        Boolean(application.submittedAt) ||
-        !["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(String(application.status))
-    ) ?? false;
+  const hasSubmittedApplication = Boolean(
+    data?.applications?.some((application) =>
+      ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED"].includes(String(application.status))
+    ) || data?.loans?.some((loan) => !["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(String(loan.status)))
+  );
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const repayments = data?.repayments ?? data?.payments ?? [];
@@ -835,6 +845,7 @@ function BorrowerOverview(props: any) {
     data,
     credit,
     applicationStatus,
+    hasSubmittedApplication,
     repaymentProgress,
     paidRepayments,
     scheduledRepayments,
@@ -1174,9 +1185,15 @@ function BorrowerOverview(props: any) {
           )}
 
           <div className="mt-6 flex flex-wrap gap-3">
-            <Link to="/apply" className="btn-primary inline-flex items-center gap-2">
-              {data?.applications?.[0] ? "Continue Application" : "New Application"}
-            </Link>
+            {hasSubmittedApplication && !["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(String(applicationStatus)) ? (
+              <span className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                Application under review — no new loan applications until repayment
+              </span>
+            ) : (
+              <Link to="/apply" className="btn-primary inline-flex items-center gap-2">
+                {data?.applications?.[0] ? "Continue Application" : "New Application"}
+              </Link>
+            )}
           </div>
         </section>
 
