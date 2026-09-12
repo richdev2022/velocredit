@@ -151,6 +151,7 @@ export interface CollateralInfo {
 
 export interface AgreementState {
   generatedAt: string | null;
+  executionDate: string | null;
   generatedHtml: string | null;
   signedAgreementAccepted: boolean;
 }
