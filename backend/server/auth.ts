@@ -364,7 +364,7 @@ export function markKycChecklistComplete(userId: string): void {
       if (!kyc.submittedAt) kyc.submittedAt = now;
     }
   } else if (anyDone) {
-    if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
+    if (kyc.status !== "IN_PROGRESS") kyc.status = "IN_PROGRESS";
   } else {
     if (kyc.status !== "NOT_STARTED") kyc.status = "IN_PROGRESS";
   }
