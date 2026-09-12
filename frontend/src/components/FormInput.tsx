@@ -32,7 +32,7 @@ const FormInput = forwardRef<HTMLInputElement, FormInputProps>(function FormInpu
       )}
       <div className="relative">
         {prefix && (
-          <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-500 text-sm pointer-events-none">
+          <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500 text-sm pointer-events-none">
             {prefix}
           </span>
         )}
@@ -41,7 +41,7 @@ const FormInput = forwardRef<HTMLInputElement, FormInputProps>(function FormInpu
           ref={ref}
           aria-invalid={!!error}
           aria-describedby={describedBy}
-          className={`velo-input ${error ? "velo-input-error" : ""} ${prefix ? "pl-9" : ""} ${suffix ? "pr-12" : ""} ${className}`}
+          className={`velo-input ${error ? "velo-input-error" : ""} ${prefix ? "pl-10" : ""} ${suffix ? "pr-12" : ""} ${className}`}
           {...rest}
         />
         {suffix && (

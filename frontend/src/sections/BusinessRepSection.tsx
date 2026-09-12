@@ -3,10 +3,11 @@
 // Section 2 for Business Loan applicants.
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import FormInput from "../components/FormInput";
+import SearchableSelect from "../components/SearchableSelect";
 import SelectInput from "../components/SelectInput";
 import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
@@ -56,6 +57,7 @@ export default function BusinessRepSection() {
   const [resolvedName, setResolvedName] = useState<string | null>(application.disbursementAccount?.accountName ?? null);
   const [resolveError, setResolveError] = useState("");
   const [busy, setBusy] = useState("");
+  const resolvedPairsRef = useRef<Map<string, boolean>>(new Map());
 
   useEffect(() => {
     if (selectedBank) {
@@ -70,6 +72,16 @@ export default function BusinessRepSection() {
   useEffect(() => {
     void loadBanks();
   }, []);
+
+  useEffect(() => {
+    if (!selectedBank) return;
+    const accountNumber = accountForm.watch("accountNumber") || "";
+    const cleaned = accountNumber.replace(/\D/g, "");
+    if (cleaned.length !== 10) return;
+    const key = `${selectedBank}|${cleaned}`;
+    if (resolvedPairsRef.current.has(key)) return;
+    void resolveAccount();
+  }, [selectedBank, accountForm.watch("accountNumber")]);
 
   async function loadBanks() {
     if (banks.length) return;
@@ -89,7 +101,11 @@ export default function BusinessRepSection() {
   async function resolveAccount() {
     if (!selectedBank) return;
     const accountNumber = accountForm.watch("accountNumber") || "";
-    if (accountNumber.length < 10) return;
+    const cleaned = accountNumber.replace(/\D/g, "");
+    if (cleaned.length < 10) return;
+    const key = `${selectedBank}|${cleaned}`;
+    if (resolvedPairsRef.current.has(key)) return;
+    resolvedPairsRef.current.set(key, true);
     setResolveError("");
     setResolvedName(null);
     setBusy("resolve");
@@ -100,7 +116,7 @@ export default function BusinessRepSection() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${getAccessToken()}`,
         },
-        body: JSON.stringify({ bankCode: selectedBank, accountNumber }),
+        body: JSON.stringify({ bankCode: selectedBank, accountNumber: cleaned }),
       }).then((r) => r.json());
       if (res.ok) {
         const accountName = res.accountName || res.resolved?.accountName || "";
@@ -205,42 +221,29 @@ export default function BusinessRepSection() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
             <FormInput label="Account Name" required placeholder="Retrieved after account verification" error={accountForm.formState.errors.accountName?.message} readOnly {...accountForm.register("accountName")} />
-            <label className="flex flex-col">
-              <span className="mb-1 text-sm font-semibold text-velo-900">
-                Bank <span className="text-red-500">*</span>
-              </span>
-              <select
-                className="mt-1 w-full rounded-xl border border-velo-200 bg-white px-3 py-2.5 text-sm text-velo-900 shadow-sm focus:border-velo-500 focus:outline-none focus:ring-2 focus:ring-velo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                value={selectedBank}
-                onChange={(e) => {
-                  const code = e.target.value;
-                  setSelectedBank(code);
-                  setResolvedName(null);
-                  setResolveError("");
-                  accountForm.setValue("accountName", "", { shouldValidate: true, shouldDirty: true });
-                  patchDisbursementAccount({ accountName: "" });
-                  const bank = banks.find((b) => b.code === code);
-                  if (bank) {
-                    accountForm.setValue("bankName", bank.name, { shouldValidate: true });
-                    patchDisbursementAccount({ bankCode: code, bankName: bank.name });
-                  }
-                }}
-                required
-                disabled={busy === "banks"}
-              >
-                <option value="">
-                  {busy === "banks" ? "Loading banks…" : "Select your bank"}
-                </option>
-                {banks.map((b) => (
-                  <option key={b.code} value={b.code}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-              {accountForm.formState.errors.bankName?.message && (
-                <span className="mt-1 text-xs text-red-600">{accountForm.formState.errors.bankName.message}</span>
-              )}
-            </label>
+            <SearchableSelect
+              label="Bank"
+              required
+              placeholder="Select your bank"
+              busyPlaceholder="Loading banks…"
+              busy={busy === "banks"}
+              disabled={busy === "banks"}
+              error={accountForm.formState.errors.bankName?.message}
+              value={selectedBank}
+              options={banks.map((b) => ({ value: b.code, label: b.name }))}
+              onChange={(code) => {
+                setSelectedBank(code);
+                setResolvedName(null);
+                setResolveError("");
+                accountForm.setValue("accountName", "", { shouldValidate: true, shouldDirty: true });
+                patchDisbursementAccount({ accountName: "" });
+                const bank = banks.find((b) => b.code === code);
+                if (bank) {
+                  accountForm.setValue("bankName", bank.name, { shouldValidate: true });
+                  patchDisbursementAccount({ bankCode: code, bankName: bank.name });
+                }
+              }}
+            />
           </div>
           <FormInput
             label="Account Number"
@@ -261,7 +264,9 @@ export default function BusinessRepSection() {
             }}
             onBlur={() => {
               const accNo = accountForm.watch("accountNumber") || "";
-              if (selectedBank && accNo.length === 10) void resolveAccount();
+              const cleaned = accNo.replace(/\D/g, "");
+              const key = `${selectedBank}|${cleaned}`;
+              if (selectedBank && cleaned.length === 10 && !resolvedPairsRef.current.has(key)) void resolveAccount();
             }}
           />
           {busy === "resolve" && (

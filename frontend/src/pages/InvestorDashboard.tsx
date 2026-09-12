@@ -768,8 +768,8 @@ export default function InvestorDashboard() {
               <label className="velo-label block">
                 Amount (NGN)
                 <div className="relative mt-1">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">₦</span>
-                  <input className="velo-input pl-8 font-bold" type="number" min="1000" step="100" value={fundModalAmount} onChange={(e) => setFundModalAmount(e.target.value)} required autoFocus />
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500 font-bold text-sm pointer-events-none">₦</span>
+                  <input className="velo-input pl-10 font-bold" type="number" min="1000" step="100" value={fundModalAmount} onChange={(e) => setFundModalAmount(e.target.value)} required autoFocus />
                 </div>
                 <span className="mt-1 block text-xs text-slate-500">Minimum deposit: ₦1,000</span>
               </label>
@@ -805,8 +805,8 @@ export default function InvestorDashboard() {
               <label className="velo-label block">
                 Amount to invest (NGN)
                 <div className="relative mt-1">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">₦</span>
-                  <input className="velo-input pl-8 font-bold" type="number" min={investModalPlan.minAmountNaira} max={investModalPlan.maxAmountNaira} step="100" value={investModalAmount} onChange={(e) => setInvestModalAmount(e.target.value)} required autoFocus />
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500 font-bold text-sm pointer-events-none">₦</span>
+                  <input className="velo-input pl-10 font-bold" type="number" min={investModalPlan.minAmountNaira} max={investModalPlan.maxAmountNaira} step="100" value={investModalAmount} onChange={(e) => setInvestModalAmount(e.target.value)} required autoFocus />
                 </div>
               </label>
               <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">

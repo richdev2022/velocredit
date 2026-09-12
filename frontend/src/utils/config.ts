@@ -231,6 +231,7 @@ const basePrograms: Record<LoanProgramKey, LoanProgramConfig> = {
   PERSONAL: buildProgram({
     ...baseProgram,
     fees: { ...baseProgram.fees, interest: personalInterest },
+    collateral: { enabled: true, required: true },
   }),
   BUSINESS: buildProgram({
     ...baseProgram,
