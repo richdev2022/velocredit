@@ -18,7 +18,7 @@ export default function AgreementSection() {
   if (!application || !calculation) return null;
 
   function handleGenerate() {
-    const executionDate = application.agreement?.executionDate || new Date().toISOString();
+    const executionDate = new Date().toISOString();
     const { html } = generateLoanAgreement({ ...application, agreement: { ...application.agreement, executionDate } }, calculation);
     patchAgreement({ generatedAt: executionDate, executionDate, generatedHtml: html });
     setStage("generated");

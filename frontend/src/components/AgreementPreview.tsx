@@ -29,14 +29,6 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
     return () => content.removeEventListener("scroll", updateReadState);
   }, [html, onReadToEnd]);
 
-  function printAgreement() {
-    document.body.classList.add("printing-agreement");
-    window.setTimeout(() => {
-      window.print();
-      document.body.classList.remove("printing-agreement");
-    }, 0);
-  }
-
   return (
     <div className="agreement-print-target velo-card overflow-hidden">
       <div className="no-print flex items-center justify-between px-4 sm:px-5 py-3 border-b border-slate-100 bg-slate-50/50">
@@ -44,15 +36,14 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
           <h3 className="text-sm font-semibold text-velo-900">Agreement Preview</h3>
           <p className="text-xs text-slate-500">Scroll to read the complete agreement before continuing.</p>
         </div>
-        <button type="button" onClick={printAgreement} className="btn-secondary text-xs">Print agreement</button>
       </div>
       <div
         ref={contentRef}
-        className="agreement-print max-h-[460px] overflow-y-auto p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content"
+        className="agreement-print p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content"
         dangerouslySetInnerHTML={{ __html: agreementCss() + html }}
       />
       <div className="no-print border-t border-slate-100 px-4 py-2 text-xs text-slate-500" aria-live="polite">
-        {readToEnd ? "You have reached the end of the agreement." : "Scroll to the end of the agreement to enable acknowledgement."}
+{readToEnd ? "You have reviewed the complete agreement." : "Review the complete agreement to enable acknowledgement."}
       </div>
     </div>
   );

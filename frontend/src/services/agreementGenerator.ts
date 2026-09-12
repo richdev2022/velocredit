@@ -63,7 +63,7 @@ export function buildPlaceholderMap(
     LOAN_PURPOSE:          app.loanRequest?.purpose || "—",
     COMPANY_NAME:          config.companyName,
     COMPANY_WEBSITE:       config.companyWebsite,
-    TODAY:                 formatDateLabel(app.agreement?.executionDate || app.agreement?.generatedAt || new Date().toISOString()),
+    TODAY:                 formatDateLabel(new Date().toISOString()),
     SIGNATORY_NAME:        "—",
     REPRESENTATIVE_NAME:   "—",
     REPRESENTATIVE_POSITION: "—",
@@ -108,12 +108,12 @@ function documentImage(document: { data?: string; type?: string } | undefined, l
 
 function maskBvn(bvn?: string): string {
   if (!bvn || bvn.length < 11) return "—";
-  return `*****${bvn.slice(-3)}`;
+  return `*******${bvn.slice(-4)}`;
 }
 
 function maskNin(nin?: string): string {
   if (!nin || nin.length < 11) return "—";
-  return `*****${nin.slice(-3)}`;
+  return `*******${nin.slice(-4)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ export function generateLoanAgreement(
   calc: LoanCalculation
 ): GeneratedAgreement {
   const map = buildPlaceholderMap(app, calc);
-  const agreementDate = formatDateLabel(app.agreement?.executionDate || app.agreement?.generatedAt || new Date().toISOString());
+  const agreementDate = formatDateLabel(new Date().toISOString());
   const lenderSignature = config.lenderSignatorySignatureUrl
     ? `<img class="agreement-media" src="${escapeHtml(config.lenderSignatorySignatureUrl)}" alt="Lender authorised signatory signature" />`
     : `<div class="media-placeholder">Lender signature not configured</div>`;
@@ -381,7 +381,7 @@ Repayment Due: ${calc.repaymentDateLabel}
 Purpose: ${purpose}
 Late Fee: ${formatNaira(calc.lateFee)}
 
-3.-12. See full printed / downloaded PDF Agreement for complete Terms & Conditions (Purpose, Interest, Fees, Repayment, Default, Credit Bureau, Privacy, Governing Law, Execution).
+3.-12. This electronic agreement includes the complete Terms & Conditions (Purpose, Interest, Fees, Repayment, Default, Credit Bureau, Privacy, Governing Law, Execution).
 
 END OF LOAN AGREEMENT
 `;
