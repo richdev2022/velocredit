@@ -576,6 +576,17 @@ export interface LoanProduct {
   updatedAt?: string;
 }
 
+export interface ApplicationDraft {
+  id: string;
+  userId: string;
+  applicationId: string;
+  applicantType: "PERSONAL" | "BUSINESS";
+  data: Record<string, unknown>;
+  lastSectionIndex: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 type StoreKey =
   | "users" | "wallets" | "ledgerEntries" | "walletTransactions" | "kycCases"
   | "identityVerificationEvents" | "documents" | "payoutAccounts" | "investmentPlans"
@@ -583,7 +594,7 @@ type StoreKey =
   | "payouts" | "creditHistory" | "creditScores" | "creditReports" | "otpChallenges"
   | "passwordResetTokens" | "notifications" | "providerEvents" | "consents" | "loanProducts" | "auditLogs"
   | "adminLedger" | "platformSettings" | "investorWithdrawals"
-  | "disbursementAccounts" | "loanDisbursements" | "accountChangeRequests";
+  | "disbursementAccounts" | "loanDisbursements" | "accountChangeRequests" | "applicationDrafts";
 
 const storeKeys: StoreKey[] = [
   "users", "wallets", "ledgerEntries", "walletTransactions", "kycCases",
@@ -592,7 +603,7 @@ const storeKeys: StoreKey[] = [
   "creditHistory", "creditScores", "creditReports", "otpChallenges", "passwordResetTokens",
   "notifications", "providerEvents", "consents", "loanProducts", "auditLogs",
   "adminLedger", "platformSettings", "investorWithdrawals",
-  "disbursementAccounts", "loanDisbursements", "accountChangeRequests",
+  "disbursementAccounts", "loanDisbursements", "accountChangeRequests", "applicationDrafts",
 ];
 
 const rawState = {} as Record<StoreKey, unknown[]>;
@@ -790,6 +801,7 @@ export const investorWithdrawals = createPersistentArray<InvestorWithdrawal>("in
 export const disbursementAccounts = createPersistentArray<DisbursementAccount>("disbursementAccounts");
 export const loanDisbursements = createPersistentArray<LoanDisbursement>("loanDisbursements");
 export const accountChangeRequests = createPersistentArray<AccountChangeRequest>("accountChangeRequests");
+export const applicationDrafts = createPersistentArray<ApplicationDraft>("applicationDrafts");
 
 const collections: Record<StoreKey, unknown[]> = {
   users, wallets, ledgerEntries, walletTransactions, kycCases, identityVerificationEvents,
@@ -797,7 +809,7 @@ const collections: Record<StoreKey, unknown[]> = {
   loanSchedules, repayments, payouts, creditHistory, creditScores, creditReports,
   otpChallenges, passwordResetTokens, notifications, providerEvents, consents, loanProducts, auditLogs,
   adminLedger, platformSettings, investorWithdrawals,
-  disbursementAccounts, loanDisbursements, accountChangeRequests,
+  disbursementAccounts, loanDisbursements, accountChangeRequests, applicationDrafts,
 };
 
 function snapshotStore(): Record<StoreKey, unknown[]> {

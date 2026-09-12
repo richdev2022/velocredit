@@ -348,6 +348,20 @@ export default function InvestorDashboard() {
     }
   }
 
+  async function uploadSignature(file: File) {
+    setKycBusy("SIGNATURE");
+    setKycError("");
+    try {
+      const response = await uploadKycDocument("SIGNATURE", file);
+      setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"] }));
+      setMessage("Signature uploaded successfully.");
+    } catch (err) {
+      setKycError(err instanceof Error ? err.message : "Unable to upload signature");
+    } finally {
+      setKycBusy("");
+    }
+  }
+
   async function submitAddressReview() {
     if (!kyc?.checklist?.bvn || !kyc.checklist.nin || !kyc.checklist.proofOfAddress) return;
     setBusy(true);
@@ -499,7 +513,7 @@ export default function InvestorDashboard() {
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const checklist = kyc?.checklist ?? {};
-  const canSubmitAddressReview = Boolean(checklist.bvn && checklist.nin && checklist.proofOfAddress);
+  const canSubmitAddressReview = Boolean(checklist.bvn && checklist.nin && checklist.proofOfAddress && checklist.signature);
 
   async function handleEnableBorrower() {
     setSwitchingBusy(true);
@@ -704,6 +718,7 @@ export default function InvestorDashboard() {
               submitAddressReview={submitAddressReview}
               busy={busy}
               uploadProofOfAddress={uploadProofOfAddress}
+              uploadSignature={uploadSignature}
               onPremblyLivenessResult={onPremblyLivenessResult}
               kycError={kycError}
               message={message}
@@ -1273,7 +1288,7 @@ function InvestorInvestments(props: any) {
 }
 
 function InvestorKyc(props: any) {
-  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState } = props;
+  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, uploadSignature, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState } = props;
   const [error, setError] = useState("");
   useEffect(() => { setError(kycError); }, [kycError]);
 
@@ -1315,16 +1330,17 @@ function InvestorKyc(props: any) {
   const bvnDisplay = bvnLocked ? maskId(bvn) : bvn;
   const ninDisplay = ninLocked ? maskId(nin) : nin;
 
-  // KYC progress counter (5 steps). Each step maps to the checklist + submission:
-  // 1 = BVN verified, 2 = NIN verified, 3 = identity info retrieved, 4 = liveness verified, 5 = proof of address submitted & pending/verified
+  // KYC progress counter (6 steps). Each step maps to the checklist + submission:
+  // 1 = BVN verified, 2 = NIN verified, 3 = identity info retrieved, 4 = liveness verified, 5 = signature uploaded, 6 = proof of address submitted & pending/verified
   const completedSteps = [
     checklist.bvn === true,
     checklist.nin === true,
     identityPopulated === true,
     livenessLocked === true,
+    checklist.signature === true,
     (checklist.proofOfAddress === true || kyc?.status === "SUBMITTED" || kyc?.status === "PENDING_VERIFICATION" || kyc?.status === "VERIFIED"),
   ].filter(Boolean).length;
-  const progressPct = Math.min(100, Math.round((completedSteps / 5) * 100));
+  const progressPct = Math.min(100, Math.round((completedSteps / 6) * 100));
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -1343,7 +1359,7 @@ function InvestorKyc(props: any) {
             <p className="section-subheading">Identity checks and payout setup are required before investment settlement.</p>
           </div>
           <div className="text-right shrink-0">
-            <div className="text-sm font-semibold text-velo-600">{completedSteps}/5</div>
+            <div className="text-sm font-semibold text-velo-600">{completedSteps}/6</div>
             <div className="text-[11px] text-slate-500 dark:text-slate-400">{user?.kycStatus === "VERIFIED" ? "All verified" : "Completed steps"}</div>
           </div>
         </div>
@@ -1592,6 +1608,36 @@ function InvestorKyc(props: any) {
               <div className="flex items-center justify-between">
                 <label className="velo-label mb-0 block">
                   <div className="flex items-center gap-2">
+                    <span>Signature</span>
+                    <span className="text-red-500">*</span>
+                  </div>
+                </label>
+                {checklist.signature && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800/50 px-2.5 py-1 rounded-lg dark:text-emerald-300 shadow-sm">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Uploaded
+                  </span>
+                )}
+              </div>
+              <label className={`group relative flex flex-col items-center justify-center gap-2 w-full min-h-[120px] rounded-2xl border-2 border-dashed cursor-pointer transition-all px-5 py-4 text-center ${kycBusy === "SIGNATURE" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : checklist.signature ? "border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-400 dark:border-emerald-700/60 dark:bg-emerald-900/10 dark:hover:bg-emerald-900/20" : "border-slate-300 bg-slate-50 hover:border-velo-500 hover:bg-velo-50/50 hover:shadow-sm dark:border-slate-600 dark:bg-slate-900/30 dark:hover:border-velo-400 dark:hover:bg-velo-950/20"}`}>
+                <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed peer" type="file" accept="application/pdf,image/jpeg,image/png" disabled={kycBusy === "SIGNATURE"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSignature(file); }} />
+                <div className={`flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${checklist.signature ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-200 dark:group-hover:bg-emerald-800/50" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 group-hover:bg-velo-100 dark:group-hover:bg-velo-900/40 group-hover:text-velo-600 dark:group-hover:text-velo-400"}`}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                    <path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+                <div>
+                  <div className={`text-sm font-semibold ${checklist.signature ? "text-emerald-800 dark:text-emerald-200" : "text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-300"}`}>
+                    {kycBusy === "SIGNATURE" ? "Uploading…" : checklist.signature ? "Signature attached · click to replace" : "Click to upload signature"}
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">PDF, JPG, or PNG — clear image of your handwritten signature.</div>
+                </div>
+              </label>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="velo-label mb-0 block">
+                  <div className="flex items-center gap-2">
                     <span>Proof of address</span>
                     <span className="text-red-500">*</span>
                   </div>
@@ -1627,9 +1673,9 @@ function InvestorKyc(props: any) {
               </div>
             </div>
             <button type="button" onClick={submitAddressReview} disabled={!canSubmitAddressReview || busy || (kyc?.status === "PENDING_VERIFICATION" && Boolean(checklist.proofOfAddress))} className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50">
-              {busy ? "Submitting…" : kyc?.status === "PENDING_VERIFICATION" && checklist.proofOfAddress ? "Address under review" : "Submit proof of address for review"}
+              {busy ? "Submitting…" : kyc?.status === "PENDING_VERIFICATION" && checklist.proofOfAddress ? "Under review" : "Submit documents for review"}
             </button>
-            {!canSubmitAddressReview && <p className="text-xs text-slate-500">Verify BVN and NIN and upload proof of address before submitting for review.</p>}
+            {!canSubmitAddressReview && <p className="text-xs text-slate-500">Verify BVN, NIN, liveness, and upload signature and proof of address before submitting.</p>}
           </div>
         )}
       </section>

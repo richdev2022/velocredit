@@ -3,6 +3,7 @@ import { formatNaira } from "../../utils/loanCalculator";
 import {
   adminApprovePayout,
   adminDecideKyc,
+  adminDecideKycRequirement,
   adminGetReconciliation,
   adminListInvestors,
   adminListKycCases,
@@ -356,6 +357,15 @@ function Kyc() {
   const load = () => adminListKycCases(100).then((response) => setRows(response.cases)).catch((err) => setError(err instanceof Error ? err.message : "Unable to load KYC cases"));
   useEffect(() => { load(); }, []);
   async function decide(id: string, decision: "VERIFIED" | "REJECTED") { setBusy(id); try { await adminDecideKyc(id, { decision }); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC"); } finally { setBusy(""); } }
+  async function decideRequirement(id: string, requirement: "bvn" | "nin" | "liveness" | "proofOfAddress" | "passport" | "signature", approved: boolean) {
+    setActionBusy(`requirement-${id}-${requirement}`);
+    try {
+      const response = await adminDecideKycRequirement(id, requirement, approved);
+      setSelected((current: any) => current?.id === id ? response.case : current);
+      await load();
+    } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC requirement"); }
+    finally { setActionBusy(""); }
+  }
   async function resetKycCase(user: any, category: KycResetCategory) {
     const label: Record<KycResetCategory, string> = { BVN: "BVN", NIN: "NIN", LIVENESS: "Liveness", ADDRESS: "Proof of address", ALL: "Full KYC profile" };
     const reason = category === "ALL"
@@ -392,6 +402,18 @@ function Kyc() {
       ["BVN", "bvn"], ["NIN", "nin"], ["Liveness", "liveness"],
       ["Proof of address", "proofOfAddress"], ["Passport", "passport"], ["Signature", "signature"],
     ];
+    const docLabelMap: Record<string, { label: string; icon: string }> = {
+      PROOF_OF_ADDRESS: { label: "Proof of Address", icon: "🏠" },
+      SIGNATURE: { label: "Signature", icon: "✍️" },
+      PASSPORT_PHOTO: { label: "Passport Photo", icon: "🖼️" },
+      BVN_SLIP: { label: "BVN Slip", icon: "📄" },
+      NIN_SLIP: { label: "NIN Slip", icon: "📄" },
+      BUSINESS_REGISTRATION: { label: "Business Registration", icon: "🏢" },
+      ID_CARD_FRONT: { label: "ID Card (Front)", icon: "🪪" },
+      ID_CARD_BACK: { label: "ID Card (Back)", icon: "🪪" },
+    };
+    const docs = Array.isArray(selected.documents) ? selected.documents : [];
+    const isImage = (type: string) => /^image\//i.test(type || "") || /\.(png|jpe?g|gif|webp)$/i.test(type || "");
     return (
       <div className="space-y-5 animate-fade-in">
         <button type="button" onClick={() => setSelected(null)} className="btn-ghost text-xs">← Back to review queue</button>
@@ -413,20 +435,89 @@ function Kyc() {
             </div>
           </div>
           <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[1fr_280px]">
-            <div>
-              <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Verification checklist</h2>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                {checklistItems.map(([label, key]) => {
-                  const complete = Boolean(selected.checklist?.[key]);
-                  return <div key={key} className={`flex items-center justify-between rounded-xl border px-4 py-3 ${complete ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50"}`}><span className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span><span className={`text-xs font-bold ${complete ? "text-emerald-700 dark:text-emerald-300" : "text-slate-400"}`}>{complete ? "Complete" : "Pending"}</span></div>;
-                })}
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Verification checklist</h2>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Approve or reject individual KYC requirements. The overall KYC status is set separately with the top buttons.</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {checklistItems.map(([label, key]) => {
+                    const complete = Boolean(selected.checklist?.[key]);
+                    const busyKey = `requirement-${selected.id}-${key}`;
+                    return <div key={key} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-4 py-3 ${complete ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50"}`}><span className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span><div className="flex items-center gap-2"><span className={`text-xs font-bold ${complete ? "text-emerald-700 dark:text-emerald-300" : "text-slate-400"}`}>{complete ? "Approved" : "Pending"}</span><button type="button" className="rounded-lg border border-emerald-200 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800 dark:hover:bg-emerald-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, true)}>Approve</button><button type="button" className="rounded-lg border border-red-200 px-2 py-1 text-[10px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:hover:bg-red-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, false)}>Reject</button></div></div>;
+                  })}
+                </div>
               </div>
-              <h2 className="mt-6 text-sm font-semibold text-velo-900 dark:text-white">Case information</h2>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {[['Case ID', selected.id], ['User ID', selected.userId], ['Review status', selected.status], ['Last updated', selected.updatedAt ? new Date(selected.updatedAt).toLocaleString() : '—']].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</div><div className="mt-1 break-all text-sm font-medium text-velo-900 dark:text-white">{value || '—'}</div></div>)}
+              <div>
+                <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Uploaded documents</h2>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Review all files the user submitted. Click the thumbnail or link to open the document in a new tab.</p>
+                {docs.length === 0 ? (
+                  <div className="mt-3 rounded-xl border border-dashed border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/30 p-6 text-center">
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">No documents uploaded yet for this KYC case.</div>
+                  </div>
+                ) : (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {docs.map((doc: any) => {
+                      const meta = docLabelMap[doc.documentType] || { label: doc.documentType || "Document", icon: "📎" };
+                      const previewable = isImage(doc.mimeType || doc.fileName || "");
+                      const url = doc.providerFileId || "#";
+                      const statusCls =
+                        doc.status === "VERIFIED" || doc.status === "APPROVED" ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800/50 dark:bg-emerald-900/10"
+                        : doc.status === "REJECTED" ? "border-red-200 bg-red-50 dark:border-red-800/50 dark:bg-red-900/10"
+                        : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800/40";
+                      return (
+                        <a key={doc.id} href={url} target="_blank" rel="noopener noreferrer" className={`group rounded-xl border p-3 flex flex-col gap-2 transition hover:shadow-md hover:border-velo-300 dark:hover:border-velo-500 ${statusCls}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200"><span>{meta.icon}</span>{meta.label}</span>
+                            {doc.status && <span className={`text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded ${doc.status === "VERIFIED" || doc.status === "APPROVED" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : doc.status === "REJECTED" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"}`}>{doc.status}</span>}
+                          </div>
+                          <div className="aspect-video w-full rounded-lg border border-slate-100 dark:border-slate-700 overflow-hidden bg-slate-50 dark:bg-slate-900/60">
+                            {previewable ? (
+                              <img src={url} alt={doc.fileName || meta.label} className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                            ) : (
+                              <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><path d="M14 2v6h6M9 13h6M9 17h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>
+                                <span className="text-[10px] font-semibold">PDF / Document</span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 truncate" title={doc.fileName}>{doc.fileName || "View document"}</div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{doc.sizeBytes ? `${Math.round(Number(doc.sizeBytes) / 1024)} KB · ` : ""}{doc.createdAt ? new Date(doc.createdAt).toLocaleDateString() : ""}</div>
+                          </div>
+                          <div className="text-[10px] font-bold text-velo-600 dark:text-velo-400 inline-flex items-center gap-1 group-hover:underline">Open in new tab <span aria-hidden="true">↗</span></div>
+                        </a>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {(selected.identityPhoto || selected.selfieImageData) && (
+                <div>
+                  <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Identity photos</h2>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    {selected.identityPhoto && (
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-800/40">
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Government ID portrait</div>
+                        <img src={selected.identityPhoto} alt="Government ID portrait" className="w-full aspect-[4/5] object-cover rounded-lg border border-slate-100 dark:border-slate-700" />
+                      </div>
+                    )}
+                    {selected.selfieImageData && (
+                      <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 p-3 bg-emerald-50/50 dark:bg-emerald-900/10">
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-2">Liveness selfie</div>
+                        <img src={selected.selfieImageData} alt="Live captured selfie" className="w-full aspect-[4/5] object-cover rounded-lg border border-emerald-200 dark:border-emerald-800/60" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div>
+                <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Case information</h2>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {[['Case ID', selected.id], ['User ID', selected.userId], ['Review status', selected.status], ['Last updated', selected.updatedAt ? new Date(selected.updatedAt).toLocaleString() : '—']].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4 dark:bg-slate-800/60"><div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</div><div className="mt-1 break-all text-sm font-medium text-velo-900 dark:text-white">{value || '—'}</div></div>)}
+                </div>
               </div>
             </div>
-            <aside className="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+            <aside className="rounded-xl border border-slate-200 p-4 dark:border-slate-700 h-fit lg:sticky lg:top-4">
               <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Admin actions</h2>
               <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">Reset only the verification step that needs to be completed again.</p>
               <div className="mt-4"><KycResetButtons user={userShim} busyPrefix={`kycreset-kycpanel-case-${selected.id}`} actionBusy={actionBusy} onReset={resetKycCase} /></div>

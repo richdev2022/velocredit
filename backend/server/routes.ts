@@ -47,6 +47,7 @@ import {
   appendLedger,
   loanProducts,
   loanApplications,
+  applicationDrafts,
   loanSchedules,
   notifications,
   consents,
@@ -1781,6 +1782,36 @@ router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), (_re
   res.json({ ok: true, products: loanProducts.filter((p) => p.isActive) });
 });
 
+router.get("/borrower/application-draft", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+  const drafts = applicationDrafts
+    .filter((draft) => draft.userId === req.user!.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  res.json({ ok: true, draft: drafts[0] ?? null });
+});
+
+router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+  const parsed = z.object({
+    applicationId: z.string().min(1),
+    applicantType: z.enum(["PERSONAL", "BUSINESS"]),
+    data: z.record(z.unknown()),
+    lastSectionIndex: z.number().int().min(0),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const now = new Date().toISOString();
+  const existing = applicationDrafts.find((draft) => draft.userId === req.user!.id && draft.applicationId === parsed.data.applicationId);
+  if (existing) {
+    existing.applicantType = parsed.data.applicantType;
+    existing.data = parsed.data.data;
+    existing.lastSectionIndex = parsed.data.lastSectionIndex;
+    existing.updatedAt = now;
+    res.json({ ok: true, draft: existing });
+    return;
+  }
+  const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now, updatedAt: now };
+  applicationDrafts.push(draft);
+  res.status(201).json({ ok: true, draft });
+});
+
 router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const parsed = loanApplicationSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -2651,6 +2682,22 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
   const user = users.find((u) => u.id === kyc.userId);
   if (user) user.kycStatus = kyc.status;
   res.json({ ok: true, case: kyc, before });
+});
+
+router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const parsed = z.object({
+    requirement: z.enum(["bvn", "nin", "liveness", "proofOfAddress", "passport", "signature"]),
+    approved: z.boolean(),
+    note: z.string().max(1000).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const kyc = kycCases.find((item) => item.id === req.params.id);
+  if (!kyc) { res.status(404).json({ ok: false, error: "KYC case not found" }); return; }
+  kyc.checklist[parsed.data.requirement] = parsed.data.approved;
+  kyc.updatedAt = new Date().toISOString();
+  if (!parsed.data.approved) kyc.rejectionReason = parsed.data.note || `${parsed.data.requirement} requires attention`;
+  markKycChecklistComplete(kyc.userId);
+  res.json({ ok: true, case: kyc });
 });
 
 router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {

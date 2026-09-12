@@ -6,10 +6,11 @@
 export type DocumentSlot =
   | "identificationDocument"
   | "proofOfAddress"
+  | "signature"
   | "collateralMedia"
   | "signedAgreement";
 
-export type DocumentKind = "id" | "address" | "collateral" | "agreement";
+export type DocumentKind = "id" | "address" | "signature" | "collateral" | "agreement";
 
 export interface UploadedDocument {
   /** Slot key, e.g. "identificationDocument" */

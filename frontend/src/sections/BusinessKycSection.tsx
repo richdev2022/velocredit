@@ -201,7 +201,8 @@ export default function BusinessKycSection() {
 
   const hasIdDoc = Boolean(application.documents?.identificationDocument);
   const hasProof = Boolean(application.documents?.proofOfAddress);
-  const canContinue = isValid && hasIdDoc && hasProof && application.kyc.bvnVerified === true && application.kyc.ninVerified === true && application.kyc.livenessVerified === true;
+  const hasSignature = Boolean(application.documents?.signature);
+  const canContinue = isValid && hasIdDoc && hasProof && hasSignature && application.kyc.bvnVerified === true && application.kyc.ninVerified === true && application.kyc.livenessVerified === true;
 
   function onSubmit(data: KycForm) {
     patchKyc(data);
@@ -411,6 +412,14 @@ export default function BusinessKycSection() {
           </div>
           </div>
         </div>
+        <FileUpload
+          label="Signature"
+          required
+          helper="Upload a clear image or PDF of the representative's handwritten signature."
+          document={application.documents?.signature}
+          onFile={(doc) => handleFile("signature", doc)}
+          onRemove={() => handleRemoveFile("signature")}
+        />
       </div>
 
       {otpMethodPickerFor && (

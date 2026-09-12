@@ -304,6 +304,14 @@ export async function getBorrowerLoans(id?: string): Promise<BorrowerLoansRespon
   return request(path);
 }
 
+export interface ApplicationDraftResponse { ok: true; draft: { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; data: Record<string, unknown>; lastSectionIndex: number; updatedAt: string } | null; }
+export async function getApplicationDraft(): Promise<ApplicationDraftResponse> {
+  return request("/api/v1/borrower/application-draft");
+}
+export async function saveApplicationDraft(input: { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; data: Record<string, unknown>; lastSectionIndex: number }): Promise<ApplicationDraftResponse> {
+  return request("/api/v1/borrower/application-draft", { method: "PUT", body: JSON.stringify(input) });
+}
+
 export async function getBorrowerCreditHistory(): Promise<{ ok: true; events: unknown[]; scores: unknown[]; reports: unknown[]; }> {
   return request("/api/v1/borrower/credit-history");
 }
@@ -372,6 +380,9 @@ export async function adminListKycCases(limit = 50, offset = 0, status?: KycStat
 export interface KycDecisionInput { decision: "VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED" | "ACTION_REQUIRED" | "SUSPENDED"; note?: string; rejectedReason?: string; checklistOverride?: Partial<KycChecklist>; }
 export async function adminDecideKyc(id: string, input: KycDecisionInput): Promise<{ ok: true; case: unknown; }> {
   return request(`/api/v1/admin/kyc-cases/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify(input) });
+}
+export async function adminDecideKycRequirement(id: string, requirement: "bvn" | "nin" | "liveness" | "proofOfAddress" | "passport" | "signature", approved: boolean, note?: string): Promise<{ ok: true; case: unknown }> {
+  return request(`/api/v1/admin/kyc-cases/${encodeURIComponent(id)}/requirement`, { method: "POST", body: JSON.stringify({ requirement, approved, note }) });
 }
 
 export interface AdminLoansResponse { ok: true; loans: unknown[]; disbursedLoans: unknown[]; meta?: PaginationMeta; }

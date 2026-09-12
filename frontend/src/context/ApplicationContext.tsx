@@ -32,7 +32,7 @@ import {
   findDraftsByEmailOrPhone,
   getSavedSectionIndex,
 } from "../utils/storage";
-import { getAccessToken, submitBorrowerApplication } from "../services/apiClient";
+import { getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
 import { useAuth } from "./AuthContext";
 import type {
   LookupDraftResponse,
@@ -158,29 +158,33 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       restoredUserIdRef.current = null;
       return;
     }
-    if (restoredUserIdRef.current === user.id || application) return;
-    const email = user.email || "";
-    const phone = user.phone || "";
-    const matches = findDraftsByEmailOrPhone(email, phone)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const match = matches[0];
-    if (!match) {
+    if (restoredUserIdRef.current === user.id) return;
+    void (async () => {
+      let resumed: ApplicationData | null = null;
+      let savedIndex = 0;
+      try {
+        const remote = await getApplicationDraft();
+        if (remote.draft) {
+          resumed = normalizeApplicationData(remote.draft.data as unknown as ApplicationData);
+          savedIndex = Number(remote.draft.lastSectionIndex) || 0;
+        }
+      } catch (_error) {
+        // Fall back to a draft previously saved in this browser.
+      }
+      if (!resumed) {
+        const match = findDraftsByEmailOrPhone(user.email || "", user.phone || "").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+        const saved = match ? loadApplication(match.applicationId) : null;
+        if (saved) { resumed = normalizeApplicationData(saved); savedIndex = getSavedSectionIndex(resumed); }
+      }
+      if (resumed) {
+        setApplication(resumed);
+        setCurrentIndex(savedIndex);
+        currentIndexRef.current = savedIndex;
+        setSectionStatusOverrides({});
+        skipNextAutoSave.current = true;
+      }
       restoredUserIdRef.current = user.id;
-      return;
-    }
-    const saved = loadApplication(match.applicationId);
-    if (!saved) {
-      restoredUserIdRef.current = user.id;
-      return;
-    }
-    const resumed = normalizeApplicationData(saved);
-    const savedIndex = getSavedSectionIndex(resumed);
-    setApplication(resumed);
-    setCurrentIndex(savedIndex);
-    currentIndexRef.current = savedIndex;
-    setSectionStatusOverrides({});
-    skipNextAutoSave.current = true;
-    restoredUserIdRef.current = user.id;
+    })();
   }, [user, application]);
 
   // ----- derived: calculation -----
@@ -231,6 +235,9 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     if (!application) return;
     if (application.status === "SUBMITTED") return;
     saveApplication(application, currentIndexRef.current);
+    if (getAccessToken() && application.applicantType) {
+      void saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current });
+    }
     setSaveState("saved");
     setLastSavedAt(new Date().toISOString());
   }
@@ -409,6 +416,9 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     setSaveState("saving");
     try {
       saveApplication(application, currentIndexRef.current);
+      if (getAccessToken() && application.applicantType) {
+        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current });
+      }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
       return { ok: true, applicationId: application.applicationId, status: application.status };

@@ -333,6 +333,7 @@ export default function PersonalKycSection() {
 
   const hasIdDoc = Boolean(application.documents?.identificationDocument);
   const hasProof = Boolean(application.documents?.proofOfAddress);
+  const hasSignature = Boolean(application.documents?.signature);
   const governmentPortrait = identityInfo.identityPhoto;
   const liveSelfie = application.kyc?.selfieImageData;
 
@@ -345,7 +346,7 @@ export default function PersonalKycSection() {
     next();
   }
 
-  const canContinue = isValid && hasIdDoc && hasProof && application.kyc.bvnVerified === true && application.kyc.ninVerified === true && application.kyc.livenessVerified === true;
+  const canContinue = isValid && hasIdDoc && hasProof && hasSignature && application.kyc.bvnVerified === true && application.kyc.ninVerified === true && application.kyc.livenessVerified === true;
 
   return (
     <SectionShell
@@ -447,6 +448,14 @@ export default function PersonalKycSection() {
             )}
           </div>
         </div>
+        <FileUpload
+          label="Signature"
+          required
+          helper="Upload a clear image or PDF of your handwritten signature."
+          document={application.documents?.signature}
+          onFile={(doc) => handleFile("signature", doc)}
+          onRemove={() => handleRemoveFile("signature")}
+        />
 
         {identityInfo.anyPopulated && (bvnLocked || ninLocked) && (
           <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 sm:p-5">
@@ -662,6 +671,14 @@ export default function PersonalKycSection() {
           </div>
           </div>
         </div>
+        <FileUpload
+          label="Signature"
+          required
+          helper="Upload a clear image or PDF of your handwritten signature."
+          document={application.documents?.signature}
+          onFile={(doc) => handleFile("signature", doc)}
+          onRemove={() => handleRemoveFile("signature")}
+        />
 
         {otpMethodPickerFor && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/40 backdrop-blur-sm p-0 sm:p-4 animate-fade-in">
