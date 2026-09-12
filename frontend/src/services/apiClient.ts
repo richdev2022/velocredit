@@ -33,7 +33,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
   const body = await response.json().catch(() => ({}));
-  if (response.status === 401) {
+  const invalidOrExpiredToken = typeof body.error === "string" && /invalid or expired token/i.test(body.error);
+  if (response.status === 401 || invalidOrExpiredToken) {
     const usesAdminSession = path.startsWith("/api/v1/admin/");
     if (usesAdminSession) {
       sessionStorage.removeItem("velo:admin-token");

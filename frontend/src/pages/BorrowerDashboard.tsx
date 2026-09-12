@@ -678,7 +678,7 @@ export default function BorrowerDashboard() {
                             setRepayCustomAmount(formatted.replace(/,/g, ""));
                             setRepayModeMsg("");
                           }}
-                          className="w-full pl-11 pr-4 py-3.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-velo-900 dark:text-white text-xl font-black outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-60"
+                          className="w-full !pl-12 pr-4 py-3.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-velo-900 dark:text-white text-xl font-black outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-60"
                         />
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-2">

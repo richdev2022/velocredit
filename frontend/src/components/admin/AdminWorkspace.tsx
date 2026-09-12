@@ -21,7 +21,6 @@ import {
   adminListAuditLogs,
   adminCreateUser,
   adminPatchUserRoles,
-  adminPatchUserStatus,
   adminEditUser,
   adminResetKycCategory,
   type KycResetCategory,
@@ -155,33 +154,6 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
     } finally { setActionBusy(""); }
   }
 
-  async function toggleStatus(user: any) {
-    const next = user.isActive === false ? true : false;
-    if (!next && !confirm(`Deactivate user "${user.fullName}"? They will not be able to log in.`)) return;
-    setActionBusy(`status-${user.id}`);
-    try {
-      await adminPatchUserStatus(user.id, next);
-      await reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to update status");
-    } finally { setActionBusy(""); }
-  }
-
-  async function resetKyc(user: any, category: KycResetCategory) {
-    const label: Record<KycResetCategory, string> = { BVN: "BVN", NIN: "NIN", LIVENESS: "Liveness", ADDRESS: "Proof of address", ALL: "Full KYC profile" };
-    const reason = category === "ALL"
-      ? `This will PERMANENTLY clear every piece of KYC for "${user.fullName}" (BVN, NIN, liveness, proof of address, documents, provider events). User will need to re-verify everything. Continue?`
-      : `Reset ${label[category]} for "${user.fullName}"? Any data for this category will be cleared and the user will be asked to re-verify. Continue?`;
-    if (!confirm(reason)) return;
-    setActionBusy(`kycreset-${user.id}-${category}`);
-    try {
-      await adminResetKycCategory(user.id, category);
-      await reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : `Unable to reset KYC ${label[category]}`);
-    } finally { setActionBusy(""); }
-  }
-
   function RoleChips({ roles }: { roles?: string[] }) {
     if (!roles || !roles.length) return <span className="text-slate-400 text-xs">—</span>;
     return <div className="flex flex-wrap gap-1">{roles.map((r) => <span key={r} className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${r === "INVESTOR" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : r === "BORROWER" ? "bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-400" : "bg-slate-100 text-slate-600"}`}>{r}</span>)}</div>;
@@ -204,21 +176,12 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
           <Table headers={["Name", "Email", "Phone", "Roles", "KYC", "Status", "Created", "Actions"]}>
             {rows.map((user) => (
               <tr key={user.id} className="hover:bg-velo-50/40 dark:hover:bg-slate-800/40">
-                <td className="px-3 py-3 font-medium text-velo-900 dark:text-white">
-                  <div>{user.fullName}</div>
-                  <div className="mt-2">
-                    <KycResetButtons user={user} busyPrefix="kycreset" actionBusy={actionBusy} onReset={resetKyc} />
-                  </div>
-                </td>
+                <td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{user.fullName}</td>
                 <td className="px-3 py-3 text-slate-600 dark:text-slate-300 text-xs">{user.email}</td>
                 <td className="px-3 py-3 text-slate-600 dark:text-slate-300 text-xs">{user.phone || "—"}</td>
                 <td className="px-3 py-3"><RoleChips roles={user.roles} /></td>
                 <td className="px-3 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{user.kycStatus || "NOT_STARTED"}</span></td>
-                <td className="px-3 py-3">
-                  <button type="button" onClick={() => void toggleStatus(user)} disabled={actionBusy === `status-${user.id}`} className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-bold transition ${user.isActive === false ? "bg-slate-100 text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 dark:bg-slate-800 dark:text-slate-400" : "bg-emerald-50 text-emerald-700 hover:bg-red-50 hover:text-red-700 dark:bg-emerald-900/30 dark:text-emerald-400"}`}>
-                    {user.isActive === false ? "Inactive · Tap to activate" : "Active · Tap to deactivate"}
-                  </button>
-                </td>
+                <td className="px-3 py-3"><span className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-bold ${user.isActive === false ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400" : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"}`}>{user.isActive === false ? "Inactive" : "Active"}</span></td>
                 <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "—"}</td>
                 <td className="px-3 py-3">
                   <div className="flex gap-2">
