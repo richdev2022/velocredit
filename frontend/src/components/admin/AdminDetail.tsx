@@ -97,41 +97,47 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
   if (!app) return null;
 
   const isPersonal = app.applicantType === "PERSONAL";
-  const loanAmount = Number(app.loan.amount ?? app.loan.principalNaira ?? 0);
-  const tenure = Number(app.loan.tenure ?? app.loan.tenureDays ?? 0);
+  const loan = app.loan || {};
+  const personalInfo = app.personalInfo || {};
+  const businessInfo = app.businessInfo || {};
+  const businessRep = app.businessRep || {};
+  const kyc = app.kyc || {};
+  const financial = app.financial || {};
+  const loanAmount = Number(loan.amount ?? loan.principalNaira ?? loan.amountNaira ?? 0);
+  const tenure = Number(loan.tenure ?? loan.tenureDays ?? 0);
   const agreementData = {
     applicationId: app.applicationId,
     applicantType: app.applicantType,
     status: app.status,
-    personalInfo: app.personalInfo,
-    disbursementAccount: app.loan.disbursementAccount || app.customerSnapshot?.disbursementAccount || {},
-    personalFinancial: isPersonal ? app.financial : {},
-    businessInfo: app.businessInfo,
-    businessRep: app.businessRep,
-    businessFinancial: isPersonal ? {} : app.financial,
-    kyc: app.kyc,
-    loanRequest: { amount: loanAmount, tenure, purpose: String(app.loan.purpose || "") },
+    personalInfo,
+    disbursementAccount: loan.disbursementAccount || app.customerSnapshot?.disbursementAccount || {},
+    personalFinancial: isPersonal ? financial : {},
+    businessInfo,
+    businessRep,
+    businessFinancial: isPersonal ? {} : financial,
+    kyc,
+    loanRequest: { amount: loanAmount, tenure, purpose: String(loan.purpose || "") },
     collateral: app.customerSnapshot?.collateral || {},
     documents: app.documents || {},
     witness: app.customerSnapshot?.witness || { fullName: "", phone: "" },
-    agreement: { executionDate: app.loan.executionDate || app.createdAt },
+    agreement: { executionDate: loan.executionDate || app.createdAt || new Date().toISOString() },
   } as any;
   const agreementCalculation = {
     loanAmount,
-    interest: Number(app.loan.interest || 0),
-    serviceFee: Number(app.loan.serviceFee || 0),
-    processingFee: Number(app.loan.processingFee || 0),
-    lateFee: Number(app.loan.lateFee || 0),
-    totalFees: Number(app.loan.totalFees || 0),
-    totalRepayment: Number(app.loan.totalRepayment || 0),
-    upfrontFees: Number(app.loan.upfrontFees || 0),
-    loanCost: Number(app.loan.interest || 0),
-    defaultFee: Number(app.loan.lateFee || 0),
+    interest: Number(loan.interest || 0),
+    serviceFee: Number(loan.serviceFee || 0),
+    processingFee: Number(loan.processingFee || 0),
+    lateFee: Number(loan.lateFee || 0),
+    totalFees: Number(loan.totalFees || 0),
+    totalRepayment: Number(loan.totalRepayment || loan.totalRepaymentNaira || 0),
+    upfrontFees: Number(loan.upfrontFees || 0),
+    loanCost: Number(loan.interest || 0),
+    defaultFee: Number(loan.lateFee || 0),
     tenure,
     tenureLabel: `${tenure} Days`,
-    disbursementDate: app.loan.disbursementDate || app.createdAt,
-    repaymentDate: app.loan.repaymentDate || app.loan.dueAt || app.createdAt,
-    repaymentDateLabel: formatDateLabel(app.loan.repaymentDate || app.loan.dueAt || app.createdAt),
+    disbursementDate: loan.disbursementDate || app.createdAt,
+    repaymentDate: loan.repaymentDate || loan.dueAt || app.createdAt,
+    repaymentDateLabel: formatDateLabel(loan.repaymentDate || loan.dueAt || app.createdAt),
     breakdown: [],
   } as any;
   const adminAgreement = generateLoanAgreement(agreementData, agreementCalculation);
