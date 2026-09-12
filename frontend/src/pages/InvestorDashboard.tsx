@@ -518,6 +518,14 @@ export default function InvestorDashboard() {
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const checklist = kyc?.checklist ?? {};
   const canSubmitAddressReview = Boolean(checklist.bvn && checklist.nin && checklist.proofOfAddress && checklist.signature);
+  const onboardingRequirements = [
+    ["Identity info", "Legal name, DOB, contact", Boolean(checklist.bvn || checklist.nin)],
+    ["BVN verification", "11-digit bank verification", Boolean(checklist.bvn)],
+    ["NIN verification", "National ID number check", Boolean(checklist.nin)],
+    ["Proof of address", "Utility bill or statement", Boolean(checklist.proofOfAddress)],
+    ["Payout account", "Bank account for returns", Boolean((data as any)?.payoutAccount?.status === "VERIFIED")],
+  ] as const;
+  const completedOnboardingRequirements = onboardingRequirements.filter(([, , completed]) => completed).length;
 
   async function handleEnableBorrower() {
     setSwitchingBusy(true);
@@ -1013,38 +1021,33 @@ function InvestorOverview(props: any) {
                 </p>
               </div>
               <span className="text-sm font-semibold text-velo-600">
-                {user?.kycStatus === "VERIFIED" ? "5/5" : "0/5"}
+                {completedOnboardingRequirements}/5
               </span>
             </div>
             <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
               <div
-                className={`h-full rounded-full bg-velo-500 ${user?.kycStatus === "VERIFIED" ? "w-full" : "w-0"}`}
+                className="h-full rounded-full bg-velo-500"
+                style={{ width: `${completedOnboardingRequirements * 20}%` }}
               />
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              {[
-                ["Identity info", "Legal name, DOB, contact"],
-                ["BVN verification", "11-digit bank verification"],
-                ["NIN verification", "National ID number check"],
-                ["Proof of address", "Utility bill or statement"],
-                ["Payout account", "Bank account for returns"],
-              ].map(([t, d]) => (
+              {onboardingRequirements.map(([t, d, completed]) => (
                 <div
                   key={t}
                   className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors ${
-                    user?.kycStatus === "VERIFIED"
+                    completed
                       ? "bg-emerald-50 dark:bg-emerald-900/20 border-emerald-100 dark:border-emerald-900/30"
                       : "bg-slate-50 dark:bg-slate-800 border-slate-100 dark:border-slate-700"
                   }`}
                 >
                   <div
                     className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-                      user?.kycStatus === "VERIFIED"
+                      completed
                         ? "bg-emerald-500 text-white"
                         : "bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400"
                     }`}
                   >
-                    {user?.kycStatus === "VERIFIED" ? (
+                    {completed ? (
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                         <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
@@ -2099,13 +2102,17 @@ function InvestorPayoutSection(props: any) {
       const body = await res.json();
       if (body.ok) {
         setAccounts(body.accounts || []);
-        setDefaultId(body.defaultId || null);
-        setPendingRequest(body.pendingRequest || null);
+        setDefaultId(body.defaultId || body.accounts?.find((account: any) => account.isDefault)?.id || null);
+        setPendingRequest(body.pendingRequest || body.pendingRequests?.[0] || null);
       }
     } catch (_e) { /* ignore */ }
   }
 
   useEffect(() => { void loadBanks(); void reloadAccounts(); }, [userId]);
+
+  useEffect(() => {
+    if (selectedBank && accountNumber.length === 10 && !resolvedName && !resolveError && busy !== "resolve") void resolveAccount();
+  }, [selectedBank, accountNumber]);
 
   async function resolveAccount() {
     if (!selectedBank || accountNumber.length < 10) return;
@@ -2232,10 +2239,10 @@ function InvestorPayoutSection(props: any) {
           </div>
           <label className="velo-label">
             Account number <span className="text-red-500">*</span>
-            <input className="velo-input mt-1" inputMode="numeric" maxLength={10} required value={accountNumber} onChange={(e) => { setAccountNumber(e.target.value.replace(/\D/g, "")); setResolvedName(null); setResolveError(""); }} onBlur={() => { if (selectedBank && accountNumber.length === 10) void resolveAccount(); }} placeholder="10-digit NUBAN" />
+            <input className="velo-input mt-1" inputMode="numeric" maxLength={10} required value={accountNumber} onChange={(e) => { setAccountNumber(e.target.value.replace(/\D/g, "")); setResolvedName(null); setResolveError(""); }} placeholder="10-digit NUBAN" />
           </label>
           <div className="flex flex-col gap-2">
-            <button type="button" className="btn-secondary" onClick={() => void resolveAccount()} disabled={busy === "resolve" || !selectedBank || accountNumber.length !== 10}>{busy === "resolve" ? "Resolving…" : "Verify account name"}</button>
+            {busy === "resolve" && <p className="text-sm text-slate-500">Resolving account name…</p>}
             {resolvedName && <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 p-3 text-sm text-emerald-700 dark:text-emerald-400"><span className="font-semibold">Account name:</span> {resolvedName}</div>}
             {resolveError && <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-900/30 p-3 text-sm text-red-700 dark:text-red-400">{resolveError}</div>}
           </div>

@@ -45,6 +45,7 @@ export default function FileUpload({
 
   const accept = (media ? ALLOWED_DOC_EXTENSIONS : ALLOWED_DOC_EXTENSIONS.filter((e) => !["mp4", "mov", "webm"].includes(e))).map((e) => `.${e}`).join(",");
   const docName = document?.name;
+  const previewSource = document?.type?.startsWith("image/") && document.data ? `data:${document.type};base64,${document.data}` : document?.previewUrl;
 
   function readFile(file: File) {
     setLocalError(null);
@@ -115,9 +116,9 @@ export default function FileUpload({
         />
         {docName ? (
           <div className="flex items-center justify-center gap-3">
-            <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+            {previewSource ? <img src={previewSource} alt={`${label} preview`} className="h-12 w-12 rounded-lg border border-slate-200 object-cover" /> : <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
               <CheckIcon />
-            </span>
+            </span>}
             <div className="text-left">
               <div className="text-sm font-medium text-velo-900 max-w-[260px] truncate" title={docName}>
                 {docName}

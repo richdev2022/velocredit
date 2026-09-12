@@ -73,8 +73,8 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         headers: { Authorization: `Bearer ${getAccessToken()}` },
       }).then((r) => r.json());
       if (res.ok) {
-        setAccount(res.disbursementAccount ?? null);
-        setPendingRequest(res.pendingRequest ?? null);
+        setAccount(res.account ?? null);
+        setPendingRequest(res.pendingRequests?.[0] ?? null);
       }
     } catch (_e) {
       /* ignore */
@@ -85,6 +85,10 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
     loadBanks();
     reloadAccount();
   }, [userId]);
+
+  useEffect(() => {
+    if (selectedBank && accountNumber.length === 10 && !resolvedName && !resolveError && busy !== "resolve") void resolveAccount();
+  }, [selectedBank, accountNumber]);
 
   async function resolveAccount() {
     if (!selectedBank || accountNumber.length < 10) return;
@@ -143,9 +147,11 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
           onSaved?.(saved);
           reloadAccount();
         }
-        setSelectedBank("");
-        setAccountNumber("");
-        setResolvedName(null);
+        if (!res.pendingApproval) {
+          setSelectedBank("");
+          setAccountNumber("");
+          setResolvedName(null);
+        }
       } else {
         setLocalError(res.error || "Save failed");
         onError?.(res.error || "Save failed");
@@ -270,21 +276,11 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
                   setResolvedName(null);
                   setResolveError("");
                 }}
-                onBlur={() => {
-                  if (selectedBank && accountNumber.length === 10) void resolveAccount();
-                }}
                 placeholder="10-digit NUBAN"
               />
             </label>
             <div className="flex flex-col gap-2">
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => void resolveAccount()}
-                disabled={busy === "resolve" || !selectedBank || accountNumber.length !== 10}
-              >
-                {busy === "resolve" ? "Resolving…" : "Verify account name"}
-              </button>
+              {busy === "resolve" && <p className="text-sm text-slate-500">Resolving account name…</p>}
               {resolvedName && (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 p-3 text-sm text-emerald-700 dark:text-emerald-400">
                   <span className="font-semibold">Account name:</span> {resolvedName}
