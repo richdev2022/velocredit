@@ -11,6 +11,8 @@ import {
   type AdminApplicationDetail,
 } from "../../services/adminApi";
 import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
+import AgreementPreview from "../AgreementPreview";
+import { generateLoanAgreement } from "../../services/agreementGenerator";
 
 interface AdminDetailProps {
   applicationId: string;
@@ -93,6 +95,43 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
   if (!app) return null;
 
   const isPersonal = app.applicantType === "PERSONAL";
+  const loanAmount = Number(app.loan.amount ?? app.loan.principalNaira ?? 0);
+  const tenure = Number(app.loan.tenure ?? app.loan.tenureDays ?? 0);
+  const agreementData = {
+    applicationId: app.applicationId,
+    applicantType: app.applicantType,
+    status: app.status,
+    personalInfo: app.personalInfo,
+    disbursementAccount: app.loan.disbursementAccount || app.customerSnapshot?.disbursementAccount || {},
+    personalFinancial: isPersonal ? app.financial : {},
+    businessInfo: app.businessInfo,
+    businessRep: app.businessRep,
+    businessFinancial: isPersonal ? {} : app.financial,
+    kyc: app.kyc,
+    loanRequest: { amount: loanAmount, tenure, purpose: String(app.loan.purpose || "") },
+    collateral: app.customerSnapshot?.collateral || {},
+    documents: app.documents || {},
+    witness: app.customerSnapshot?.witness || { fullName: "", phone: "" },
+  } as any;
+  const agreementCalculation = {
+    loanAmount,
+    interest: Number(app.loan.interest || 0),
+    serviceFee: Number(app.loan.serviceFee || 0),
+    processingFee: Number(app.loan.processingFee || 0),
+    lateFee: Number(app.loan.lateFee || 0),
+    totalFees: Number(app.loan.totalFees || 0),
+    totalRepayment: Number(app.loan.totalRepayment || 0),
+    upfrontFees: Number(app.loan.upfrontFees || 0),
+    loanCost: Number(app.loan.interest || 0),
+    defaultFee: Number(app.loan.lateFee || 0),
+    tenure,
+    tenureLabel: `${tenure} Days`,
+    disbursementDate: app.loan.disbursementDate || app.createdAt,
+    repaymentDate: app.loan.repaymentDate || app.loan.dueAt || app.createdAt,
+    repaymentDateLabel: formatDateLabel(app.loan.repaymentDate || app.loan.dueAt || app.createdAt),
+    breakdown: [],
+  } as any;
+  const adminAgreement = generateLoanAgreement(agreementData, agreementCalculation);
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -180,6 +219,11 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         <Row label="Total Repayment" value={formatNaira(app.loan.totalRepayment)} bold />
         <Row label="Disbursement Date" value={formatDateLabel(app.loan.disbursementDate)} />
         <Row label="Repayment Date" value={formatDateLabel(app.loan.repaymentDate)} />
+      </Card>
+
+      <Card title="Loan Agreement">
+        <p className="mb-4 text-sm text-slate-500">Review the complete dynamically generated agreement and use Print agreement to print a copy.</p>
+        <AgreementPreview html={adminAgreement.html} />
       </Card>
 
       {/* Applicant info */}

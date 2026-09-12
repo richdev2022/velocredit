@@ -261,6 +261,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       collateral: { provided: false, type: "", description: "", estimatedValue: "", ownership: "", location: "", documentReference: "" },
       calculation: null,
       documents: {},
+      witness: { fullName: "", phone: "" },
       agreement: { generatedAt: null, generatedHtml: null, signedAgreementAccepted: false },
       createdAt: now,
       updatedAt: now,
@@ -585,6 +586,7 @@ function normalizeApplicationData(data: ApplicationData): ApplicationData {
     collateral: Object.assign({ provided: false, type: "", description: "", estimatedValue: "", ownership: "", location: "", documentReference: "" }, data.collateral || {}),
     calculation: data.calculation || calculateLoan(loanRequest.amount, loanRequest.tenure, { loanType: data.applicantType || "PERSONAL" }),
     documents: data.documents || {},
+    witness: Object.assign({ fullName: "", phone: "" }, data.witness || {}),
     agreement: Object.assign({
       generatedAt: null,
       generatedHtml: null,

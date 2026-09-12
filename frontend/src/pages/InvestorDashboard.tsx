@@ -2,7 +2,7 @@ import { useEffect, useDeferredValue, useMemo, useRef, useState, memo } from "re
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
-import ReceiptDownload from "../components/ReceiptDownload";
+import ReceiptPrint from "../components/ReceiptDownload";
 import OtpLoginSettings from "../components/OtpLoginSettings";
 import InvestorWithdrawalForm from "../components/InvestorWithdrawalForm";
 import { useAuth } from "../context/AuthContext";
@@ -1882,9 +1882,7 @@ const InvestorTransactionRow = memo(function InvestorTransactionRow({
         {tx.narration && <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{tx.narration}</div>}
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="text-[10px] text-slate-400 dark:text-slate-500">{new Date(tx.createdAt).toLocaleString()}</div>
-          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400">
-            <ReceiptDownload transaction={{ ...tx.raw, label: tx.label, direction: tx.direction, amountMinor: tx.amountMinor, narration: tx.narration, referenceId: tx.referenceId, createdAt: tx.createdAt, balanceAfterMinor: tx.balanceAfterMinor, id: tx.id }} balanceBeforeMinor={tx.balanceAfterMinor != null ? tx.balanceAfterMinor - tx.amountMinor * (tx.direction === "CREDIT" ? 1 : -1) : undefined} balanceAfterMinor={tx.balanceAfterMinor} />
-          </span>
+          <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">View details to print</span>
         </div>
       </div>
     </button>
@@ -1986,14 +1984,14 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
         ) : <Empty text="No transactions yet. Fund your wallet or create your first investment to get started." />}
       </section>
       {selectedTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm px-4 animate-fade-in">
+        <div className="transaction-receipt-modal fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm px-4 animate-fade-in">
           <div className="velo-card w-full max-w-lg p-6 shadow-2xl animate-slide-in-left max-h-[90vh] overflow-y-auto">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-lg font-bold text-velo-900 dark:text-white">Transaction details</h3>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Reference · {selectedTx.referenceId || selectedTx.id.slice(0, 10)}</p>
               </div>
-              <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setSelectedTx(null)} aria-label="Close">
+              <button type="button" className="no-print rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setSelectedTx(null)} aria-label="Close">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
               </button>
             </div>
@@ -2034,9 +2032,9 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
                 </div>
               )}
             </div>
-            <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <div className="no-print mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setSelectedTx(null)}>Close</button>
-              <ReceiptDownload transaction={{ ...selectedTx.raw, label: selectedTx.label, direction: selectedTx.direction, amountMinor: selectedTx.amountMinor, narration: selectedTx.narration, referenceId: selectedTx.referenceId, createdAt: selectedTx.createdAt, balanceAfterMinor: selectedTx.balanceAfterMinor, id: selectedTx.id }} balanceBeforeMinor={selectedTx.balanceAfterMinor != null ? selectedTx.balanceAfterMinor - selectedTx.amountMinor * (selectedTx.direction === "CREDIT" ? 1 : -1) : undefined} balanceAfterMinor={selectedTx.balanceAfterMinor} />
+              <ReceiptPrint />
             </div>
           </div>
         </div>

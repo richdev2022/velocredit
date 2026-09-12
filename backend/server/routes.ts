@@ -187,6 +187,7 @@ const loanApplicationSchema = z.object({
     .optional(),
   collateral: z.record(z.unknown()).default({}),
   documents: z.record(z.unknown()).default({}),
+  witness: z.record(z.unknown()).default({}),
   calculation: z.record(z.unknown()).nullable().default(null),
 });
 const documentUpload = multer({
@@ -1971,6 +1972,8 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     kyc: input.kyc,
     disbursementAccount: { ...input.disbursementAccount, institution: "VELO" },
     collateral: input.collateral,
+    witness: input.witness,
+    documents: input.documents,
   };
   const internalCredit = calculateCreditScore({
     completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
@@ -2081,6 +2084,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
       .optional(),
     collateral: z.record(z.unknown()).optional(),
     documents: z.record(z.unknown()).optional(),
+    witness: z.record(z.unknown()).optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -2120,6 +2124,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
     }
     markKycChecklistComplete(req.user!.id);
   }
+  if (parsed.data.witness) Object.assign(snapshot, { witness: parsed.data.witness });
   if (parsed.data.documents) {
     const docs = parsed.data.documents as Record<string, unknown>;
     const kyc = findOrCreateKycCase(req.user!.id);

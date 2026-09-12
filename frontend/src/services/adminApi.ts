@@ -30,7 +30,30 @@ export async function verifyAdminLoginOtp(challengeId: string, code: string) {
 		setAdminToken(response.accessToken); setAdminRole(response.user.roles[0] || "ADMIN"); sessionStorage.setItem("velo:admin-permissions", JSON.stringify(response.user.adminPermissions ?? [])); return { ok: true, role: response.user.roles[0] || "ADMIN" };
 }
 export async function adminListApplications(opts: { status?: string; type?: string; search?: string; limit?: number; offset?: number } = {}): Promise<{ total: number; applications: AdminApplicationSummary[] }> { const params = new URLSearchParams(); if (opts.status) params.set("status", opts.status); if (opts.type) params.set("type", opts.type); if (opts.search) params.set("search", opts.search); params.set("limit", String(opts.limit || 20)); params.set("offset", String(opts.offset || 0)); const response = await request<{ loans: any[]; meta?: { total?: number } }>(`/api/v1/admin/loans?${params.toString()}`); const applications = (response.loans || []).map((loan) => ({ applicationId: loan.applicationId || loan.id, applicantType: (loan.customerSnapshot?.businessInfo?.businessName ? "BUSINESS" : "PERSONAL") as "PERSONAL" | "BUSINESS", status: loan.status, applicantName: loan.customerSnapshot?.fullName || "Borrower", email: loan.customerSnapshot?.email || "", phone: loan.customerSnapshot?.phone || "", loanAmount: Number(loan.amountNaira || 0), totalRepayment: Number(loan.totalRepaymentNaira || 0), tenure: `${loan.tenureDays || 0} days`, repaymentDate: loan.dueAt || "", dateCreated: loan.createdAt, dateSubmitted: loan.createdAt, dateUpdated: loan.createdAt, driveFolderUrl: "" })); return { total: response.meta?.total || applications.length, applications }; }
-export async function adminGetApplication(id: string): Promise<AdminApplicationDetail> { const response = await request<{ loan: any }>(`/api/v1/admin/loans/${encodeURIComponent(id)}`); const loan = response.loan; return { applicationId: loan.applicationId || loan.id, applicantType: "PERSONAL", status: loan.status, createdAt: loan.createdAt, updatedAt: loan.updatedAt || loan.createdAt, submittedAt: loan.createdAt, personalInfo: loan.customerSnapshot?.personalInfo || {}, businessInfo: loan.customerSnapshot?.businessInfo || {}, businessRep: loan.customerSnapshot?.businessRep || {}, kyc: loan.customerSnapshot?.kyc || {}, financial: loan.customerSnapshot?.personalFinancial || loan.customerSnapshot?.businessFinancial || {}, loan, documents: {}, customerSnapshot: loan.customerSnapshot, creditReportSnapshot: loan.creditReportSnapshot }; }
+export async function adminGetApplication(id: string): Promise<AdminApplicationDetail> {
+  const response = await request<{ loan?: any; application?: any }>(`/api/v1/admin/loans/${encodeURIComponent(id)}`);
+  const loan = response.loan || response.application || {};
+  const source = response.application || loan;
+  const snapshot = source.customerSnapshot || loan.customerSnapshot || {};
+  const applicantType = (source.applicantType || (snapshot.businessInfo?.businessName ? "BUSINESS" : "PERSONAL")) as "PERSONAL" | "BUSINESS";
+  return {
+    applicationId: source.applicationId || loan.applicationId || loan.id,
+    applicantType,
+    status: source.status || loan.status,
+    createdAt: source.createdAt || loan.createdAt,
+    updatedAt: source.updatedAt || loan.updatedAt || loan.createdAt,
+    submittedAt: source.submittedAt || loan.createdAt,
+    personalInfo: snapshot.personalInfo || {},
+    businessInfo: snapshot.businessInfo || {},
+    businessRep: snapshot.businessRep || {},
+    kyc: snapshot.kyc || {},
+    financial: snapshot.personalFinancial || snapshot.businessFinancial || {},
+    loan,
+    documents: source.documents || snapshot.documents || loan.documents || {},
+    customerSnapshot: snapshot,
+    creditReportSnapshot: source.creditReportSnapshot || loan.creditReportSnapshot,
+  };
+}
 export async function adminUpdateStatus(id: string, status: string) { const decision = status === "APPROVED" ? "APPROVED" : status === "REJECTED" ? "REJECTED" : "MORE_INFORMATION_REQUIRED"; const response = await request<{ loan: any }>(`/api/v1/admin/loans/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }); return { ok: true, status: response.loan.status }; }
 export async function adminListStats(): Promise<AdminStats> { const response = await request<{ totals: Record<string, number> }>("/api/v1/admin/summary"); return { counts: {}, total: response.totals.users || 0, totalLoanAmount: 0, totalRepayment: 0, totalLoanDisbursed: 0, realizedRevenue: 0, awaitingRevenue: response.totals.pendingPayments || 0 }; }
 export async function adminSaveConfig(overrides: AdminConfigOverride) { return overrides; }

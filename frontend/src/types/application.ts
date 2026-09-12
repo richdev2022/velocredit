@@ -152,7 +152,12 @@ export interface CollateralInfo {
 export interface AgreementState {
   generatedAt: string | null;
   generatedHtml: string | null;
-  signedAgreementAccepted: boolean; // consent checkbox
+  signedAgreementAccepted: boolean;
+}
+
+export interface WitnessInfo {
+  fullName: string;
+  phone: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +187,7 @@ export interface ApplicationData {
   calculation: LoanCalculation | null;
 
   documents: DocumentMap;
+  witness: WitnessInfo;
 
   agreement: AgreementState;
 
