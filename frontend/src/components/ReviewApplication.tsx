@@ -148,7 +148,7 @@ export default function ReviewApplication({ application, calculation, onEdit }: 
         title="Signed Loan Agreement"
         onEdit={() => onEdit("agreement")}
         rows={[
-          ["Signed Agreement", documentLabel(application, "signedAgreement")],
+          ["Agreement", application.agreement?.generatedHtml ? "Generated" : "Not generated"],
           ["Consent", application.agreement?.signedAgreementAccepted ? "Accepted" : "Not accepted"],
         ]}
       />

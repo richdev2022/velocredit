@@ -913,7 +913,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                       type="number"
                       min="0"
                       step="100"
-                      className="velo-input pl-8"
+                      className="velo-input pl-10"
                       value={withdrawalFeeFlatNaira}
                       onChange={(e) => setWithdrawalFeeFlatNaira(Number(e.target.value))}
                     />
@@ -1032,7 +1032,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                         <input
                           type="number"
                           min="100"
-                          className="velo-input pl-8"
+                          className="velo-input pl-10"
                           value={creditAmountNaira}
                           onChange={(e) => setCreditAmountNaira(e.target.value)}
                         />
@@ -1458,7 +1458,7 @@ function NumberField({ label, value, onChange, helpText }: { label: string; valu
             const n = Number(e.target.value.replace(/[^0-9]/g, ""));
             onChange(Number.isFinite(n) ? n : 0);
           }}
-          className="velo-input pl-8 font-bold text-sm"
+          className="velo-input pl-10 font-bold text-sm"
         />
       </div>
       {helpText && <div className="text-[11px] text-slate-400 mt-1">{helpText}</div>}

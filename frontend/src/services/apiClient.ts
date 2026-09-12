@@ -301,11 +301,26 @@ export async function submitLoanApplication(id: string): Promise<LoanApplication
 }
 
 export interface SubmitBorrowerApplicationResponse { ok: true; loan?: { applicationId?: string; id?: string; status?: LoanStatus }; error?: string; }
+
+export function compactApplicationForTransport(input: Record<string, unknown>): Record<string, unknown> {
+  const application = { ...input } as Record<string, any>;
+  const documents = Object.fromEntries(Object.entries(application.documents ?? {}).map(([slot, document]) => {
+    if (!document || typeof document !== "object") return [slot, document];
+    const { data: _data, ...metadata } = document as Record<string, unknown>;
+    return [slot, metadata];
+  }));
+  const kyc = { ...(application.kyc ?? {}) };
+  delete kyc.selfieImageData;
+  const agreement = application.agreement ? { ...application.agreement, generatedHtml: null } : application.agreement;
+  return { ...application, documents, kyc, agreement };
+}
+
 export async function submitBorrowerApplication(input: Record<string, unknown>): Promise<SubmitBorrowerApplicationResponse> {
   const draft = input as Record<string, any>;
   if (!draft.applicationId || !draft.applicantType || !draft.loanRequest?.amount || !draft.loanRequest?.tenure || !draft.loanRequest?.purpose) throw new Error("Complete the loan request before submitting.");
+  const compact = compactApplicationForTransport(draft) as Record<string, any>;
   const payload: LoanApplicationInput = {
-    applicationId: draft.applicationId, applicantType: draft.applicantType, personalInfo: draft.personalInfo ?? {}, businessInfo: draft.businessInfo ?? {}, businessRep: draft.businessRep ?? {}, personalFinancial: draft.personalFinancial ?? {}, businessFinancial: draft.businessFinancial ?? {}, kyc: draft.kyc ?? {}, disbursementAccount: draft.disbursementAccount ?? {}, loanRequest: draft.loanRequest, collateral: draft.collateral ?? {}, documents: draft.documents ?? {}, witness: draft.witness ?? {},
+    applicationId: compact.applicationId, applicantType: compact.applicantType, personalInfo: compact.personalInfo ?? {}, businessInfo: compact.businessInfo ?? {}, businessRep: compact.businessRep ?? {}, personalFinancial: compact.personalFinancial ?? {}, businessFinancial: compact.businessFinancial ?? {}, kyc: compact.kyc ?? {}, disbursementAccount: compact.disbursementAccount ?? {}, loanRequest: compact.loanRequest, collateral: compact.collateral ?? {}, documents: compact.documents ?? {}, witness: compact.witness ?? {},
   };
   let application: LoanApplicationResponse["application"];
   try { application = (await patchLoanApplication(draft.applicationId, payload)).application; }
