@@ -18,10 +18,14 @@ export default function OtpLoginSettings() {
   }, []);
 
   async function saveChannel(next: OtpChannel) {
-    setChannel(next);
     setError("");
-    try { await updateUserSettings({ preferredOtpChannel: next }); }
-    catch (err) { setError(err instanceof Error ? err.message : "Unable to save preferred channel"); }
+    try {
+      const settings = await updateUserSettings({ preferredOtpChannel: next });
+      setChannel(settings.preferredOtpChannel);
+      setEnabled(settings.otpLoginEnabled);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save preferred channel");
+    }
   }
 
   async function enable() {
