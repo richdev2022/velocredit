@@ -45,7 +45,8 @@ export default function FileUpload({
 
   const accept = (media ? ALLOWED_DOC_EXTENSIONS : ALLOWED_DOC_EXTENSIONS.filter((e) => !["mp4", "mov", "webm"].includes(e))).map((e) => `.${e}`).join(",");
   const docName = document?.name;
-  const previewSource = document?.type?.startsWith("image/") && document.data ? `data:${document.type};base64,${document.data}` : document?.previewUrl;
+  const fileSource = document?.data ? `data:${document.type};base64,${document.data}` : document?.driveUrl || document?.previewUrl;
+  const previewSource = document?.type?.startsWith("image/") ? fileSource : undefined;
 
   function readFile(file: File) {
     setLocalError(null);
@@ -127,15 +128,21 @@ export default function FileUpload({
                 {(document!.size / 1024 / 1024).toFixed(2)} MB • Uploaded
               </div>
             </div>
-            {onRemove && (
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); onRemove(); }}
-                className="ml-2 text-xs font-semibold text-red-600 hover:text-red-700"
-              >
-                Remove
-              </button>
-            )}
+            <div className="ml-2 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              {fileSource && (
+                <a href={fileSource} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-velo-200 px-2 py-1 text-xs font-semibold text-velo-700 hover:bg-velo-50" aria-label={`Preview ${docName}`}>
+                  <EyeIcon /> Preview
+                </a>
+              )}
+              {fileSource && (
+                <a href={fileSource} download={docName} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50" aria-label={`Download ${docName}`}>
+                  <DownloadIcon /> Download
+                </a>
+              )}
+              {onRemove && (
+                <button type="button" onClick={onRemove} className="text-xs font-semibold text-red-600 hover:text-red-700">Remove</button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center gap-2 py-2">
@@ -165,6 +172,14 @@ function UploadIcon() {
       <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   );
+}
+
+function EyeIcon() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" stroke="currentColor" strokeWidth="1.8"/><circle cx="12" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.8"/></svg>;
+}
+
+function DownloadIcon() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>;
 }
 
 function CheckIcon() {

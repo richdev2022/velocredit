@@ -204,7 +204,7 @@ export async function completePremblyWidgetVerification(input: { status: "SUCCES
   return request("/api/v1/me/kyc/prembly-widget/complete", { method: "POST", body: JSON.stringify(input) });
 }
 
-export interface DocumentUploadResponse { ok: true; document: { id: string; documentType: string; fileName: string; status: string; uploadedAt: string; }; checklist: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean } }
+export interface DocumentUploadResponse { ok: true; document: { id: string; documentType: string; fileName: string; mimeType?: string; sizeBytes?: number; provider?: string; providerFileId?: string; status: string; uploadedAt: string; }; checklist: { bvn?: boolean; nin?: boolean; proofOfAddress?: boolean; passport?: boolean; signature?: boolean } }
 export async function uploadKycDocument(documentType: string, file: File, note?: string): Promise<DocumentUploadResponse> {
   const form = new FormData();
   form.append("documentType", documentType);

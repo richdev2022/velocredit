@@ -14,6 +14,7 @@ import {
   getAdminSummary,
   type AdminSummaryResponse,
 } from "../../services/apiClient";
+import { documentDownloadUrl, documentPreviewUrl } from "../../utils/documentLinks";
 import {
   adminListDisbursements,
   adminRetryDisbursement,
@@ -339,6 +340,10 @@ function ProviderResponse({ title, data, error }: { title?: string; data?: unkno
     </div>
   );
 }
+function DocumentTypeIcon() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/><path d="M14 2v6h6M8 13h8M8 17h5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>;
+}
+
 function StatusBadge({ status }: { status?: string }) {
   const s = String(status || "UNKNOWN").toUpperCase();
   const cls =
@@ -403,15 +408,15 @@ function Kyc() {
       ["BVN", "bvn"], ["NIN", "nin"], ["Liveness", "liveness"],
       ["Proof of address", "proofOfAddress"], ["Passport", "passport"], ["Signature", "signature"],
     ];
-    const docLabelMap: Record<string, { label: string; icon: string }> = {
-      PROOF_OF_ADDRESS: { label: "Proof of Address", icon: "🏠" },
-      SIGNATURE: { label: "Signature", icon: "✍️" },
-      PASSPORT_PHOTO: { label: "Passport Photo", icon: "🖼️" },
-      BVN_SLIP: { label: "BVN Slip", icon: "📄" },
-      NIN_SLIP: { label: "NIN Slip", icon: "📄" },
-      BUSINESS_REGISTRATION: { label: "Business Registration", icon: "🏢" },
-      ID_CARD_FRONT: { label: "ID Card (Front)", icon: "🪪" },
-      ID_CARD_BACK: { label: "ID Card (Back)", icon: "🪪" },
+    const docLabelMap: Record<string, { label: string }> = {
+      PROOF_OF_ADDRESS: { label: "Proof of Address" },
+      SIGNATURE: { label: "Signature" },
+      PASSPORT_PHOTO: { label: "Passport Photo" },
+      BVN_SLIP: { label: "BVN Slip" },
+      NIN_SLIP: { label: "NIN Slip" },
+      BUSINESS_REGISTRATION: { label: "Business Registration" },
+      ID_CARD_FRONT: { label: "ID Card (Front)" },
+      ID_CARD_BACK: { label: "ID Card (Back)" },
     };
     const docs = Array.isArray(selected.documents) ? selected.documents : [];
     const isImage = (type: string) => /^image\//i.test(type || "") || /\.(png|jpe?g|gif|webp)$/i.test(type || "");
@@ -460,17 +465,19 @@ function Kyc() {
                 ) : (
                   <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     {docs.map((doc: any) => {
-                      const meta = docLabelMap[doc.documentType] || { label: doc.documentType || "Document", icon: "📎" };
+                      const meta = docLabelMap[doc.documentType] || { label: doc.documentType || "Document" };
                       const previewable = isImage(doc.mimeType || doc.fileName || "");
-                      const url = doc.providerFileId || "#";
+                      const previewUrl = documentPreviewUrl(doc);
+                      const downloadUrl = documentDownloadUrl(doc);
+                      const url = previewUrl || downloadUrl;
                       const statusCls =
                         doc.status === "VERIFIED" || doc.status === "APPROVED" ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800/50 dark:bg-emerald-900/10"
                         : doc.status === "REJECTED" ? "border-red-200 bg-red-50 dark:border-red-800/50 dark:bg-red-900/10"
                         : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800/40";
                       return (
-                        <a key={doc.id} href={url} target="_blank" rel="noopener noreferrer" className={`group rounded-xl border p-3 flex flex-col gap-2 transition hover:shadow-md hover:border-velo-300 dark:hover:border-velo-500 ${statusCls}`}>
+                        <div key={doc.id} className={`group rounded-xl border p-3 flex flex-col gap-2 transition hover:shadow-md hover:border-velo-300 dark:hover:border-velo-500 ${statusCls}`}>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200"><span>{meta.icon}</span>{meta.label}</span>
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200"><DocumentTypeIcon />{meta.label}</span>
                             {doc.status && <span className={`text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded ${doc.status === "VERIFIED" || doc.status === "APPROVED" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : doc.status === "REJECTED" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"}`}>{doc.status}</span>}
                           </div>
                           <div className="aspect-video w-full rounded-lg border border-slate-100 dark:border-slate-700 overflow-hidden bg-slate-50 dark:bg-slate-900/60">
@@ -487,8 +494,12 @@ function Kyc() {
                             <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 truncate" title={doc.fileName}>{doc.fileName || "View document"}</div>
                             <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{doc.sizeBytes ? `${Math.round(Number(doc.sizeBytes) / 1024)} KB · ` : ""}{doc.createdAt ? new Date(doc.createdAt).toLocaleDateString() : ""}</div>
                           </div>
-                          <div className="text-[10px] font-bold text-velo-600 dark:text-velo-400 inline-flex items-center gap-1 group-hover:underline">Open in new tab <span aria-hidden="true">↗</span></div>
-                        </a>
+                          <div className="flex items-center gap-3 text-[10px] font-bold">
+                            {previewUrl && <a href={previewUrl} target="_blank" rel="noopener noreferrer" className="text-velo-600 dark:text-velo-400 hover:underline">Preview</a>}
+                            {downloadUrl && <a href={downloadUrl} download={doc.fileName} className="text-slate-600 dark:text-slate-300 hover:underline">Download</a>}
+                            {!url && <span className="text-slate-400">File link unavailable</span>}
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
