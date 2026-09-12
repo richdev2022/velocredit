@@ -27,6 +27,7 @@ export interface User {
   lastLoginAt?: string;
   isActive?: boolean;
   preferredOtpChannel?: "SMS" | "WHATSAPP" | "EMAIL";
+  otpLoginEnabled?: boolean;
   otpVerifiedAt?: string;
   dateOfBirth?: string;
   residentialAddress?: Record<string, unknown>;

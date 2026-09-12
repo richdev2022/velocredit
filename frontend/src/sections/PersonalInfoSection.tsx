@@ -100,10 +100,9 @@ export default function PersonalInfoSection() {
     if (!selectedBank) return;
     const accountNumber = accountForm.watch("accountNumber") || "";
     const cleaned = accountNumber.replace(/\D/g, "");
-    if (cleaned.length < 10) return;
+    if (cleaned.length !== 10) return;
     const key = `${selectedBank}|${cleaned}`;
     if (resolvedPairsRef.current.has(key)) return;
-    resolvedPairsRef.current.set(key, true);
     setResolveError("");
     setResolvedName(null);
     setBusy("resolve");
@@ -117,6 +116,7 @@ export default function PersonalInfoSection() {
         body: JSON.stringify({ bankCode: selectedBank, accountNumber: cleaned }),
       }).then((r) => r.json());
       if (res.ok) {
+        resolvedPairsRef.current.set(key, true);
         const accountName = res.accountName || res.resolved?.accountName || "";
         setResolvedName(accountName);
         accountForm.setValue("accountName", accountName, { shouldValidate: true, shouldDirty: true });

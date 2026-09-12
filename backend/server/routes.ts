@@ -186,6 +186,7 @@ const loanApplicationSchema = z.object({
     .object({ amount: z.number().positive(), tenure: z.number().int().positive(), purpose: z.string().min(1) })
     .optional(),
   collateral: z.record(z.unknown()).default({}),
+  documents: z.record(z.unknown()).default({}),
   calculation: z.record(z.unknown()).nullable().default(null),
 });
 const documentUpload = multer({
@@ -289,8 +290,19 @@ router.post("/auth/login", async (req, res) => {
     });
     return;
   }
-  // Suspended / disabled accounts can be added here when a dedicated flag exists
-  // if (user.suspendedAt) { res.status(403).json({ ok: false, error: "Account is suspended" }); return; }
+  if (user.otpLoginEnabled) {
+    try {
+      const challenge = await createOtpChallenge(user.id, "LOGIN_STEP_UP", user.phone, user.email, user.preferredOtpChannel ?? "EMAIL");
+      res.json({ ok: true, requiresOtp: true, challengeId: challenge.id, expiresAt: challenge.expiresAt, channel: challenge.channel, resendAvailableAt: challenge.resendAvailableAt, resendSecondsRemaining: challenge.resendSecondsRemaining, user: { id: user.id, email: user.email, fullName: user.fullName, roles: user.roles } });
+      return;
+    } catch (error) {
+      if (error instanceof OtpRateLimitError) {
+        res.status(429).json({ ok: false, error: error.message, resendAvailableAt: error.resendAvailableAt, resendSecondsRemaining: error.resendSecondsRemaining });
+        return;
+      }
+      throw error;
+    }
+  }
   user.lastLoginAt = new Date().toISOString();
   res.json({
     ok: true,
@@ -303,6 +315,31 @@ router.post("/auth/login", async (req, res) => {
       kycStatus: user.kycStatus,
     },
   });
+});
+
+router.post("/auth/login/resend-otp", async (req, res) => {
+  const parsed = z.object({ userId: z.string().uuid(), challengeId: z.string().uuid().optional(), channel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).optional() }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const user = users.find((item) => item.id === parsed.data.userId && item.isActive !== false && item.otpLoginEnabled);
+  if (!user) { res.status(404).json({ ok: false, error: "Login verification is not available" }); return; }
+  try {
+    const challenge = await createOtpChallenge(user.id, "LOGIN_STEP_UP", user.phone, user.email, parsed.data.channel ?? user.preferredOtpChannel ?? "EMAIL");
+    res.status(201).json({ ok: true, challengeId: challenge.id, expiresAt: challenge.expiresAt, channel: challenge.channel, resendAvailableAt: challenge.resendAvailableAt, resendSecondsRemaining: challenge.resendSecondsRemaining });
+  } catch (error) {
+    if (error instanceof OtpRateLimitError) { res.status(429).json({ ok: false, error: error.message, resendAvailableAt: error.resendAvailableAt, resendSecondsRemaining: error.resendSecondsRemaining }); return; }
+    throw error;
+  }
+});
+
+router.post("/auth/login/verify-otp", async (req, res) => {
+  const parsed = z.object({ challengeId: z.string().uuid(), code: z.string().regex(/^\d{6}$/) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const result = await verifyOtpChallenge(parsed.data.challengeId, parsed.data.code);
+  if (!result.ok || result.action !== "LOGIN_STEP_UP" || !result.userId) { res.status(400).json({ ok: false, error: result.error ?? "Invalid or expired OTP" }); return; }
+  const user = users.find((item) => item.id === result.userId && item.isActive !== false && item.otpLoginEnabled);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  user.lastLoginAt = new Date().toISOString();
+  res.json({ ok: true, accessToken: issueToken(user), user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, roles: user.roles, kycStatus: user.kycStatus, createdAt: user.createdAt } });
 });
 
 router.post("/auth/admin/login", async (req, res) => {
@@ -604,6 +641,23 @@ router.get("/me", requireAuth, (req: AuthRequest, res) => {
       createdAt: user.createdAt,
     },
   });
+});
+
+router.get("/user/settings", requireAuth, (req: AuthRequest, res) => {
+  const user = users.find((item) => item.id === req.user?.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  res.json({ ok: true, preferredOtpChannel: user.preferredOtpChannel ?? "EMAIL", otpLoginEnabled: user.otpLoginEnabled === true });
+});
+
+router.put("/user/settings", requireAuth, (req: AuthRequest, res) => {
+  const parsed = z.object({ preferredOtpChannel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).optional(), otpLoginEnabled: z.boolean().optional() }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const user = users.find((item) => item.id === req.user?.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  if (parsed.data.preferredOtpChannel !== undefined) user.preferredOtpChannel = parsed.data.preferredOtpChannel;
+  if (parsed.data.otpLoginEnabled !== undefined) user.otpLoginEnabled = parsed.data.otpLoginEnabled;
+  user.updatedAt = new Date().toISOString();
+  res.json({ ok: true, preferredOtpChannel: user.preferredOtpChannel ?? "EMAIL", otpLoginEnabled: user.otpLoginEnabled === true });
 });
 
 router.patch("/me", requireAuth, (req: AuthRequest, res) => {
@@ -2005,7 +2059,7 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
 });
 
 router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
-  const application = loanApplications.find((a) => a.id === req.params.id && a.borrowerId === req.user?.id);
+  const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
   if (!application) {
     res.status(404).json({ ok: false, error: "Application not found" });
     return;
@@ -2078,7 +2132,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
 });
 
 router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
-  const application = loanApplications.find((a) => a.id === req.params.id && a.borrowerId === req.user?.id);
+  const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
   if (!application) {
     res.status(404).json({ ok: false, error: "Application not found" });
     return;
@@ -3305,6 +3359,8 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     bankCode: z.string().min(2).max(10),
     accountNumber: z.string().regex(/^\d{10}$/),
     narration: z.string().max(100).optional(),
+    otpChallengeId: z.string().min(1).optional(),
+    otpCode: z.string().regex(/^\d{6}$/).optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -3312,6 +3368,11 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     return;
   }
   const userId = req.user!.id;
+  if (parsed.data.otpChallengeId || parsed.data.otpCode) {
+    if (!parsed.data.otpChallengeId || !parsed.data.otpCode) { res.status(400).json({ ok: false, error: "Invalid or expired OTP" }); return; }
+    const verification = await verifyOtpChallenge(parsed.data.otpChallengeId, parsed.data.otpCode);
+    if (!verification.ok || verification.action !== "WITHDRAWAL" || verification.userId !== userId) { res.status(400).json({ ok: false, error: "Invalid or expired OTP" }); return; }
+  }
   const wallet = findWallet(userId);
   const investor = users.find((u) => u.id === userId);
   if (!wallet || !investor) {

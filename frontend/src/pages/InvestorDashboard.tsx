@@ -3,6 +3,8 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
 import ReceiptDownload from "../components/ReceiptDownload";
+import OtpLoginSettings from "../components/OtpLoginSettings";
+import InvestorWithdrawalForm from "../components/InvestorWithdrawalForm";
 import { useAuth } from "../context/AuthContext";
 import {
   fundWallet,
@@ -688,6 +690,12 @@ export default function InvestorDashboard() {
               error={error}
               message={message}
               openFundModal={openFundModal}
+              onWithdrawal={async (text: string) => {
+                setMessage(text);
+                const [dashboard, history] = await Promise.all([getInvestorDashboard(), getInvestorTransactions()]);
+                setData(dashboard as DashboardData);
+                setTransactions(history as unknown as TransactionData);
+              }}
             />
           )}
 
@@ -1183,7 +1191,7 @@ function InvestorOverview(props: any) {
 }
 
 function InvestorWallet(props: any) {
-  const { available, locked, returns, fundingBanner, error, message, openFundModal } = props;
+  const { available, locked, returns, fundingBanner, error, message, openFundModal, onWithdrawal } = props;
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -1224,6 +1232,7 @@ function InvestorWallet(props: any) {
           </button>
         </div>
       </section>
+      <InvestorWithdrawalForm available={available} onSuccess={onWithdrawal} />
     </div>
   );
 }
@@ -2270,6 +2279,7 @@ function InvestorProfile(props: any) {
           ))}
         </div>
       </section>
+      <OtpLoginSettings />
     </div>
   );
 }

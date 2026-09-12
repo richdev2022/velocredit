@@ -11,6 +11,7 @@ import {
   initializeLoanRepayment,
 } from "../services/apiClient";
 import BorrowerDisbursementSection from "../components/BorrowerDisbursementSection";
+import OtpLoginSettings from "../components/OtpLoginSettings";
 
 type DashboardData = {
   applications?: Array<{
@@ -1815,6 +1816,7 @@ function BorrowerProfile(props: any) {
           </div>
         </div>
       </section>
+      <OtpLoginSettings />
     </div>
   );
 }

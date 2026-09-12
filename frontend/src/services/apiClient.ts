@@ -69,9 +69,10 @@ export async function verifyRegistrationOtp(input: { userId: string; challengeId
 }
 
 export interface LoginOtpRequired { ok: false; requiresOtp: true; code: "OTP_REQUIRED"; userId: string; email: string; fullName?: string; channels: OtpChannel[]; error: string; }
+export interface LoginStepUpRequired { ok: true; requiresOtp: true; challengeId: string; expiresAt: string; channel: OtpChannel; resendAvailableAt: string; resendSecondsRemaining: number; user: Pick<SessionUser, "id" | "email" | "fullName" | "roles">; }
 export interface LoginSuccess { ok: true; accessToken: string; user: SessionUser; }
 
-export async function login(input: { email: string; password: string }): Promise<LoginSuccess | LoginOtpRequired> {
+export async function login(input: { email: string; password: string }): Promise<LoginSuccess | LoginOtpRequired | LoginStepUpRequired> {
   const headers = new Headers({ "Content-Type": "application/json" });
   const adminToken = sessionStorage.getItem("velo:admin-token");
   const token = getAccessToken() || adminToken;
@@ -79,6 +80,7 @@ export async function login(input: { email: string; password: string }): Promise
   const response = await fetch(`${API_URL}/api/v1/auth/login`, { method: "POST", body: JSON.stringify(input), headers });
   const body = await response.json().catch(() => ({}));
   if (response.ok) {
+    if (body.requiresOtp) return body as LoginStepUpRequired;
     setAccessToken(body.accessToken);
     return body as LoginSuccess;
   }
@@ -86,6 +88,22 @@ export async function login(input: { email: string; password: string }): Promise
     return { ok: false, requiresOtp: true, code: "OTP_REQUIRED", userId: body.userId, email: body.email, fullName: body.fullName, channels: body.channels ?? ["EMAIL"], error: body.error ?? "Account verification required" };
   }
   throw new Error(body.error || body.message || `Request failed (${response.status})`);
+}
+
+export async function loginStepUpResendOtp(input: { userId: string; challengeId?: string; channel?: OtpChannel }): Promise<RegistrationVerification> {
+  return request("/api/v1/auth/login/resend-otp", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function loginStepUpVerifyOtp(challengeId: string, code: string): Promise<LoginSuccess> {
+  const response = await request<LoginSuccess>("/api/v1/auth/login/verify-otp", { method: "POST", body: JSON.stringify({ challengeId, code }) });
+  setAccessToken(response.accessToken);
+  return response;
+}
+
+export interface UserSettings { preferredOtpChannel: OtpChannel; otpLoginEnabled: boolean; }
+export async function getUserSettings(): Promise<{ ok: true } & UserSettings> { return request("/api/v1/user/settings"); }
+export async function updateUserSettings(input: Partial<UserSettings>): Promise<{ ok: true } & UserSettings> {
+  return request("/api/v1/user/settings", { method: "PUT", body: JSON.stringify(input) });
 }
 
 export async function adminLogin(input: { email: string; password: string }): Promise<AuthResponse> {
@@ -248,6 +266,11 @@ export async function requestEarlyLiquidity(input: LiquidityRequestInput): Promi
   return request(`/api/v1/investor/investments/${encodeURIComponent(input.investmentId)}/liquidity`, { method: "POST", body: JSON.stringify(input) });
 }
 
+export interface InvestorWithdrawalInput { amountNaira: number; bankCode: string; accountNumber: string; narration?: string; otpChallengeId: string; otpCode: string; }
+export async function withdrawInvestorWallet(input: InvestorWithdrawalInput): Promise<{ ok: true; withdrawal: { id: string; status: string } }> {
+  return request("/api/v1/investor/wallet/withdraw", { method: "POST", body: JSON.stringify(input) });
+}
+
 export async function getInvestorTransactions(limit = 100, offset = 0): Promise<{ ok: true; investments: unknown[]; payouts: unknown[]; ledger: unknown[]; walletTransactions: unknown[]; meta?: PaginationMeta; }> {
   return request(`/api/v1/investor/transactions?limit=${limit}&offset=${offset}`);
 }
@@ -263,8 +286,8 @@ export async function updateBorrowerDisbursementAccount(input: BorrowerDisbursem
 export interface LoanProduct { id: string; name: string; description?: string; minAmountNaira: number; maxAmountNaira: number; defaultTenureDays?: number; interestRatePercent: number; interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED"; processingFeePercent: number; lateFeePercent: number; lateFeeType: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY"; gracePeriodDays: number; isActive: boolean; version: number; createdAt: string; updatedAt?: string; }
 export async function getLoanProducts(): Promise<{ ok: true; products: LoanProduct[] }> { return request("/api/v1/borrower/loan-products"); }
 
-export interface LoanApplicationInput { productId: string; principalNaira: number; tenureDays: number; purpose?: string; personalInfo?: Record<string, unknown>; businessInfo?: Record<string, unknown>; financial?: Record<string, unknown>; references?: unknown[]; }
-export interface LoanApplicationResponse { ok: true; application: { id: string; status: LoanStatus; productId: string; principalNaira: number; tenureDays: number; createdAt: string; updatedAt: string; }; }
+export interface LoanApplicationInput { applicationId?: string; applicantType: "PERSONAL" | "BUSINESS"; personalInfo: Record<string, unknown>; businessInfo: Record<string, unknown>; businessRep: Record<string, unknown>; personalFinancial: Record<string, unknown>; businessFinancial: Record<string, unknown>; kyc: Record<string, unknown>; disbursementAccount: Record<string, unknown>; loanRequest: { amount: number; tenure: number; purpose: string }; collateral: Record<string, unknown>; documents: Record<string, unknown>; }
+export interface LoanApplicationResponse { ok: true; application: { id: string; applicationId: string; status: LoanStatus; createdAt: string; updatedAt: string; }; }
 export async function createLoanApplication(input: LoanApplicationInput): Promise<LoanApplicationResponse> {
   return request("/api/v1/borrower/applications", { method: "POST", body: JSON.stringify(input) });
 }
@@ -279,23 +302,19 @@ export async function submitLoanApplication(id: string): Promise<LoanApplication
 
 export interface SubmitBorrowerApplicationResponse { ok: true; loan?: { applicationId?: string; id?: string; status?: LoanStatus }; error?: string; }
 export async function submitBorrowerApplication(input: Record<string, unknown>): Promise<SubmitBorrowerApplicationResponse> {
-  const application = input as Partial<LoanApplicationInput> & { applicationId?: string; id?: string };
-  const existingId = application.applicationId || application.id;
-  let appId: string;
-  if (existingId) {
-    const { productId, principalNaira, tenureDays, purpose, personalInfo, businessInfo, financial, references } = application;
-    const patchResult = await patchLoanApplication(existingId, { productId, principalNaira, tenureDays, purpose, personalInfo, businessInfo, financial, references });
-    appId = patchResult.application.id;
-  } else {
-    const { productId, principalNaira, tenureDays, purpose, personalInfo, businessInfo, financial, references } = application;
-    if (!productId || !principalNaira || !tenureDays) {
-      throw new Error("Missing required fields: productId, principalNaira, tenureDays");
-    }
-    const createResult = await createLoanApplication({ productId, principalNaira, tenureDays, purpose, personalInfo, businessInfo, financial, references });
-    appId = createResult.application.id;
+  const draft = input as Record<string, any>;
+  if (!draft.applicationId || !draft.applicantType || !draft.loanRequest?.amount || !draft.loanRequest?.tenure || !draft.loanRequest?.purpose) throw new Error("Complete the loan request before submitting.");
+  const payload: LoanApplicationInput = {
+    applicationId: draft.applicationId, applicantType: draft.applicantType, personalInfo: draft.personalInfo ?? {}, businessInfo: draft.businessInfo ?? {}, businessRep: draft.businessRep ?? {}, personalFinancial: draft.personalFinancial ?? {}, businessFinancial: draft.businessFinancial ?? {}, kyc: draft.kyc ?? {}, disbursementAccount: draft.disbursementAccount ?? {}, loanRequest: draft.loanRequest, collateral: draft.collateral ?? {}, documents: draft.documents ?? {},
+  };
+  let application: LoanApplicationResponse["application"];
+  try { application = (await patchLoanApplication(draft.applicationId, payload)).application; }
+  catch (error) {
+    if (!(error instanceof Error) || !/Application not found/.test(error.message)) throw error;
+    application = (await createLoanApplication(payload)).application;
   }
-  const submitResult = await submitLoanApplication(appId);
-  return { ok: true, loan: { applicationId: submitResult.application.id, id: submitResult.application.id, status: submitResult.application.status } };
+  const submitted = await submitLoanApplication(application.id);
+  return { ok: true, loan: { applicationId: submitted.application.applicationId, id: submitted.application.id, status: submitted.application.status } };
 }
 
 export interface BorrowerLoansResponse { ok: true; loans: unknown[]; meta?: PaginationMeta; }

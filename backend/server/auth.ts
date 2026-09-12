@@ -266,8 +266,9 @@ export async function createOtpChallenge(
       // ignore
     }
   }
-  // eslint-disable-next-line no-console
-  console.log(`[DEV OTP] user=${userId} action=${action} code=${code}`);
+  if (env.NODE_ENV !== "production") {
+    console.log(`[DEV OTP] user=${userId} action=${action} code=${code}`);
+  }
   const resendAvailableAt = new Date(now.getTime() + env.OTP_RESEND_COOLDOWN_SECONDS * 1000).toISOString();
   return {
     id: challenge.id,
