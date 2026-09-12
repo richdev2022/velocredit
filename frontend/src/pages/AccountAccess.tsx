@@ -3,14 +3,14 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PasswordInput from "../components/PasswordInput";
 import { useAuth } from "../context/AuthContext";
-import { resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired } from "../services/apiClient";
+import { loginStepUpResendOtp, resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired, type LoginStepUpRequired } from "../services/apiClient";
 
 type Mode = "login" | "register" | "forgot";
 
 export default function AccountAccess() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { login, register, verifyRegistrationOtp, requestPasswordReset, confirmPasswordReset, user } = useAuth();
+  const { login, register, verifyRegistrationOtp, completeLoginOtp, requestPasswordReset, confirmPasswordReset, user } = useAuth();
 
   const initialMode = searchParams.get("mode") === "register" ? "register" : searchParams.get("mode") === "forgot" ? "forgot" : "login";
   const initialRole = (searchParams.get("role") === "INVESTOR" ? "INVESTOR" : "BORROWER") as "INVESTOR" | "BORROWER";
@@ -31,6 +31,7 @@ export default function AccountAccess() {
   const [preferredOtpChannel, setPreferredOtpChannel] = useState<OtpChannel>("EMAIL");
   const [signupVerification, setSignupVerification] = useState<RegistrationVerification | null>(null);
   const [loginOtpUser, setLoginOtpUser] = useState<LoginOtpRequired | null>(null);
+  const [loginStepUp, setLoginStepUp] = useState<LoginStepUpRequired | null>(null);
   const [otpCode, setOtpCode] = useState("");
   const [otpRemaining, setOtpRemaining] = useState(0);
 
@@ -39,14 +40,15 @@ export default function AccountAccess() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!signupVerification) return;
+    const verification = signupVerification ?? loginStepUp;
+    if (!verification) return;
     const updateCountdown = () => {
-      setOtpRemaining(Math.max(0, Math.ceil((new Date(signupVerification.resendAvailableAt).getTime() - Date.now()) / 1000)));
+      setOtpRemaining(Math.max(0, Math.ceil((new Date(verification.resendAvailableAt).getTime() - Date.now()) / 1000)));
     };
     updateCountdown();
     const timer = window.setInterval(updateCountdown, 1000);
     return () => window.clearInterval(timer);
-  }, [signupVerification]);
+  }, [signupVerification, loginStepUp]);
 
   useEffect(() => {
     if (user) {
@@ -69,6 +71,7 @@ export default function AccountAccess() {
     setError("");
     setSuccess("");
     setLoginOtpUser(null);
+    setLoginStepUp(null);
     setSignupVerification(null);
     setOtpCode("");
   }
@@ -86,11 +89,22 @@ export default function AccountAccess() {
           navigate(verifiedUser.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
           return;
         }
+        if (loginStepUp) {
+          const verifiedUser = await completeLoginOtp(loginStepUp.challengeId, otpCode);
+          navigate(verifiedUser.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
+          return;
+        }
         const result = await login(email, password);
         if ("requiresOtp" in result && result.requiresOtp) {
-          setLoginOtpUser(result);
+          if (result.ok) {
+            setLoginStepUp(result);
+            setOtpRemaining(result.resendSecondsRemaining);
+            setSuccess("Enter the 6-digit code sent through your preferred channel.");
+          } else {
+            setLoginOtpUser(result);
+            setSuccess(result.error || "Your account needs verification. Choose how we send your one-time code.");
+          }
           setError("");
-          setSuccess(result.error || "Your account needs verification. Choose how we send your one-time code.");
           return;
         }
         const loggedIn = result as { roles: string[] };
@@ -132,12 +146,15 @@ export default function AccountAccess() {
   }
 
   async function resendSignupOtp() {
-    if (!signupVerification || otpRemaining > 0) return;
+    if ((!signupVerification && !loginStepUp) || otpRemaining > 0) return;
     setBusy(true);
     setError("");
     try {
-      const next = await resendRegistrationOtp(signupVerification.userId);
-      setSignupVerification(next);
+      const next = loginStepUp
+        ? await loginStepUpResendOtp({ userId: loginStepUp.user.id, challengeId: loginStepUp.challengeId })
+        : await resendRegistrationOtp(signupVerification!.userId);
+      if (loginStepUp) setLoginStepUp({ ...loginStepUp, ...next });
+      else setSignupVerification(next);
       setOtpRemaining(next.resendSecondsRemaining);
       setSuccess(`A new OTP was sent via ${next.channel.toLowerCase()}.`);
     } catch (err) {
@@ -717,12 +734,12 @@ export default function AccountAccess() {
                       </div>
                     )}
 
-                    {signupVerification && (
+                    {(signupVerification || loginStepUp) && (
                       <div className="space-y-4 rounded-2xl border border-velo-100 bg-velo-50/70 p-4 dark:border-velo-900/40 dark:bg-velo-900/20">
                         <div>
                           <p className="text-sm font-semibold text-velo-900 dark:text-white">Verify your account</p>
                           <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                            Enter the 6-digit code sent by {signupVerification.channel === "SMS" ? "SMS" : signupVerification.channel === "WHATSAPP" ? "WhatsApp" : "email"}.
+                            Enter the 6-digit code sent by {(signupVerification ?? loginStepUp)!.channel === "SMS" ? "SMS" : (signupVerification ?? loginStepUp)!.channel === "WHATSAPP" ? "WhatsApp" : "email"}.
                           </p>
                         </div>
                         <label className="block">
@@ -758,7 +775,7 @@ export default function AccountAccess() {
                       }`}
                       disabled={
                         busy ||
-                        (mode === "login" && signupVerification ? otpCode.length !== 6 : false) ||
+                        (mode === "login" && (signupVerification || loginStepUp) ? otpCode.length !== 6 : false) ||
                         (mode === "register" && (signupVerification ? otpCode.length !== 6 : (!passwordMatch || !passwordStrong)))
                       }
                     >
@@ -771,7 +788,7 @@ export default function AccountAccess() {
                           Please wait…
                         </span>
                       ) : mode === "login" ? (
-                        signupVerification ? "Verify code and sign in" : "Sign in"
+                        (signupVerification || loginStepUp) ? "Verify code and sign in" : "Sign in"
                       ) : mode === "forgot" ? (
                         resetId && resetToken ? "Confirm new password" : "Send reset link"
                       ) : (

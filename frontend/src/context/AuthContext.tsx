@@ -13,10 +13,12 @@ import {
   type RegistrationResponse,
   type SessionUser,
   verifyRegistrationOtp as apiVerifyRegistrationOtp,
+  loginStepUpVerifyOtp as apiLoginStepUpVerifyOtp,
   type LoginOtpRequired,
+  type LoginStepUpRequired,
 } from "../services/apiClient";
 
-type LoginResult = SessionUser | (LoginOtpRequired & { user?: undefined });
+type LoginResult = SessionUser | LoginOtpRequired | LoginStepUpRequired;
 
 interface AuthContextValue {
   user: SessionUser | null;
@@ -24,6 +26,7 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<LoginResult>;
   register: (input: Omit<RegisterInput, "consents"> & { consents?: RegisterInput["consents"] }) => Promise<RegistrationResponse>;
   verifyRegistrationOtp: (input: { userId: string; challengeId: string; code: string }) => Promise<SessionUser>;
+  completeLoginOtp: (challengeId: string, code: string) => Promise<SessionUser>;
   logout: () => void;
   addUserRole: (role: Exclude<Role, "ADMIN">) => Promise<SessionUser>;
   requestPasswordReset: (email: string) => Promise<{ ok: true; resetId?: string; message: string }>;
@@ -65,12 +68,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       async login(email, password) {
         const response = await apiLogin({ email, password });
-        if (!("ok" in response) || response.ok !== false) {
-          const success = response as { user: SessionUser };
-          setUser(success.user);
-          return success.user;
-        }
-        return response as LoginOtpRequired & { user?: undefined };
+        if ("requiresOtp" in response && response.requiresOtp) return response as LoginOtpRequired | LoginStepUpRequired;
+        const success = response as { user: SessionUser };
+        setUser(success.user);
+        return success.user;
       },
       async register(input) {
         const consents = input.consents ?? {
@@ -91,6 +92,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       async verifyRegistrationOtp(input) {
         const response = await apiVerifyRegistrationOtp(input);
+        setUser(response.user);
+        return response.user;
+      },
+      async completeLoginOtp(challengeId, code) {
+        const response = await apiLoginStepUpVerifyOtp(challengeId, code);
         setUser(response.user);
         return response.user;
       },
