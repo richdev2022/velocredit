@@ -15,6 +15,7 @@ import { kycSchema, type KycForm } from "../utils/validation";
 import type { UploadedDocument, DocumentSlot } from "../types/documents";
 import { verifyMyBvn, verifyMyNin, confirmKycOwnershipOtp, resendKycOwnershipOtp, type KycOtpChallenge } from "../services/apiClient";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
+import Icon from "../components/Icon";
 
 type OtpPickerPhase = "idle" | "sending" | "success" | "error";
 type OtpPickerState = { phase: OtpPickerPhase; channel?: "SMS" | "WHATSAPP"; message?: string };
@@ -306,8 +307,7 @@ export default function BusinessKycSection() {
             <div className="flex flex-col gap-2">
               <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-[0.12em] border ${liveSelfie ? "bg-emerald-100 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-800/60 dark:text-emerald-300" : "bg-slate-100 border-slate-200 text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400"}`}>
                 {liveSelfie ? <>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  ✅ Your Live Selfie — Liveness Verified
+                  <Icon name="check" size={14} /> Your Live Selfie — Liveness Verified
                 </> : <>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" strokeDasharray="2 3"/></svg>
                   Pending — Awaiting your live selfie

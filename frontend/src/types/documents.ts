@@ -9,8 +9,7 @@ export type DocumentSlot =
   | "signature"
   | "witnessPassport"
   | "witnessSignature"
-  | "collateralMedia"
-  | "signedAgreement";
+  | "collateralMedia";
 
 export type DocumentKind = "id" | "address" | "signature" | "collateral" | "agreement";
 

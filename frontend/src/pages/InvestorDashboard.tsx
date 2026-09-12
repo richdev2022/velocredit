@@ -2233,7 +2233,7 @@ function InvestorPayoutSection(props: any) {
       {message && <div className="rounded-xl border border-emerald-100 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 p-4 text-sm text-emerald-700 dark:text-emerald-400">{message}</div>}
       {pendingRequest && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-900/30 p-4 text-sm text-amber-800 dark:text-amber-300">
-          <div className="font-semibold">⏳ Payout account change pending admin approval</div>
+          <div className="flex items-center gap-2 font-semibold"><Icon name="clock" size={15} />Payout account change pending admin approval</div>
           <div className="mt-1 text-xs">New: {pendingRequest.newSnapshot?.bankName} ••••{String(pendingRequest.newSnapshot?.accountNumber || "").slice(-4)} — {pendingRequest.newSnapshot?.accountName}</div>
         </div>
       )}
@@ -2289,7 +2289,7 @@ function InvestorPayoutSection(props: any) {
           </div>
           <div className="md:col-span-3 flex flex-wrap gap-3 items-center">
             <button type="submit" className="btn-primary" disabled={busy === "save" || !resolvedName}>{busy === "save" ? "Saving…" : accounts.length ? "Submit changes for approval" : "Save account"}</button>
-            {accounts.length > 0 && <div className="text-xs text-slate-500">⚠️ Subsequent edits require admin approval.</div>}
+            {accounts.length > 0 && <div className="flex items-center gap-1.5 text-xs text-slate-500"><Icon name="alert" size={14} />Subsequent edits require admin approval.</div>}
           </div>
         </form>
       </section>

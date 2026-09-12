@@ -32,7 +32,7 @@ import {
   findDraftsByEmailOrPhone,
   getSavedSectionIndex,
 } from "../utils/storage";
-import { getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
+import { compactApplicationForTransport, getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
 import { useAuth } from "./AuthContext";
 import type {
   LookupDraftResponse,
@@ -234,12 +234,17 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   async function triggerBackendSave(): Promise<void> {
     if (!application) return;
     if (application.status === "SUBMITTED") return;
-    saveApplication(application, currentIndexRef.current);
-    if (getAccessToken() && application.applicantType) {
-      void saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current });
+    setSaveState("saving");
+    try {
+      saveApplication(application, currentIndexRef.current);
+      if (getAccessToken() && application.applicantType) {
+        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current });
+      }
+      setSaveState("saved");
+      setLastSavedAt(new Date().toISOString());
+    } catch {
+      setSaveState("error");
     }
-    setSaveState("saved");
-    setLastSavedAt(new Date().toISOString());
   }
 
   // ----- lifecycle: start new -----
@@ -418,7 +423,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       saveApplication(application, currentIndexRef.current);
       if (getAccessToken() && application.applicantType) {
-        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current });
+        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
@@ -585,7 +590,7 @@ function normalizeApplicationData(data: ApplicationData): ApplicationData {
     loanRequest,
     collateral: Object.assign({ provided: false, type: "", description: "", estimatedValue: "", ownership: "", location: "", documentReference: "" }, data.collateral || {}),
     calculation: data.calculation || calculateLoan(loanRequest.amount, loanRequest.tenure, { loanType: data.applicantType || "PERSONAL" }),
-    documents: data.documents || {},
+    documents: Object.fromEntries(Object.entries(data.documents || {}).filter(([slot]) => slot !== "signedAgreement")),
     witness: Object.assign({ fullName: "", phone: "" }, data.witness || {}),
     agreement: Object.assign({
       generatedAt: null,

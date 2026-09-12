@@ -19,8 +19,8 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
     const waitForImages = images.map((image) => image.complete
       ? Promise.resolve()
       : new Promise<void>((resolve) => {
-        image.addEventListener("load", resolve, { once: true });
-        image.addEventListener("error", resolve, { once: true });
+        image.addEventListener("load", () => resolve(), { once: true });
+        image.addEventListener("error", () => resolve(), { once: true });
       }));
 
     void Promise.all(waitForImages).then(async () => {
