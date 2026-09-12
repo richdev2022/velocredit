@@ -5,6 +5,7 @@
 // ============================================================================
 
 import type { SectionState } from "../types/application";
+import Icon from "./Icon";
 
 interface ProgressStepsProps {
   sections: SectionState[];
@@ -44,7 +45,7 @@ export default function ProgressSteps({ sections, currentIndex }: ProgressStepsP
                           : "bg-white text-slate-600"
                     }`}
                 >
-                  {isDone ? "✓" : i + 1}
+                  {isDone ? <Icon name="check" size={13} strokeWidth={2.5} /> : i + 1}
                 </span>
                 <span className="hidden sm:inline">{shorten(s.label)}</span>
               </div>

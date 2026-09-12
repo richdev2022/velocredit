@@ -4,6 +4,7 @@ import Layout from "../components/Layout";
 import PasswordInput from "../components/PasswordInput";
 import { useAuth } from "../context/AuthContext";
 import { loginStepUpResendOtp, resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired, type LoginStepUpRequired } from "../services/apiClient";
+import Icon from "../components/Icon";
 
 type Mode = "login" | "register" | "forgot";
 
@@ -222,17 +223,17 @@ export default function AccountAccess() {
 
                     <div className="grid grid-cols-2 gap-3 sm:gap-4 max-w-md">
                       {[
-                        { label: "Max Returns", value: "18% p.a.", icon: "📈" },
-                        { label: "Flexible Tenor", value: "30–180 days", icon: "⏱️" },
-                        { label: "Auto-Payout", value: "Direct to bank", icon: "🏦" },
-                        { label: "Early Exit", value: "Available", icon: "💨" },
+                        { label: "Max Returns", value: "18% p.a.", icon: <Icon name="chart" size={20} /> },
+                        { label: "Flexible Tenor", value: "30–180 days", icon: <Icon name="clock" size={20} /> },
+                        { label: "Auto-Payout", value: "Direct to bank", icon: <Icon name="bank" size={20} /> },
+                        { label: "Early Exit", value: "Available", icon: <Icon name="wind" size={20} /> },
                       ].map((s, i) => (
                         <div
                           key={i}
                           className="rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 p-3 sm:p-4 hover:bg-white/10 hover:border-white/20 transition-all"
                           style={{ animationDelay: `${i * 80}ms` }}
                         >
-                          <div className="text-2xl mb-1">{s.icon}</div>
+                          <div className="mb-1 text-emerald-300">{s.icon}</div>
                           <div className="text-lg sm:text-xl font-bold text-white">{s.value}</div>
                           <div className="text-[11px] sm:text-xs text-white/60 font-medium">{s.label}</div>
                         </div>
@@ -302,17 +303,17 @@ export default function AccountAccess() {
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-lg">
                       {[
-                        { value: "30m", label: "Avg. approval", icon: "⚡" },
-                        { value: "180d", label: "Max. tenor", icon: "📅" },
-                        { value: "₦5M", label: "Max. loan", icon: "💵" },
-                        { value: "0%", label: "Hidden fees", icon: "✨" },
+                        { value: "30m", label: "Avg. approval", icon: <Icon name="lightning" size={18} /> },
+                        { value: "180d", label: "Max. tenor", icon: <Icon name="calendar" size={18} /> },
+                        { value: "₦5M", label: "Max. loan", icon: <Icon name="money" size={18} /> },
+                        { value: "0%", label: "Hidden fees", icon: <Icon name="sparkles" size={18} /> },
                       ].map((s, i) => (
                         <div
                           key={i}
                           className="rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 p-3 text-center hover:bg-white/10 hover:border-white/20 transition-all animate-bounce-subtle"
                           style={{ animationDelay: `${i * 120}ms` }}
                         >
-                          <div className="text-xl mb-0.5">{s.icon}</div>
+                          <div className="mb-0.5 text-velo-200">{s.icon}</div>
                           <div className="text-base sm:text-lg font-bold text-white">{s.value}</div>
                           <div className="text-[10px] sm:text-[11px] text-white/60 font-medium">{s.label}</div>
                         </div>
@@ -716,7 +717,7 @@ export default function AccountAccess() {
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           {(loginOtpUser.channels).map((channel) => {
-                          const label = channel === "SMS" ? { title: "Text message (SMS)", svg: "📱" } : channel === "WHATSAPP" ? { title: "WhatsApp", svg: "💬" } : { title: "Email", svg: "✉️" };
+                          const label = channel === "SMS" ? { title: "Text message (SMS)", icon: <Icon name="message" size={24} /> } : channel === "WHATSAPP" ? { title: "WhatsApp", icon: <Icon name="message" size={24} /> } : { title: "Email", icon: <Icon name="email" size={24} /> };
                           return (
                             <button
                               key={channel}
@@ -725,7 +726,7 @@ export default function AccountAccess() {
                               onClick={() => chooseLoginOtpChannel(channel)}
                               className="group flex flex-col items-center justify-center gap-2 py-4 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-velo-400 dark:hover:border-velo-500 hover:shadow-md transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                             >
-                              <span className="text-2xl">{label.svg}</span>
+                              <span className="text-velo-600 dark:text-velo-400">{label.icon}</span>
                               <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 group-hover:text-velo-700 dark:group-hover:text-velo-400">{label.title}</span>
                             </button>
                           );

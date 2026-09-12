@@ -196,7 +196,7 @@ function ReviewCard({
 function documentLabel(app: ApplicationData, slot: keyof typeof app.documents): string {
   const doc = app.documents?.[slot];
   if (!doc) return "Not uploaded";
-  return `✓ ${doc.name}`;
+  return `Uploaded: ${doc.name}`;
 }
 
 function formatMoney(v?: string): string {

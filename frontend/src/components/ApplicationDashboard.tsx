@@ -7,6 +7,7 @@
 import type { ApplicationData, SectionState } from "../types/application";
 import ProgressSteps from "./ProgressSteps";
 import SaveProgress, { type SaveState } from "./SaveProgress";
+import Icon from "./Icon";
 
 interface ApplicationDashboardProps {
   application: ApplicationData;
@@ -161,7 +162,7 @@ function SectionRow({
               "bg-velo-100 text-velo-700"
             }`}
         >
-          {isCompleted ? "✓" : index}
+          {isCompleted ? <Icon name="check" size={17} strokeWidth={2.5} /> : index}
         </span>
         <div className="min-w-0">
           <div className="font-medium text-velo-900 text-sm sm:text-base">{section.label}</div>

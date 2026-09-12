@@ -100,10 +100,20 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
 }
 
-function documentImage(document: { data?: string; type?: string } | undefined, label: string): string {
-  if (!document?.data) return `<div class="media-placeholder">${escapeHtml(label)} not uploaded</div>`;
-  const type = document.type?.startsWith("image/") ? document.type : "image/png";
-  return `<img class="agreement-media" src="data:${type};base64,${document.data}" alt="${escapeHtml(label)}" />`;
+function documentImage(document: { data?: string; type?: string; driveUrl?: string; previewUrl?: string } | undefined, label: string): string {
+  const imageType = document?.type && /^image\/(?:jpeg|jpg|png|webp|gif)$/i.test(document.type)
+    ? document.type
+    : "image/png";
+  const remoteUrl = document?.previewUrl || document?.driveUrl;
+  const source = document?.data
+    ? `data:${imageType};base64,${document.data}`
+    : remoteUrl && /^https:\/\//i.test(remoteUrl) ? remoteUrl : undefined;
+
+  if (!source) return `<div class="media-placeholder">${escapeHtml(label)} not uploaded</div>`;
+  if (!document?.type?.startsWith("image/")) {
+    return `<a class="agreement-media-link" href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer">View ${escapeHtml(label)}</a>`;
+  }
+  return `<img class="agreement-media" src="${escapeHtml(source)}" alt="${escapeHtml(label)}" />`;
 }
 
 function maskBvn(bvn?: string): string {
@@ -183,7 +193,7 @@ export function generateLoanAgreement(
   const collateralDocument = app.documents?.collateralMedia;
   const collateralHtml = collateral?.provided || collateral?.type
     ? `<h2 class="agr-h2"><span class="bar"></span>COLLATERAL INFORMATION</h2>
-      <div class="collateral-card"><div class="collateral-grid"><div><span>Type</span><strong>${collateral.type || "—"}</strong></div><div><span>Estimated Value</span><strong>${collateral.estimatedValue ? `₦${collateral.estimatedValue}` : "—"}</strong></div><div><span>Ownership</span><strong>${collateral.ownership || "—"}</strong></div><div><span>Location</span><strong>${collateral.location || "—"}</strong></div></div><p class="agr-p"><b>Description:</b> ${collateral.description || "—"}</p><p class="agr-p"><b>Title / Registration Reference:</b> ${collateral.documentReference || "—"}</p><p class="agr-p"><b>Supporting Evidence:</b> ${collateralDocument?.name || "Not uploaded"}${collateralDocument?.type ? ` (${collateralDocument.type})` : ""}</p></div>`
+      <div class="collateral-card"><div class="collateral-grid"><div><span>Type</span><strong>${collateral.type || "—"}</strong></div><div><span>Estimated Value</span><strong>${collateral.estimatedValue ? `₦${collateral.estimatedValue}` : "—"}</strong></div><div><span>Ownership</span><strong>${collateral.ownership || "—"}</strong></div><div><span>Location</span><strong>${collateral.location || "—"}</strong></div></div><p class="agr-p"><b>Description:</b> ${collateral.description || "—"}</p><p class="agr-p"><b>Title / Registration Reference:</b> ${collateral.documentReference || "—"}</p><p class="agr-p"><b>Supporting Evidence:</b> ${collateralDocument?.name || "Not uploaded"}${collateralDocument?.type ? ` (${collateralDocument.type})` : ""}</p>${collateralDocument ? documentImage(collateralDocument, "Collateral evidence") : ""}</div>`
     : `<h2 class="agr-h2"><span class="bar"></span>COLLATERAL INFORMATION</h2><p class="agr-p">No collateral was provided for this application.</p>`;
 
   const html = `
@@ -266,7 +276,7 @@ export function generateLoanAgreement(
   <p class="agr-p vline"><b>6.3 &nbsp; Repayment Date:</b> ${bold(calc.repaymentDateLabel)}</p>
   <p class="agr-p">6.4 &nbsp; Repayment Method: The Borrower authorises the Lender to debit the nominated account, card, or wallet on the Repayment Date via direct debit, transfer, or such other channel as the Lender designates.</p>
   <p class="agr-p">6.5 &nbsp; Time is of the essence. If the Repayment Date falls on a non-business day, payment is due on the preceding Business Day.</p>
-  <p class="agr-p">6.6 &nbsp; Application of Payments: Recovery costs → Late Fees → Interest → Principal.</p>
+  <p class="agr-p">6.6 &nbsp; Application of Payments: Recovery costs, then Late Fees, then Interest, then Principal.</p>
 
   <h2 class="agr-h2"><span class="bar"></span>7. EARLY REPAYMENT</h2>
   <p class="agr-p">The Borrower may prepay the Facility in whole or in part at any time without penalty. Partial prepayments reduce the outstanding Principal. Full prepayment entitles the Borrower to a proportionate rebate of unearned upfront fees where applicable.</p>

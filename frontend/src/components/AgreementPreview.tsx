@@ -14,6 +14,23 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
   const contentRef = useRef<HTMLDivElement>(null);
   const [readToEnd, setReadToEnd] = useState(false);
 
+  function handlePrint() {
+    const images = Array.from(contentRef.current?.querySelectorAll("img") ?? []);
+    const waitForImages = images.map((image) => image.complete
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+        image.addEventListener("load", resolve, { once: true });
+        image.addEventListener("error", resolve, { once: true });
+      }));
+
+    void Promise.all(waitForImages).then(async () => {
+      await document.fonts?.ready;
+      document.body.classList.add("printing-agreement");
+      window.addEventListener("afterprint", () => document.body.classList.remove("printing-agreement"), { once: true });
+      window.print();
+    });
+  }
+
   useEffect(() => {
     setReadToEnd(false);
     onReadToEnd?.(false);
@@ -36,7 +53,7 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
           <h3 className="text-sm font-semibold text-velo-900">Agreement Preview</h3>
           <p className="text-xs text-slate-500">Scroll to read the complete agreement before continuing.</p>
         </div>
-        <button type="button" className="btn-secondary text-xs" onClick={() => window.print()}>
+        <button type="button" className="btn-secondary text-xs" onClick={handlePrint}>
           Print full agreement
         </button>
       </div>
@@ -193,17 +210,9 @@ function agreementCss(): string {
     .en-foot { font-weight: 700; color: #0C2947; font-size: 11px; }
 
     .agreement-content { word-break: break-word; overflow-wrap: break-word; }
-    .agreement-media { display: block; max-width: 160px; max-height: 110px; object-fit: contain; border: 1px solid #CBD5E1; border-radius: 6px; margin: 8px 0; }
+    .agreement-media { display: block; max-width: 260px; max-height: 220px; object-fit: contain; border: 1px solid #CBD5E1; border-radius: 6px; margin: 8px 0; break-inside: avoid; }
+    .agreement-media-link { display: inline-block; color: #1976D2; font-size: 12px; font-weight: 600; margin: 8px 0; text-decoration: underline; }
     .media-placeholder { color: #64748b; font-size: 11px; font-style: italic; margin: 8px 0; }
 
-    @media print {
-      body { background: #fff !important; }
-      body * { visibility: hidden; }
-      .agreement-print-target, .agreement-print-target * { visibility: visible; }
-      .agreement-print-target { position: absolute; inset: 0; width: 100%; overflow: visible !important; }
-      .agreement-content { max-height: none !important; overflow: visible !important; }
-      .no-print { display: none !important; }
-      .page-break { page-break-before: always; }
-    }
   </style>`;
 }

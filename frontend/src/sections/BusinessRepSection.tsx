@@ -14,6 +14,7 @@ import { useApplication } from "../context/ApplicationContext";
 import { businessRepSchema, disbursementAccountSchema, type BusinessRepForm, type DisbursementAccountForm } from "../utils/validation";
 import { getAccessToken } from "../services/apiClient";
 import { config } from "../utils/config";
+import Icon from "../components/Icon";
 
 const POSITIONS = [
   { value: "Owner",              label: "Owner" },
@@ -207,7 +208,7 @@ export default function BusinessRepSection() {
         </div>
 
         <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-900/30 p-4 text-sm text-amber-800 dark:text-amber-300">
-          <div className="font-semibold">💡 Highly recommended</div>
+          <div className="flex items-center gap-1.5 font-semibold"><Icon name="sparkles" size={15} />Highly recommended</div>
           <p className="mt-1 leading-6">
             Use your Velo account details for loan disbursement for the fastest loan processing.
             You can add or change your disbursement bank to any Nigerian bank later from your borrower dashboard.

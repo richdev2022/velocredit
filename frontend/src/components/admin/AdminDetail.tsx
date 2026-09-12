@@ -13,6 +13,7 @@ import {
 import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
 import AgreementPreview from "../AgreementPreview";
 import { generateLoanAgreement } from "../../services/agreementGenerator";
+import Icon from "../Icon";
 
 interface AdminDetailProps {
   applicationId: string;
@@ -83,7 +84,8 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     return (
       <div className="space-y-3">
         <button type="button" onClick={onBack} className="btn-ghost text-xs">
-          ← Back to list
+          <Icon name="arrowLeft" size={14} />
+          Back to list
         </button>
         <div className="rounded-lg bg-red-50 border border-red-100 p-3 text-sm text-red-700">
           {error}

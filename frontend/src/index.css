@@ -263,19 +263,46 @@
 
 /* Print-friendly styles for the loan agreement */
 @media print {
+  @page { margin: 12mm; }
+  html, body { height: auto !important; overflow: visible !important; }
   body { background: #fff !important; }
   .no-print { display: none !important; }
-  .agreement-print {
-    max-height: none !important;
-    overflow: visible !important;
-    box-shadow: none !important;
-    border: none !important;
-    padding: 0 !important;
-  }
-  body.printing-agreement > * { visibility: hidden !important; }
+  body.printing-agreement #root,
+  body.printing-agreement #root * { visibility: hidden !important; }
   body.printing-agreement .agreement-print-target,
   body.printing-agreement .agreement-print-target * { visibility: visible !important; }
-  body.printing-agreement .agreement-print-target { position: absolute !important; inset: 0 !important; width: 100% !important; }
+  body.printing-agreement .agreement-print-target {
+    position: static !important;
+    display: block !important;
+    width: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+  body.printing-agreement .agreement-print,
+  body.printing-agreement .agreement-content {
+    display: block !important;
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+  body.printing-agreement .agreement-doc,
+  body.printing-agreement .collateral-card,
+  body.printing-agreement .summary {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+  body.printing-agreement .agreement-media {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  body.printing-agreement .page-break {
+    break-before: page;
+    page-break-before: always;
+  }
   body.printing-receipt > * { visibility: hidden !important; }
   body.printing-receipt .transaction-receipt-modal,
   body.printing-receipt .transaction-receipt-modal * { visibility: visible !important; }

@@ -35,6 +35,7 @@ import { formatNaira } from "../../utils/loanCalculator";
 import { calculateLoan } from "../../utils/loanCalculator";
 import type { TenureOption, FeeConfiguration, FeeKey, FeeConfig, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey } from "../../types/loan";
 import ProgramEditor from "./ProgramEditor";
+import Icon from "../Icon";
 
 const FEE_LABELS: Record<FeeKey, string> = {
   interest: "Monthly Interest Rate",
@@ -210,7 +211,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         defaultInvestmentAnnualRatePercent: Number(defaultAnnualRate),
       });
       setPlatformSettings(result.settings);
-      setPlatformMessage("✅ Platform settings saved successfully.");
+      setPlatformMessage("Platform settings saved successfully.");
       setTimeout(() => setPlatformMessage(""), 4000);
     } catch (e: any) {
       setPlatformError(e.message || "Failed to save settings");
@@ -228,10 +229,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     setEarningRateMsg("");
     try {
       await adminSetInvestorEarningRate(earningInvestorId, Number(earningRatePercent));
-      setEarningRateMsg("✅ Investor earning rate saved successfully.");
+      setEarningRateMsg("Investor earning rate saved successfully.");
       setTimeout(() => setEarningRateMsg(""), 4000);
     } catch (e: any) {
-      setEarningRateMsg("❌ " + (e.message || "Failed"));
+      setEarningRateMsg("Error: " + (e.message || "Failed"));
     } finally {
       setEarningRateSaving(false);
     }
@@ -250,12 +251,12 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         reason: creditReason,
         description: creditDescription || undefined,
       });
-      setCreditMsg("✅ Investor wallet credited successfully.");
+      setCreditMsg("Investor wallet credited successfully.");
       setCreditAmountNaira("50000");
       setCreditDescription("");
       setTimeout(() => setCreditMsg(""), 4000);
     } catch (e: any) {
-      setCreditMsg("❌ " + (e.message || "Failed"));
+      setCreditMsg("Error: " + (e.message || "Failed"));
     } finally {
       setCreditSaving(false);
     }
@@ -500,7 +501,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             {saved && (
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400 text-xs font-bold border border-emerald-100 dark:border-emerald-900/40 animate-fade-in">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                Saved ✓
+                Saved
               </span>
             )}
             {!resetConfirm ? (
@@ -551,7 +552,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         <>
         {/* ===== Left: Configuration Sections ===== */}
         <div className="lg:col-span-2 space-y-6">
-          <Section title="Personal & Business Loan Programs" subtitle="Configure limits, tenures, rates, fees, and collateral rules independently for each loan type." icon="🎯">
+          <Section title="Personal & Business Loan Programs" subtitle="Configure limits, tenures, rates, fees, and collateral rules independently for each loan type." icon={<Icon name="target" size={20} />}>
             <div className="space-y-5">
               {(["PERSONAL", "BUSINESS"] as LoanProgramKey[]).map((type) => (
                 <ProgramEditor key={type} type={type} value={programs[type]} onChange={(value) => setPrograms((current) => ({ ...current, [type]: value }))} />
@@ -559,7 +560,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           </Section>
 
-          <Section title="Loan Amount Limits" subtitle="Legacy global defaults retained for compatibility. New applications use the loan program settings above." icon="💰">
+          <Section title="Loan Amount Limits" subtitle="Legacy global defaults retained for compatibility. New applications use the loan program settings above." icon={<Icon name="money" size={20} />}>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <NumberField
                 label="Minimum Loan Amount (₦)"
@@ -579,7 +580,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           </Section>
 
-          <Section title="Repayment Tenures" subtitle="Select the repayment periods available to borrowers." icon="📅">
+          <Section title="Repayment Tenures" subtitle="Select the repayment periods available to borrowers." icon={<Icon name="calendar" size={20} />}>
             <Field label="Tenures (days)">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {tenureOptions.map((tenure) => (
@@ -600,7 +601,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </Field>
           </Section>
 
-          <Section title="Fees Configuration (Global)" subtitle="Each fee can be a flat ₦ amount or a % of the loan amount. Late fee is shown separately by default. These apply to ALL tenures unless you set per-tenure overrides below." icon="💸">
+          <Section title="Fees Configuration (Global)" subtitle="Each fee can be a flat ₦ amount or a % of the loan amount. Late fee is shown separately by default. These apply to ALL tenures unless you set per-tenure overrides below." icon={<Icon name="money" size={20} />}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
                 <FeeField
@@ -618,7 +619,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           <Section
             title="Per-Tenure Fee Overrides"
             subtitle="Optional: Set DIFFERENT fees per loan tenor. Toggle a tenure ON to override global fees. Any fee left untoggled inherits from the Global config above."
-            icon="📊"
+            icon={<Icon name="chart" size={20} />}
           >
             <div className="space-y-3">
               {tenures.length === 0 && (
@@ -656,9 +657,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                             {t.value} Day Tenure
                           </div>
                           <div className="text-[11px] text-slate-500">
-                            {state.enabled
-                              ? "✅ Custom fees ACTIVE for this tenure"
-                              : "Using global fees (inherited)"}
+                            {state.enabled ? <span className="inline-flex items-center gap-1 text-emerald-700"><Icon name="check" size={12} />Custom fees active for this tenure</span> : "Using global fees (inherited)"}
                           </div>
                         </div>
                       </div>
@@ -704,7 +703,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           </Section>
 
-          <Section title="Company & Branding" subtitle="Displayed throughout the loan portal and documents." icon="🏢">
+          <Section title="Company & Branding" subtitle="Displayed throughout the loan portal and documents." icon={<Icon name="bank" size={20} />}>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field label="Company Name">
                 <input
@@ -763,7 +762,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           </Section>
 
-          <Section title="Environment & Integrations" subtitle="Deployment-controlled values are shown for visibility. Secrets are never exposed in the browser or editable here." icon="🔒">
+          <Section title="Environment & Integrations" subtitle="Deployment-controlled values are shown for visibility. Secrets are never exposed in the browser or editable here." icon={<Icon name="lock" size={20} />}>
             <div className="grid gap-3 sm:grid-cols-2">
               {[
                 ["Database", "Server secret", "Not exposed"],
@@ -788,7 +787,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
             <div className="relative">
               <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/15 border border-white/20 text-[10px] font-bold mb-3">
-                🔮 LIVE PREVIEW
+                <Icon name="sparkles" size={12} />LIVE PREVIEW
               </div>
               <h3 className="font-extrabold text-white mb-0.5">Sample Calculation</h3>
               <p className="text-xs text-white/70 mb-4">
@@ -856,7 +855,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
               <div className="flex items-start justify-between flex-wrap gap-4 mb-5">
                 <div>
                   <h3 className="text-lg font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
-                    <span className="text-2xl">💼</span> Investor Management — Withdrawal Fees &amp; Earning Rates
+                    <Icon name="briefcase" size={22} />Investor Management — Withdrawal Fees &amp; Earning Rates
                   </h3>
                   <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
                     Configure global withdrawal fees, default investment earning rates, and per-investor overrides.
@@ -868,7 +867,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     disabled={platformLoading}
                     className="btn-primary !py-2 !px-4 text-xs !font-extrabold"
                   >
-                    {platformLoading ? "Saving…" : "💾 Save Platform Settings"}
+                    {platformLoading ? "Saving…" : <><Icon name="save" size={14} />Save Platform Settings</>}
                   </button>
                 </div>
               </div>
@@ -957,7 +956,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(59,130,246,0.12)] rounded-2xl border-t-4 border-blue-500">
                 <h3 className="text-md font-extrabold text-velo-900 mb-1 flex items-center gap-2">
-                  <span className="text-xl">📈</span> Set Custom Earning Rate per Investor
+                  <Icon name="chart" size={20} />Set Custom Earning Rate per Investor
                 </h3>
                 <p className="text-xs text-slate-500 mb-4">Override the default earning rate for a specific investor.</p>
                 <div className="space-y-3">
@@ -997,15 +996,15 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     disabled={earningRateSaving}
                     className="btn-primary w-full !py-2.5 !font-extrabold text-sm"
                   >
-                    {earningRateSaving ? "Saving…" : "✅ Save Custom Earning Rate"}
+                    {earningRateSaving ? "Saving…" : <><Icon name="check" size={14} />Save Custom Earning Rate</>}
                   </button>
-                  {earningRateMsg && <div className={`rounded-lg px-3 py-2 text-xs font-bold ${earningRateMsg.charAt(0) === "✅" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{earningRateMsg}</div>}
+                  {earningRateMsg && <div className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${earningRateMsg.startsWith("Error:") ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}><Icon name={earningRateMsg.startsWith("Error:") ? "alert" : "check"} size={14} />{earningRateMsg.replace(/^Error: /, "")}</div>}
                 </div>
               </div>
               
               <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(245,158,11,0.12)] rounded-2xl border-t-4 border-amber-500">
                 <h3 className="text-md font-extrabold text-velo-900 mb-1 flex items-center gap-2">
-                  <span className="text-xl">💰</span> Credit Investor Wallet
+                  <Icon name="wallet" size={20} />Credit Investor Wallet
                 </h3>
                 <p className="text-xs text-slate-500 mb-4">Manually add funds to an investor's wallet (admin ledger is debited, investor credited).</p>
                 <div className="space-y-3">
@@ -1068,9 +1067,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     disabled={creditSaving}
                     className="btn-primary w-full !py-2.5 !font-extrabold text-sm !bg-gradient-to-r !from-emerald-500 !to-emerald-600 hover:!from-emerald-600 hover:!to-emerald-700"
                   >
-                    {creditSaving ? "Processing…" : "✅ Credit Investor Wallet"}
+                    {creditSaving ? "Processing…" : <><Icon name="check" size={14} />Credit Investor Wallet</>}
                   </button>
-                  {creditMsg && <div className={`rounded-lg px-3 py-2 text-xs font-bold ${creditMsg.charAt(0) === "✅" ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400" : "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400"}`}>{creditMsg}</div>}
+                  {creditMsg && <div className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${creditMsg.startsWith("Error:") ? "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400" : "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400"}`}><Icon name={creditMsg.startsWith("Error:") ? "alert" : "check"} size={14} />{creditMsg.replace(/^Error: /, "")}</div>}
                 </div>
               </div>
             </div>
@@ -1084,7 +1083,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
               <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
                 <div>
                   <h3 className="text-md font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
-                    <span className="text-xl">⏳</span> Pending Investor Withdrawals
+                    <Icon name="clock" size={20} />Pending Investor Withdrawals
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                     Approve or reject pending withdrawal requests. Approved payouts are sent immediately via Flutterwave transfer.
@@ -1146,14 +1145,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                                   disabled={withdrawalActioning === w.id}
                                   className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-bold transition"
                                 >
-                                  ✓ Approve
+                                  <Icon name="check" size={13} />Approve
                                 </button>
                                 <button
                                   onClick={() => handleRejectWithdrawal(w.id)}
                                   disabled={withdrawalActioning === w.id}
                                   className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[11px] font-bold transition"
                                 >
-                                  ✕ Reject
+                                  <Icon name="x" size={13} />Reject
                                 </button>
                               </div>
                             )}
@@ -1178,7 +1177,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-100/80">Admin Ledger Balance</span>
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/10 text-[10px] font-bold text-emerald-50 border border-white/10">
-                    ✅ SYNCED
+                    <Icon name="check" size={12} />SYNCED
                   </span>
                 </div>
                 <div className="mt-1 text-3xl sm:text-4xl font-black tracking-tight">
@@ -1204,7 +1203,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-md font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
-                    <span>📒</span> Admin Ledger Activity
+                    <Icon name="history" size={18} />Admin Ledger Activity
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Debit/Credit entries for all investment ops</p>
                 </div>
@@ -1233,7 +1232,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                         className="flex items-start gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:shadow-md cursor-pointer transition"
                       >
                         <div className={`mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-lg flex-shrink-0 ${e.direction === "DEBIT" ? "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400" : "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"}`}>
-                          {e.direction === "DEBIT" ? "▼" : "▲"}
+                          <Icon name={e.direction === "DEBIT" ? "arrowDown" : "arrowUp"} size={15} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
@@ -1277,7 +1276,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                       disabled={ledgerOffset === 0}
                       className="px-2.5 py-1 text-[10px] font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
                     >
-                      ← Prev
+                      <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={12} />Prev</span>
                     </button>
                     <button
                       type="button"
@@ -1289,7 +1288,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                       disabled={ledgerOffset + LEDGER_LIMIT >= ledgerTotal}
                       className="px-2.5 py-1 text-[10px] font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
                     >
-                      Next →
+                      <span className="inline-flex items-center gap-1">Next<Icon name="arrowRight" size={12} /></span>
                     </button>
                   </div>
                 </div>
@@ -1305,7 +1304,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${selectedLedgerEntry.direction === "DEBIT" ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600"}`}>
-                        {selectedLedgerEntry.direction === "DEBIT" ? "▼" : "▲"}
+                        <Icon name={selectedLedgerEntry.direction === "DEBIT" ? "arrowDown" : "arrowUp"} size={14} />
                       </span>
                       <h3 className="text-base font-black text-velo-900 dark:text-white">Ledger Entry Details</h3>
                     </div>
@@ -1316,7 +1315,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     onClick={() => setSelectedLedgerEntry(null)}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold"
                   >
-                    ✕
+                    <Icon name="x" size={16} />
                   </button>
                 </div>
 
@@ -1404,7 +1403,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         <div className="velo-card p-3 flex items-center gap-2 shadow-elevated rounded-2xl border-0 dark:bg-slate-900 dark:border-slate-800">
           <div className="flex-1 min-w-0">
             {saved ? (
-              <div className="text-xs font-bold text-emerald-700 dark:text-emerald-400">✓ Settings saved</div>
+              <div className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 dark:text-emerald-400"><Icon name="check" size={13} />Settings saved</div>
             ) : (
               <div className="text-xs text-slate-500 dark:text-slate-400">Click Save to persist changes</div>
             )}
@@ -1422,12 +1421,12 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
    Small UI helpers
    ======================================================================= */
 
-function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon?: string; children: React.ReactNode }) {
+function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl border-0">
       <div className="mb-4">
         <div className="flex items-center gap-2">
-          {icon && <span className="text-xl leading-none">{icon}</span>}
+          {icon && <span className="inline-flex text-velo-600 leading-none">{icon}</span>}
           <h3 className="font-extrabold text-velo-900 text-base">{title}</h3>
         </div>
         {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
