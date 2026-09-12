@@ -2773,6 +2773,11 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
     return;
   }
   const before = { ...kyc };
+  const requiredChecks = ["bvn", "nin", "liveness", "proofOfAddress", "signature"] as const;
+  if (parsed.data.decision === "VERIFIED" && !requiredChecks.every((key) => kyc.checklist[key])) {
+    res.status(400).json({ ok: false, error: "Every required KYC check must be approved before verifying the overall KYC status." });
+    return;
+  }
   if (parsed.data.decision === "REJECTED" && !String(parsed.data.rejectedReason ?? parsed.data.note).trim()) {
     res.status(400).json({ ok: false, error: "A rejection reason is required" });
     return;
@@ -2787,7 +2792,7 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
     if (category) setKycCategoryResult(kyc, category as KycCategory, "REJECTED", kyc.rejectionReason);
   }
   if (parsed.data.decision === "VERIFIED") {
-    for (const category of ["BVN", "NIN", "LIVENESS", "ADDRESS", "PASSPORT", "SIGNATURE"] as KycCategory[]) setKycCategoryResult(kyc, category, "VERIFIED");
+    for (const category of ["BVN", "NIN", "LIVENESS", "ADDRESS", "SIGNATURE"] as KycCategory[]) setKycCategoryResult(kyc, category, "VERIFIED");
   }
   if (parsed.data.checklistOverride) Object.assign(kyc.checklist, parsed.data.checklistOverride);
   kyc.updatedAt = new Date().toISOString();
@@ -4015,6 +4020,7 @@ router.post("/borrower/disbursement-account/resolve", requireAuth, requireRole("
     }
     res.json({
       ok: true,
+      accountName: String(result.data.account_name),
       resolved: {
         accountName: String(result.data.account_name),
         accountNumber: String(result.data.account_number ?? parsed.data.accountNumber),
