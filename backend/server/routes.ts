@@ -2862,13 +2862,14 @@ router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"
 router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const type = typeof req.query.type === "string" ? req.query.type : undefined;
+  const borrowerId = typeof req.query.borrowerId === "string" ? req.query.borrowerId : undefined;
   const search = typeof req.query.search === "string" ? req.query.search.toLowerCase() : undefined;
   const filtered = loanApplications.filter((application) => {
     const snapshot = application.customerSnapshot as Record<string, unknown> | undefined;
     const business = snapshot?.businessInfo as Record<string, unknown> | undefined;
     const applicantType = business?.businessName ? "BUSINESS" : "PERSONAL";
     const searchable = JSON.stringify({ application, snapshot }).toLowerCase();
-    return (!status || application.status === status) && (!type || applicantType === type) && (!search || searchable.includes(search));
+    return (!status || application.status === status) && (!type || applicantType === type) && (!borrowerId || application.borrowerId === borrowerId) && (!search || searchable.includes(search));
   }).map((a) => seedLoanStageStatuses(a));
   const page = paginate(filtered, req.query as Record<string, unknown>);
   res.json({ ok: true, loans: page.items, disbursedLoans: loans, meta: page.meta, stages: LOAN_STAGES });

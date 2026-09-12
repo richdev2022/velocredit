@@ -33,13 +33,13 @@ export type AdminSection = "overview" | "borrowers" | "investors" | "kyc" | "pay
 const moneyKeys = new Set(["disbursedPrincipal", "outstandingPrincipal", "activeInvestmentPrincipal"]);
 const labels: Record<string, string> = { users: "Total users", investors: "Investors", borrowers: "Borrowers", kycPending: "KYC pending", kycVerified: "KYC verified", loans: "Loan applications", approvedLoans: "Approved loans", disbursedPrincipal: "Disbursed principal", outstandingPrincipal: "Outstanding principal", investments: "Investments", activeInvestmentPrincipal: "Active investment principal", pendingPayments: "Pending payments", pendingPayouts: "Pending payouts", failedPayouts: "Failed payouts", reconciliationItems: "Reconciliation items" };
 
-export default function AdminWorkspace({ section }: { section: AdminSection }) {
+export default function AdminWorkspace({ section, onSelectBorrower, onSelectLoan }: { section: AdminSection; onSelectBorrower?: (user: any) => void; onSelectLoan?: (loanId: string) => void }) {
   if (section === "overview") return <Overview />;
-  if (section === "borrowers") return <Users role="BORROWER" title="Borrowers" />;
+  if (section === "borrowers") return <Users role="BORROWER" title="Borrowers" onSelect={onSelectBorrower} />;
   if (section === "investors") return <Investors />;
   if (section === "kyc") return <Kyc />;
   if (section === "payouts") return <Payouts />;
-  if (section === "loans") return <Loans />;
+  if (section === "loans") return <Loans onSelect={onSelectLoan} />;
   if (section === "reconciliation") return <Reconciliation />;
   return <Audit />;
 }
@@ -93,7 +93,7 @@ function Overview() {
   return <div className="space-y-5"><div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">{Object.entries(totals).map(([key, value]) => <div key={key} className={`rounded-xl border p-4 ${Number(value) > 0 && ["kycPending", "pendingPayouts", "failedPayouts", "reconciliationItems"].includes(key) ? "border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20" : "border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50"}`}><div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{labels[key] || key}</div><div className="mt-2 text-xl font-bold text-velo-900 dark:text-white">{moneyKeys.has(key) ? formatNaira(Number(value)) : Number(value).toLocaleString()}</div></div>)}</div><Panel title="Portfolio analysis"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{chartKeys.map((key) => <div key={key}><div className="mb-1 flex justify-between text-xs text-slate-500 dark:text-slate-400"><span>{labels[key]}</span><strong className="text-velo-900 dark:text-white">{Number(totals[key] || 0).toLocaleString()}</strong></div><div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800"><div className="h-3 rounded-full bg-velo-500 transition-all" style={{ width: `${Math.max(4, Number(totals[key] || 0) / chartMax * 100)}%` }} /></div></div>)}</div></Panel><Panel title="Recent activity"><Empty text={data.recentActivity?.length ? `${data.recentActivity.length} recent events available in Audit logs.` : "No recent activity yet."} /></Panel></div>;
 }
 
-function Users({ role, title }: { role: "BORROWER" | undefined; title: string }) {
+function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title: string; onSelect?: (user: any) => void }) {
   const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const size = 20;
   const [createOpen, setCreateOpen] = useState(false);
   const [editFor, setEditFor] = useState<any>(null);
@@ -222,6 +222,7 @@ function Users({ role, title }: { role: "BORROWER" | undefined; title: string })
                 <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "—"}</td>
                 <td className="px-3 py-3">
                   <div className="flex gap-2">
+                    {onSelect && <button type="button" onClick={() => onSelect(user)} className="px-2.5 py-1 rounded-lg bg-velo-500 text-[11px] font-bold text-white hover:bg-velo-600">View</button>}
                     <button type="button" onClick={() => openEdit(user)} className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300">Edit</button>
                   </div>
                 </td>
@@ -552,7 +553,7 @@ function Payouts() {
   return <Panel title="Payout operations (investor)" action={<span className="text-xs text-slate-500 dark:text-slate-400">{rows.length} payouts</span>}>{error && <ErrorBox message={error} />}{rows.length ? <Table headers={["Payout ID", "Investor", "Amount", "Type", "Status", "Created", "Provider details", "Actions"]}>{rows.map((item) => { const isOpen = !!expanded[item.id]; const investor = typeof item.userId === "string" ? item.userId : (item.userId?.id ?? ""); return (<React.Fragment key={item.id}><tr className={isOpen ? "bg-emerald-50/40 dark:bg-emerald-900/10" : ""}><td className="px-3 py-3"><button type="button" onClick={() => setExpanded({ ...expanded, [item.id]: !isOpen })} className="text-left"><div className="font-mono text-xs dark:text-slate-200 inline-flex items-center gap-1"><span className={`transform transition-transform ${isOpen ? "rotate-90" : ""}`}>›</span>{item.id}</div>{item.investmentId ? <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">Investment: {String(item.investmentId).slice(0, 10)}…</div> : null}</button></td><td className="px-3 py-3 dark:text-slate-300 text-xs">{item.user?.fullName ?? item.user?.email ?? investor}</td><td className="px-3 py-3 font-semibold dark:text-slate-200">{formatNaira(Number(item.amountNaira || 0))}<div className="text-[11px] text-slate-500 dark:text-slate-400">P {formatNaira(Number(item.principalNaira || 0))} · E {formatNaira(Number(item.earningsNaira || 0))}</div></td><td className="px-3 py-3 text-xs dark:text-slate-300">{item.payoutType || "PAYOUT"}</td><td className="px-3 py-3"><StatusBadge status={item.status} /></td><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{item.createdAt ? new Date(item.createdAt).toLocaleDateString() : "—"}</td><td className="px-3 py-3"><ProviderResponse title="View transfer" data={item.providerTransfer} error={item.error} /></td><td className="px-3 py-3"><div className="flex flex-wrap gap-2">{["PENDING_APPROVAL"].includes(item.status) && <button className="btn-primary text-xs" disabled={busy === item.id} onClick={() => action(item.id, "approve")}>Approve</button>}{item.status === "FAILED" && <button className="btn-secondary text-xs" disabled={busy === item.id} onClick={() => action(item.id, "retry")}>Retry</button>}</div></td></tr>{isOpen && (<tr><td colSpan={8} className="px-3 py-4 bg-slate-50 dark:bg-slate-900/50 border-b border-slate-100 dark:border-slate-800"><div className="grid gap-3 sm:grid-cols-2 text-xs"><div className="rounded-lg bg-white dark:bg-slate-900 p-3 border border-slate-100 dark:border-slate-800"><div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Payout account snapshot</div><pre className="max-h-60 overflow-auto font-mono text-[11px] text-slate-700 dark:text-slate-300">{JSON.stringify(item.payoutAccountSnapshot || {}, null, 2)}</pre></div><div className="rounded-lg bg-white dark:bg-slate-900 p-3 border border-slate-100 dark:border-slate-800"><div className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Provider reference / timestamps</div><div>providerReference: <span className="font-mono">{item.providerReference || "—"}</span></div><div>verifiedAt: <span className="font-mono">{item.verifiedAt || "—"}</span></div><div>updatedAt: <span className="font-mono">{item.updatedAt || item.createdAt || "—"}</span></div>{item.retryCount != null && <div>retryCount: {Number(item.retryCount || 0)}</div>}</div></div></td></tr>)}</React.Fragment>); })}</Table> : <Empty text="No payouts require attention." />}</Panel>;
 }
 
-function Loans() {
+function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   const [rows, setRows] = useState<any[]>([]);
   const [disbursedLoans, setDisbursedLoans] = useState<any[]>([]);
   const [disbursements, setDisbursements] = useState<LoanDisbursement[]>([]);
@@ -588,7 +589,7 @@ function Loans() {
       <React.Fragment key={loanApp.id || loanApp.applicationId}>
         <tr>
           <td className="px-3 py-3">
-            <div className="font-mono text-xs dark:text-slate-200">{loanApp.applicationId || loanApp.id}</div>
+            <button type="button" onClick={() => onSelect?.(loanApp.applicationId || loanApp.id)} className="font-mono text-xs font-semibold text-velo-700 hover:underline dark:text-velo-400">{loanApp.applicationId || loanApp.id}</button>
             {loanRecordId && loanRecordId !== appId && <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Loan record: {String(loanRecordId).slice(0, 12)}…</div>}
           </td>
           <td className="px-3 py-3 dark:text-slate-300">

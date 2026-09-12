@@ -114,6 +114,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     collateral: app.customerSnapshot?.collateral || {},
     documents: app.documents || {},
     witness: app.customerSnapshot?.witness || { fullName: "", phone: "" },
+    agreement: { executionDate: app.loan.executionDate || app.createdAt },
   } as any;
   const agreementCalculation = {
     loanAmount,

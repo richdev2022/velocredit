@@ -4,6 +4,7 @@ import Layout from "../components/Layout";
 import AdminLogin from "../components/admin/AdminLogin";
 import AdminApplicationsTable from "../components/admin/AdminApplicationsTable";
 import AdminDetail from "../components/admin/AdminDetail";
+import AdminBorrowerDetail from "../components/admin/AdminBorrowerDetail";
 import AdminSettings from "../components/admin/AdminSettings";
 import LoanManagerAdmin from "../components/admin/LoanManagerAdmin";
 import AdminWorkspace, { type AdminSection } from "../components/admin/AdminWorkspace";
@@ -23,6 +24,7 @@ type View =
   | "account-requests"
   | "applications"
   | "detail"
+  | "borrower-detail"
   | "settings"
   | "managers"
   | "ledger"
@@ -180,6 +182,7 @@ const titles: Record<View, string> = {
   managers: "Admin & managers",
   settings: "Platform settings",
   detail: "Application detail",
+  "borrower-detail": "Borrower detail",
 };
 
 export default function Admin() {
@@ -188,6 +191,7 @@ export default function Admin() {
   const [permissions, setPermissions] = useState(() => getAdminPermissions());
   const [view, setView] = useState<View>("overview");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedBorrower, setSelectedBorrower] = useState<any>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -330,6 +334,7 @@ export default function Admin() {
                                   onClick={() => {
                                     setView(item.key);
                                     setSelectedId(null);
+                                    setSelectedBorrower(null);
                                     setSidebarOpen(false);
                                   }}
                                   className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 text-left ${
@@ -463,7 +468,15 @@ export default function Admin() {
                 onBack={() => {
                   setView("applications");
                   setSelectedId(null);
+                  setSelectedBorrower(null);
                 }}
+              />
+            )}
+            {view === "borrower-detail" && selectedBorrower && (
+              <AdminBorrowerDetail
+                borrower={selectedBorrower}
+                onBack={() => { setView("borrowers"); setSelectedBorrower(null); }}
+                onSelectLoan={(id) => { setSelectedId(id); setView("detail"); }}
               />
             )}
             {view === "account-requests" && <AdminAccountRequests />}
@@ -479,13 +492,18 @@ export default function Admin() {
             )}
             {view !== "applications" &&
               view !== "detail" &&
+              view !== "borrower-detail" &&
               view !== "settings" &&
               view !== "managers" &&
               view !== "ledger" &&
               view !== "withdrawals" &&
               view !== "investor-tools" &&
               view !== "account-requests" && (
-                <AdminWorkspace section={view as Exclude<AdminSection, "account-requests">} />
+                <AdminWorkspace
+                  section={view as Exclude<AdminSection, "account-requests">}
+                  onSelectBorrower={(borrower) => { setSelectedBorrower(borrower); setView("borrower-detail"); }}
+                  onSelectLoan={(id) => { setSelectedId(id); setView("detail"); }}
+                />
               )}
           </main>
         </div>

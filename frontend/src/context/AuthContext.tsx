@@ -41,14 +41,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(Boolean(getAccessToken()));
 
   useEffect(() => {
+    const handleUnauthorized = () => {
+      clearAccessToken();
+      setUser(null);
+      setLoading(false);
+    };
+    window.addEventListener("velo:unauthorized", handleUnauthorized);
     if (!getAccessToken()) {
       setLoading(false);
-      return;
+      return () => window.removeEventListener("velo:unauthorized", handleUnauthorized);
     }
     getCurrentUser()
       .then((response) => setUser(response.user))
-      .catch(clearAccessToken)
+      .catch(handleUnauthorized)
       .finally(() => setLoading(false));
+    return () => window.removeEventListener("velo:unauthorized", handleUnauthorized);
   }, []);
 
   async function refreshUser() {
