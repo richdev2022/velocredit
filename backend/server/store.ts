@@ -93,10 +93,19 @@ export interface WalletTransaction {
   updatedAt?: string;
 }
 
+export type KycCategory = "BVN" | "NIN" | "LIVENESS" | "ADDRESS" | "PASSPORT" | "SIGNATURE";
+export type KycCategoryStatus = "NOT_STARTED" | "PENDING" | "VERIFIED" | "REJECTED";
+export interface KycCategoryResult {
+  status: KycCategoryStatus;
+  reason?: string;
+  updatedAt?: string;
+}
+
 export interface KycCase {
   id: string;
   userId: string;
   status: KycStatus;
+  categoryResults?: Partial<Record<KycCategory, KycCategoryResult>>;
   bvn?: string;
   nin?: string;
   bvnVerifiedAt?: string;

@@ -353,14 +353,15 @@ function StatusBadge({ status }: { status?: string }) {
 }
 
 function Kyc() {
-  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(""); const [actionBusy, setActionBusy] = useState(""); const [selected, setSelected] = useState<any>(null);
+  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(""); const [actionBusy, setActionBusy] = useState(""); const [selected, setSelected] = useState<any>(null); const [rejectionReason, setRejectionReason] = useState(""); const [rejecting, setRejecting] = useState(false); const [requirementReject, setRequirementReject] = useState<{ id: string; requirement: any } | null>(null);
   const load = () => adminListKycCases(100).then((response) => setRows(response.cases)).catch((err) => setError(err instanceof Error ? err.message : "Unable to load KYC cases"));
   useEffect(() => { load(); }, []);
-  async function decide(id: string, decision: "VERIFIED" | "REJECTED") { setBusy(id); try { await adminDecideKyc(id, { decision }); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC"); } finally { setBusy(""); } }
-  async function decideRequirement(id: string, requirement: "bvn" | "nin" | "liveness" | "proofOfAddress" | "passport" | "signature", approved: boolean) {
+  async function decide(id: string, decision: "VERIFIED" | "REJECTED") { if (decision === "REJECTED") { if (!rejectionReason.trim()) { setError("Enter a rejection reason before rejecting this KYC."); return; } setRejecting(false); } setBusy(id); try { await adminDecideKyc(id, { decision, rejectedReason: decision === "REJECTED" ? rejectionReason.trim() : undefined }); setRejectionReason(""); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC"); } finally { setBusy(""); } }
+  async function decideRequirement(id: string, requirement: "bvn" | "nin" | "liveness" | "proofOfAddress" | "passport" | "signature", approved: boolean, note?: string) {
+    if (!approved && !note) { setRejectionReason(""); setRequirementReject({ id, requirement }); return; }
     setActionBusy(`requirement-${id}-${requirement}`);
     try {
-      const response = await adminDecideKycRequirement(id, requirement, approved);
+      const response = await adminDecideKycRequirement(id, requirement, approved, note);
       setSelected((current: any) => current?.id === id ? response.case : current);
       await load();
     } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC requirement"); }
@@ -430,10 +431,12 @@ function Kyc() {
               </div>
               <div className="flex gap-2">
                 <button className="btn-primary text-xs" disabled={busy === selected.id} onClick={() => decide(selected.id, "VERIFIED")}>{busy === selected.id ? "Saving…" : "Verify KYC"}</button>
-                <button className="btn-secondary text-xs" disabled={busy === selected.id} onClick={() => decide(selected.id, "REJECTED")}>Reject</button>
+                <button className="btn-secondary text-xs" disabled={busy === selected.id} onClick={() => { setRejectionReason(""); setRejecting(true); }}>Reject</button>
               </div>
             </div>
           </div>
+          {requirementReject && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900"><h2 className="text-base font-semibold text-velo-900 dark:text-white">Reject {String(requirementReject.requirement).replace(/([A-Z])/g, ' $1')}</h2><p className="mt-1 text-xs text-slate-500">Enter the reason that will be sent to the customer.</p><textarea value={rejectionReason} onChange={(event) => setRejectionReason(event.target.value)} rows={4} maxLength={1000} className="velo-input mt-3 w-full" placeholder="Reason for rejection" /><div className="mt-4 flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={() => setRequirementReject(null)}>Cancel</button><button type="button" className="btn-primary bg-red-600 hover:bg-red-700" disabled={!rejectionReason.trim()} onClick={() => { const target = requirementReject; setRequirementReject(null); void decideRequirement(target.id, target.requirement, false, rejectionReason.trim()); }}>Confirm rejection</button></div></div></div>}
+          {rejecting && <div className="border-b border-red-100 bg-red-50/70 px-5 py-4 dark:border-red-900/40 dark:bg-red-900/15"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-red-800 dark:text-red-200">Reject KYC</h2><button type="button" className="text-xs text-red-700" onClick={() => setRejecting(false)}>Cancel</button></div><p className="mt-1 text-xs text-red-700 dark:text-red-300">This reason will be shown in the user dashboard and included in their email.</p><textarea value={rejectionReason} onChange={(event) => setRejectionReason(event.target.value)} maxLength={1000} rows={3} className="velo-input mt-3 w-full" placeholder="Enter the reason for rejection" /><button type="button" className="btn-primary mt-3 bg-red-600 hover:bg-red-700" disabled={!rejectionReason.trim() || busy === selected.id} onClick={() => void decide(selected.id, "REJECTED")}>Confirm rejection</button></div>}
           <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[1fr_280px]">
             <div className="space-y-6">
               <div>
