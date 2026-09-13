@@ -159,9 +159,40 @@ export async function confirmPasswordReset(resetId: string, token: string, newPa
 
 export async function getCurrentUser(): Promise<{ ok: true; user: SessionUser }> { return request("/api/v1/me"); }
 
-export interface MePatchInput { fullName?: string; phone?: string; address?: Record<string, unknown>; }
+export interface MePatchInput { fullName?: string; dateOfBirth?: string; residentialAddress?: Record<string, unknown>; occupation?: string; sourceOfFunds?: string; }
 export async function patchMe(input: MePatchInput): Promise<{ ok: true; user: SessionUser }> {
   return request("/api/v1/me", { method: "PATCH", body: JSON.stringify(input) });
+}
+export type ProfileUpdateChannel = "SMS" | "WHATSAPP" | "EMAIL";
+export interface ProfileUpdateInitiateInput { phone?: string; email?: string; channel?: ProfileUpdateChannel; }
+export interface ProfileUpdateChallenge {
+  ok: true;
+  challengeId: string;
+  expiresAt: string;
+  channel: ProfileUpdateChannel;
+  resendAvailableAt: string;
+  resendSecondsRemaining: number;
+  phoneLastFour?: string;
+  emailMasked?: string;
+  pendingPhone?: string;
+  pendingEmail?: string;
+}
+export async function initiateProfileUpdateOtp(input: ProfileUpdateInitiateInput): Promise<ProfileUpdateChallenge> {
+  return request("/api/v1/me/profile-update/initiate", { method: "POST", body: JSON.stringify(input) });
+}
+export async function resendProfileUpdateOtp(input: { challengeId: string; channel?: ProfileUpdateChannel }): Promise<{ ok: true; challengeId: string; expiresAt: string; channel: ProfileUpdateChannel; resendAvailableAt: string; resendSecondsRemaining: number; }> {
+  return request("/api/v1/me/profile-update/resend-otp", { method: "POST", body: JSON.stringify(input) });
+}
+export interface ProfileUpdateConfirmInput { challengeId: string; code: string; phone?: string; email?: string; }
+export interface ProfileUpdateConfirmResponse {
+  ok: true;
+  message: string;
+  changes: { phone?: string; email?: string };
+  previous: { phone: string; email: string };
+  user: SessionUser;
+}
+export async function confirmProfileUpdateOtp(input: ProfileUpdateConfirmInput): Promise<ProfileUpdateConfirmResponse> {
+  return request("/api/v1/me/profile-update/confirm", { method: "POST", body: JSON.stringify(input) });
 }
 
 export async function addUserRole(role: Exclude<Role, "ADMIN">): Promise<{ ok: true; user: SessionUser; message: string }> {

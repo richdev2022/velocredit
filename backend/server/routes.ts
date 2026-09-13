@@ -741,9 +741,17 @@ router.patch("/me", requireAuth, (req: AuthRequest, res) => {
     res.status(404).json({ ok: false, error: "User not found" });
     return;
   }
+  const raw = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+  if (typeof raw.email === "string") {
+    res.status(400).json({ ok: false, error: "Email cannot be edited directly. Start a profile update OTP flow via /me/profile-update/initiate." });
+    return;
+  }
+  if (typeof raw.phone === "string") {
+    res.status(400).json({ ok: false, error: "Phone cannot be edited directly. Start a profile update OTP flow via /me/profile-update/initiate." });
+    return;
+  }
   const schema = z.object({
     fullName: z.string().min(2).max(120).optional(),
-    phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")).optional(),
     dateOfBirth: z.string().optional(),
     residentialAddress: z.record(z.unknown()).optional(),
     occupation: z.string().optional(),
@@ -755,13 +763,188 @@ router.patch("/me", requireAuth, (req: AuthRequest, res) => {
     return;
   }
   if (parsed.data.fullName) user.fullName = parsed.data.fullName;
-  if (parsed.data.phone) user.phone = parsed.data.phone;
   if (parsed.data.dateOfBirth) user.dateOfBirth = parsed.data.dateOfBirth;
   if (parsed.data.residentialAddress) user.residentialAddress = parsed.data.residentialAddress;
   if (parsed.data.occupation) user.occupation = parsed.data.occupation;
   if (parsed.data.sourceOfFunds) user.sourceOfFunds = parsed.data.sourceOfFunds;
   user.updatedAt = new Date().toISOString();
   res.json({ ok: true, user });
+});
+
+const profileUpdateInitiateSchema = z.object({
+  phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")).optional(),
+  email: z.string().email("Valid email address is required").optional(),
+  channel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).default("SMS"),
+});
+
+router.post("/me/profile-update/initiate", requireAuth, async (req: AuthRequest, res) => {
+  const user = users.find((u) => u.id === req.user?.id);
+  if (!user) {
+    res.status(404).json({ ok: false, error: "User not found" });
+    return;
+  }
+  const parsed = profileUpdateInitiateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const newPhone = parsed.data.phone;
+  const newEmail = parsed.data.email;
+  if (!newPhone && !newEmail) {
+    res.status(400).json({ ok: false, error: "Provide a new phone number or email to update." });
+    return;
+  }
+  if (newPhone && newPhone === user.phone && (!newEmail || newEmail.toLowerCase() === user.email.toLowerCase())) {
+    res.status(400).json({ ok: false, error: "New phone number is the same as your current phone number." });
+    return;
+  }
+  if (newEmail && newEmail.toLowerCase() === user.email.toLowerCase() && (!newPhone || newPhone === user.phone)) {
+    res.status(400).json({ ok: false, error: "New email is the same as your current email." });
+    return;
+  }
+  if (newEmail && findUserByEmail(newEmail)) {
+    res.status(409).json({ ok: false, error: "An account with this email already exists." });
+    return;
+  }
+  if (newPhone && users.some((u) => u.id !== user.id && u.phone === newPhone)) {
+    res.status(409).json({ ok: false, error: "An account with this phone number already exists." });
+    return;
+  }
+  const channel = (() => {
+    if (newEmail && !newPhone) return "EMAIL";
+    if (parsed.data.channel === "EMAIL" && !newEmail) {
+      return (user.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";
+    }
+    return parsed.data.channel;
+  })();
+  const sendTargetPhone = newPhone ?? user.phone ?? "";
+  const sendTargetEmail = newEmail ?? user.email ?? "";
+  try {
+    const challenge = await createOtpChallenge(user.id, "PROFILE_UPDATE", sendTargetPhone, sendTargetEmail, channel);
+    res.json({
+      ok: true,
+      challengeId: challenge.id,
+      expiresAt: challenge.expiresAt,
+      channel: challenge.channel,
+      resendAvailableAt: challenge.resendAvailableAt,
+      resendSecondsRemaining: challenge.resendSecondsRemaining,
+      phoneLastFour: newPhone ? newPhone.slice(-4) : undefined,
+      emailMasked: newEmail ? newEmail.replace(/^(.)(.*)(@.*)$/, (_m, a, b, c) => `${a}${"*".repeat(Math.max(3, b.length))}${c}`) : undefined,
+      pendingPhone: newPhone,
+      pendingEmail: newEmail,
+    });
+  } catch (err) {
+    res.status(429).json({ ok: false, error: err instanceof Error ? err.message : "Unable to send OTP right now." });
+  }
+});
+
+const profileUpdateResendSchema = z.object({ challengeId: z.string().min(1), channel: z.enum(["SMS","WHATSAPP","EMAIL"]).optional() });
+
+router.post("/me/profile-update/resend-otp", requireAuth, async (req: AuthRequest, res) => {
+  const user = users.find((u) => u.id === req.user?.id);
+  if (!user) {
+    res.status(404).json({ ok: false, error: "User not found" });
+    return;
+  }
+  const parsed = profileUpdateResendSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const found = findOtpChallenge(parsed.data.challengeId);
+  if (!found || found.userId !== req.user?.id || found.action !== "PROFILE_UPDATE") {
+    res.status(404).json({ ok: false, error: "Challenge not found. Start a new profile update request." });
+    return;
+  }
+  try {
+    const channel = (parsed.data.channel ?? found.deliveryChannel) as "SMS"|"WHATSAPP"|"EMAIL";
+    const challenge = await createOtpChallenge(found.userId, "PROFILE_UPDATE", found.phone ?? user.phone, found.email ?? user.email, channel);
+    res.json({
+      ok: true,
+      challengeId: challenge.id,
+      expiresAt: challenge.expiresAt,
+      channel: challenge.channel,
+      resendAvailableAt: challenge.resendAvailableAt,
+      resendSecondsRemaining: challenge.resendSecondsRemaining,
+    });
+  } catch (err) {
+    res.status(429).json({ ok: false, error: err instanceof Error ? err.message : "Unable to resend OTP right now." });
+  }
+});
+
+const profileUpdateConfirmSchema = z.object({ challengeId: z.string().min(1), code: z.string().regex(/^\d{6}$/, "6-digit OTP code is required"), phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/).optional()), email: z.string().email().optional() });
+
+router.post("/me/profile-update/confirm", requireAuth, async (req: AuthRequest, res) => {
+  const user = users.find((u) => u.id === req.user?.id);
+  if (!user) {
+    res.status(404).json({ ok: false, error: "User not found" });
+    return;
+  }
+  const parsed = profileUpdateConfirmSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const found = findOtpChallenge(parsed.data.challengeId);
+  if (!found || found.userId !== req.user?.id || found.action !== "PROFILE_UPDATE") {
+    res.status(404).json({ ok: false, error: "Challenge not found. Start a new profile update request." });
+    return;
+  }
+  if (parsed.data.phone && found.phone && parsed.data.phone !== found.phone) {
+    res.status(400).json({ ok: false, error: "Phone number in this request does not match the profile update challenge." });
+    return;
+  }
+  if (parsed.data.email && found.email && parsed.data.email.toLowerCase() !== found.email.toLowerCase()) {
+    res.status(400).json({ ok: false, error: "Email in this request does not match the profile update challenge." });
+    return;
+  }
+  const expectedPhone = parsed.data.phone ?? found.phone;
+  const expectedEmail = parsed.data.email ?? found.email;
+  if (!expectedPhone && !expectedEmail) {
+    res.status(400).json({ ok: false, error: "No pending phone or email to update for this challenge." });
+    return;
+  }
+  if (expectedEmail && findUserByEmail(expectedEmail)) {
+    res.status(409).json({ ok: false, error: "An account with this email already exists." });
+    return;
+  }
+  if (expectedPhone && users.some((u) => u.id !== user.id && u.phone === expectedPhone)) {
+    res.status(409).json({ ok: false, error: "An account with this phone number already exists." });
+    return;
+  }
+  const verified = await verifyOtpChallenge(parsed.data.challengeId, parsed.data.code);
+  if (!verified.ok) {
+    res.status(400).json({ ok: false, error: verified.error ?? "Invalid or expired OTP. Try resending." });
+    return;
+  }
+  const before = { phone: user.phone, email: user.email };
+  const changes: { phone?: string; email?: string } = {};
+  if (expectedPhone && expectedPhone !== user.phone) {
+    user.phone = expectedPhone;
+    changes.phone = expectedPhone;
+  }
+  if (expectedEmail && expectedEmail.toLowerCase() !== user.email.toLowerCase()) {
+    user.email = expectedEmail.toLowerCase();
+    changes.email = user.email;
+  }
+  const now = new Date().toISOString();
+  user.updatedAt = now;
+  res.json({
+    ok: true,
+    message: "Profile updated successfully.",
+    changes,
+    previous: before,
+    user: {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      roles: user.roles,
+      kycStatus: user.kycStatus,
+      phone: user.phone,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    },
+  });
 });
 
 router.post("/me/roles/add", requireAuth, (req: AuthRequest, res) => {
