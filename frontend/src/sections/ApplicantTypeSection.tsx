@@ -6,12 +6,11 @@
 // through every section again from the top.
 // ============================================================================
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import ApplicantTypeSelector from "../components/ApplicantTypeSelector";
 import Icon from "../components/Icon";
 import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
-import { getApplicationDraft } from "../services/apiClient";
 import type { ApplicantType, ApplicationData, SectionKey, SectionStatus } from "../types/application";
 import { getLoanProgram } from "../utils/config";
 
