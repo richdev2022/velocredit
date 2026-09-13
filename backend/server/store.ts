@@ -602,7 +602,7 @@ export interface ApplicationDraft {
   updatedAt: string;
 }
 
-type StoreKey =
+export type StoreKey =
   | "users" | "wallets" | "ledgerEntries" | "walletTransactions" | "kycCases"
   | "identityVerificationEvents" | "documents" | "payoutAccounts" | "investmentPlans"
   | "investments" | "loanApplications" | "loans" | "loanSchedules" | "repayments"
@@ -905,7 +905,7 @@ export async function initializeStore(): Promise<void> {
 
   rebuildIndexes();
   seedDefaultCatalog();
-  seedAdminLedgerOpeningBalance();
+  seedAdminLedgerOpeningBalance(0);
 
   try {
     await decomposeAndUpsertAll(sql as unknown as NeonQueryFunction<false, false>, snapshotStore(), undefined);
