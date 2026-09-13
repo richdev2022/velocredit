@@ -573,7 +573,7 @@ function normalizeApplicationData(data: ApplicationData): ApplicationData {
       fullName: "",
       dateOfBirth: "",
       position: "",
-      phone: "","replace_all":false},{
+      phone: "",
       email: "",
       residentialAddress: "",
     }, data.businessRep || {}),
