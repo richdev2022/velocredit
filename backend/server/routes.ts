@@ -14,8 +14,6 @@ import {
   findOtpChallenge,
   requestPasswordReset,
   confirmPasswordReset,
-  getAdminPasswordHashOverride,
-  setAdminPasswordHashOverride,
   markKycChecklistComplete,
   recordConsent,
   resetKycCategory,
@@ -596,7 +594,7 @@ router.post("/auth/admin/login", async (req, res) => {
   }
   const persistedAdmin = findUserByEmail(parsed.data.email);
   const isEnvironmentAdmin = Boolean(env.ADMIN_EMAIL && parsed.data.email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase());
-  const configuredAdminPasswordHash = getAdminPasswordHashOverride() ?? env.ADMIN_PASSWORD_HASH;
+  const configuredAdminPasswordHash = env.ADMIN_PASSWORD_HASH;
   const isBackOfficeUser = Boolean(persistedAdmin?.roles.some((role) => ["ADMIN", "LOAN_MANAGER"].includes(role)));
   const passwordMatches = isBackOfficeUser && persistedAdmin
     ? await bcrypt.compare(parsed.data.password, persistedAdmin.passwordHash)
@@ -688,7 +686,7 @@ router.post("/auth/admin/login/verify-otp", async (req, res) => {
     return;
   }
   const persistedAdmin = users.find((user) => user.id === result.userId && user.roles.some((role) => ["ADMIN", "LOAN_MANAGER"].includes(role)));
-  const configuredAdminPasswordHash = getAdminPasswordHashOverride() ?? env.ADMIN_PASSWORD_HASH;
+  const configuredAdminPasswordHash = env.ADMIN_PASSWORD_HASH;
   const admin = persistedAdmin ?? { id: "env-admin", email: env.ADMIN_EMAIL!, phone: "", fullName: "Velo Administrator", passwordHash: configuredAdminPasswordHash ?? "", roles: ["ADMIN"] as Role[], adminPermissions: [...ADMIN_PERMISSIONS], kycStatus: "VERIFIED" as KycStatus, createdAt: new Date().toISOString() };
   auditLogs.push({ id: randomUUID(), userId: admin.id, action: "ADMIN_LOGIN_VERIFIED", resourceType: "AUTH", resourceId: admin.email, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
   const adminPermissions = admin.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : admin.adminPermissions;
@@ -848,6 +846,7 @@ router.post("/auth/password-reset/request", async (req, res) => {
     return;
   }
   const result = await requestPasswordReset(parsed.data.email);
+  if (!(await persistMutation(res))) return;
   res.json(result);
 });
 
@@ -862,6 +861,7 @@ router.post("/auth/password-reset/confirm", async (req, res) => {
     res.status(400).json({ ok: false, error: result.error ?? "Password reset failed" });
     return;
   }
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, message: "Password reset successful" });
 });
 
@@ -871,8 +871,27 @@ router.post("/auth/admin/password-reset/request", async (req, res) => {
     res.json({ ok: true, message: "If this email is the administrator email, a reset OTP has been sent." });
     return;
   }
-  const challenge = await createOtpChallenge("env-admin", "PASSWORD_RESET", "", env.ADMIN_EMAIL, parsed.data.channel);
-  res.json({ ok: true, challengeId: challenge.id, expiresAt: challenge.expiresAt, channel: parsed.data.channel, resendAvailableAt: challenge.resendAvailableAt, resendSecondsRemaining: challenge.resendSecondsRemaining, message: "Enter the OTP sent to the selected channel." });
+  let admin = findUserByEmail(parsed.data.email);
+  if (!admin) {
+    const now = new Date().toISOString();
+    admin = {
+      id: "env-admin",
+      email: env.ADMIN_EMAIL.toLowerCase(),
+      phone: "",
+      fullName: "Velo Administrator",
+      passwordHash: env.ADMIN_PASSWORD_HASH ?? await bcrypt.hash(env.ADMIN_PASSWORD!, 12),
+      roles: ["ADMIN"],
+      kycStatus: "VERIFIED",
+      createdAt: now,
+      updatedAt: now,
+      isActive: true,
+      otpLoginEnabled: false,
+    };
+    users.push(admin);
+  }
+  const challenge = await createOtpChallenge(admin.id, "PASSWORD_RESET", "", admin.email, parsed.data.channel);
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, challengeId: challenge.id, expiresAt: challenge.expiresAt, channel: challenge.channel, resendAvailableAt: challenge.resendAvailableAt, resendSecondsRemaining: challenge.resendSecondsRemaining, message: "Enter the OTP sent to the selected channel." });
 });
 
 router.post("/auth/admin/password-reset/confirm", async (req, res) => {
@@ -882,11 +901,18 @@ router.post("/auth/admin/password-reset/confirm", async (req, res) => {
     return;
   }
   const result = await verifyOtpChallenge(parsed.data.challengeId, parsed.data.code);
-  if (!result.ok || result.action !== "PASSWORD_RESET" || result.userId !== "env-admin") {
+  if (!result.ok || result.action !== "PASSWORD_RESET" || !result.userId) {
     res.status(400).json({ ok: false, error: result.error ?? "Admin password reset verification failed" });
     return;
   }
-  setAdminPasswordHashOverride(await bcrypt.hash(parsed.data.newPassword, 12));
+  const admin = users.find((user) => user.id === result.userId && user.roles.includes("ADMIN"));
+  if (!admin) {
+    res.status(404).json({ ok: false, error: "Administrator not found" });
+    return;
+  }
+  admin.passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
+  admin.updatedAt = new Date().toISOString();
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, message: "Admin password reset successful" });
 });
 
@@ -920,7 +946,7 @@ router.get("/user/settings", requireAuth, (req: AuthRequest, res) => {
   res.json({ ok: true, preferredOtpChannel: user.preferredOtpChannel ?? "EMAIL", otpLoginEnabled: user.otpLoginEnabled === true });
 });
 
-router.put("/user/settings", requireAuth, (req: AuthRequest, res) => {
+router.put("/user/settings", requireAuth, async (req: AuthRequest, res) => {
   const parsed = z.object({ preferredOtpChannel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).optional(), otpLoginEnabled: z.boolean().optional() }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const user = users.find((item) => item.id === req.user?.id);
@@ -934,10 +960,11 @@ router.put("/user/settings", requireAuth, (req: AuthRequest, res) => {
   if (parsed.data.preferredOtpChannel !== undefined) user.preferredOtpChannel = parsed.data.preferredOtpChannel;
   if (parsed.data.otpLoginEnabled !== undefined) user.otpLoginEnabled = parsed.data.otpLoginEnabled;
   user.updatedAt = new Date().toISOString();
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, preferredOtpChannel: user.preferredOtpChannel ?? "EMAIL", otpLoginEnabled: user.otpLoginEnabled === true });
 });
 
-router.patch("/me", requireAuth, (req: AuthRequest, res) => {
+router.patch("/me", requireAuth, async (req: AuthRequest, res) => {
   const user = users.find((u) => u.id === req.user?.id);
   if (!user) {
     res.status(404).json({ ok: false, error: "User not found" });
@@ -970,6 +997,7 @@ router.patch("/me", requireAuth, (req: AuthRequest, res) => {
   if (parsed.data.occupation) user.occupation = parsed.data.occupation;
   if (parsed.data.sourceOfFunds) user.sourceOfFunds = parsed.data.sourceOfFunds;
   user.updatedAt = new Date().toISOString();
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, user });
 });
 
@@ -1149,7 +1177,7 @@ router.post("/me/profile-update/confirm", requireAuth, async (req: AuthRequest, 
   });
 });
 
-router.post("/me/roles/add", requireAuth, (req: AuthRequest, res) => {
+router.post("/me/roles/add", requireAuth, async (req: AuthRequest, res) => {
   const user = users.find((u) => u.id === req.user?.id);
   if (!user) {
     res.status(404).json({ ok: false, error: "User not found" });
@@ -1171,6 +1199,7 @@ router.post("/me/roles/add", requireAuth, (req: AuthRequest, res) => {
     createWallet(user.id);
   }
   user.updatedAt = new Date().toISOString();
+  if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
     user: {
@@ -3622,6 +3651,7 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       occurredAt: now,
       createdAt: now,
     });
+    if (!(await persistMutation(res))) return;
     res.status(202).json({ ok: true, loan, transfer, disbursement });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
@@ -3642,7 +3672,7 @@ router.get("/admin/investment-plans", requireAuth, requireRole("ADMIN"), (_req, 
   res.json({ ok: true, plans: investmentPlans });
 });
 
-router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const schema = z.object({
     name: z.string().min(2),
     description: z.string().optional(),
@@ -3674,10 +3704,11 @@ router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), (req, 
     ...parsed.data,
   };
   investmentPlans.push(plan);
+  if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, plan });
 });
 
-router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const plan = investmentPlans.find((p) => p.id === req.params.id);
   if (!plan) {
     res.status(404).json({ ok: false, error: "Investment plan not found" });
@@ -3701,6 +3732,7 @@ router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), (
   plan.version += 1;
   plan.updatedAt = new Date().toISOString();
   Object.assign(plan, parsed.data);
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, plan });
 });
 
@@ -3759,7 +3791,7 @@ router.get("/me/consents", requireAuth, (req: AuthRequest, res) => {
   });
 });
 
-router.post("/consents", requireAuth, (req: AuthRequest, res) => {
+router.post("/consents", requireAuth, async (req: AuthRequest, res) => {
   const schema = z.object({
     consentType: z.enum([
       "TERMS", "PRIVACY", "IDENTITY_VERIFICATION", "CREDIT_REPORT",
@@ -3772,6 +3804,7 @@ router.post("/consents", requireAuth, (req: AuthRequest, res) => {
     return;
   }
   const consent = recordConsent(req.user!.id, parsed.data.consentType);
+  if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, consent });
 });
 
@@ -3779,7 +3812,7 @@ router.get("/admin/loan-products", requireAuth, requireRole("ADMIN"), (_req, res
   res.json({ ok: true, products: loanProducts });
 });
 
-router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const schema = z.object({
     name: z.string().min(2),
     description: z.string().optional(),
@@ -3807,10 +3840,11 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), (req, res
     ...parsed.data,
   };
   loanProducts.push(product);
+  if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, product });
 });
 
-router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const product = loanProducts.find((p) => p.id === req.params.id);
   if (!product) {
     res.status(404).json({ ok: false, error: "Loan product not found" });
@@ -3838,6 +3872,7 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), (req
   product.version += 1;
   product.updatedAt = new Date().toISOString();
   Object.assign(product, parsed.data);
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, product });
 });
 
@@ -4066,6 +4101,7 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
   investorWithdrawals.push(withdrawalEntry);
   debitEntry.referenceId = withdrawalId;
   const execution = await executeInvestorWithdrawal(withdrawalEntry);
+  if (!(await persistMutation(res))) return;
   const emailTpl = investorWithdrawalEmail({
     investorName: investor.fullName,
     withdrawalId,
@@ -4151,6 +4187,7 @@ router.put("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async 
     updates.defaultInvestmentAnnualRatePercent = parsed.data.defaultInvestmentAnnualRatePercent;
   }
   const updated = updatePlatformSettings(updates);
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, settings: updated });
 });
 
@@ -4170,6 +4207,7 @@ router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole
     return;
   }
   const settings = setInvestorEarningRateOverride(investorId, parsed.data.annualRatePercent);
+  if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
     investor: {
@@ -4352,6 +4390,7 @@ router.post("/admin/withdrawals/:withdrawalId/retry", requireAuth, requireRole("
     });
   }
   const execution = await executeInvestorWithdrawal(withdrawal);
+  if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
     withdrawal,
