@@ -36,6 +36,7 @@ export interface User {
   residentialAddress?: Record<string, unknown>;
   occupation?: string;
   sourceOfFunds?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AuditLog {
