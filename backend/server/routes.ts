@@ -913,6 +913,9 @@ router.post("/auth/admin/password-reset/confirm", async (req, res) => {
   admin.passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
   admin.updatedAt = new Date().toISOString();
   if (!(await persistMutation(res))) return;
+  if (sql) {
+    await sql.query("UPDATE admin_profiles SET password_hash = $1, created_at = COALESCE(created_at, CURRENT_TIMESTAMP) WHERE user_id = $2", [admin.passwordHash, admin.id]);
+  }
   res.json({ ok: true, message: "Admin password reset successful" });
 });
 
@@ -2490,6 +2493,8 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     businessRep: input.businessRep,
     personalFinancial: input.personalFinancial,
     businessFinancial: input.businessFinancial,
+    loanRequest: input.loanRequest,
+    calculation: input.calculation,
     kyc: input.kyc,
     disbursementAccount: { ...input.disbursementAccount, institution: "VELO" },
     collateral: input.collateral,
@@ -2607,6 +2612,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
     collateral: z.record(z.unknown()).optional(),
     documents: z.record(z.unknown()).optional(),
     witness: z.record(z.unknown()).optional(),
+    calculation: z.record(z.unknown()).nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -2616,6 +2622,20 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
   const snapshot = application.customerSnapshot ?? {};
   if (parsed.data.personalInfo) Object.assign(snapshot, { personalInfo: parsed.data.personalInfo });
   if (parsed.data.businessInfo) Object.assign(snapshot, { businessInfo: parsed.data.businessInfo });
+  if (parsed.data.businessRep) Object.assign(snapshot, { businessRep: parsed.data.businessRep });
+  if (parsed.data.personalFinancial) Object.assign(snapshot, { personalFinancial: parsed.data.personalFinancial });
+  if (parsed.data.businessFinancial) Object.assign(snapshot, { businessFinancial: parsed.data.businessFinancial });
+  if (parsed.data.disbursementAccount) {
+    const account = { ...parsed.data.disbursementAccount, institution: "VELO" };
+    Object.assign(snapshot, { disbursementAccount: account });
+    application.disbursementAccount = account;
+  }
+  if (parsed.data.loanRequest) {
+    Object.assign(snapshot, { loanRequest: parsed.data.loanRequest });
+    application.amountNaira = parsed.data.loanRequest.amount;
+    application.tenureDays = parsed.data.loanRequest.tenure;
+  }
+  if (parsed.data.collateral) Object.assign(snapshot, { collateral: parsed.data.collateral });
   if (parsed.data.kyc) {
     Object.assign(snapshot, { kyc: parsed.data.kyc });
     const kyc = findOrCreateKycCase(req.user!.id);
@@ -2647,6 +2667,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
     markKycChecklistComplete(req.user!.id);
   }
   if (parsed.data.witness) Object.assign(snapshot, { witness: parsed.data.witness });
+  if (parsed.data.calculation !== undefined) Object.assign(snapshot, { calculation: parsed.data.calculation });
   if (parsed.data.documents) {
     const docs = parsed.data.documents as Record<string, unknown>;
     const kyc = findOrCreateKycCase(req.user!.id);

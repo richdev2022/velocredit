@@ -33,7 +33,7 @@ import {
   findDraftsByEmailOrPhone,
   getSavedSectionIndex,
 } from "../utils/storage";
-import { compactApplicationForTransport, deleteApplicationDraft, getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
+import { deleteApplicationDraft, getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
 import { useAuth } from "./AuthContext";
 import type {
   LookupDraftResponse,
@@ -248,7 +248,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       saveApplication(application, currentIndexRef.current);
       if (getAccessToken() && application.applicantType) {
-        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
+        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
@@ -438,7 +438,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       saveApplication(application, currentIndexRef.current);
       if (getAccessToken() && application.applicantType) {
-        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
+        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
