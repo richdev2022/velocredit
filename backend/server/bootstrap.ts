@@ -20,6 +20,6 @@ export async function bootstrapEnvironmentAdministrator(): Promise<void> {
   if (!userId) throw new Error("Unable to bootstrap the environment administrator");
 
   await sql.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMIN') ON CONFLICT DO NOTHING", [userId]);
-  await sql.query("INSERT INTO env (key, value, updated_at) VALUES ('admin_email', $1::jsonb, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at", [JSON.stringify(env.ADMIN_EMAIL.toLowerCase()), now]);
+  await sql.query("INSERT INTO env (key, value, updated_at) VALUES ('admin_email', $1::jsonb, $2), ('admin_password_hash', $3::jsonb, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at", [JSON.stringify(env.ADMIN_EMAIL.toLowerCase()), now, JSON.stringify(passwordHash)]);
   await sql.query("INSERT INTO admin_profiles (id, user_id, password_hash, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (user_id) DO UPDATE SET password_hash = CASE WHEN admin_profiles.password_hash IS NULL OR admin_profiles.password_hash = '' THEN EXCLUDED.password_hash ELSE admin_profiles.password_hash END", [`admin-${userId}`, userId, passwordHash, now]);
 }

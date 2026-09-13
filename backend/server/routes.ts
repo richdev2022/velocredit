@@ -915,6 +915,7 @@ router.post("/auth/admin/password-reset/confirm", async (req, res) => {
   if (!(await persistMutation(res))) return;
   if (sql) {
     await sql.query("UPDATE admin_profiles SET password_hash = $1, created_at = COALESCE(created_at, CURRENT_TIMESTAMP) WHERE user_id = $2", [admin.passwordHash, admin.id]);
+    await sql.query("INSERT INTO env (key, value, updated_at) VALUES ('admin_password_hash', $1::jsonb, CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at", [JSON.stringify(admin.passwordHash)]);
   }
   res.json({ ok: true, message: "Admin password reset successful" });
 });

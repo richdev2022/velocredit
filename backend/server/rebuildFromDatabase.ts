@@ -203,6 +203,7 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
     for (const row of await db.query("SELECT * FROM documents ORDER BY created_at ASC") as Row[]) {
       const document: Document = {
         id: str(row, "id"), userId: str(row, "user_id"),
+        applicationId: strNull(row, "application_id") ?? undefined, documentSlot: strNull(row, "document_slot") ?? undefined, note: strNull(row, "note") ?? undefined,
         documentType: str(row, "document_type") as Document["documentType"],
         provider: str(row, "provider") as Document["provider"], providerFileId: str(row, "provider_file_id"),
         fileName: strNull(row, "file_name"), mimeType: strNull(row, "mime_type"), sizeBytes: nullableNumber(row, "size_bytes"),
@@ -291,7 +292,7 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
         id: str(row, "id"), applicationId: str(row, "application_id"), borrowerId: str(row, "borrower_id"),
         principalNaira: number(row, "principal_naira"), totalInterestNaira: number(row, "total_interest_naira"),
         totalFeesNaira: number(row, "total_fees_naira"), totalRepaymentNaira: number(row, "total_repayment_naira"),
-        outstandingNaira: number(row, "outstanding_naira"), tenureDays: number(row, "tenure_days"),
+        outstandingNaira: number(row, "outstanding_naira"), outstandingPrincipalNaira: nullableNumber(row, "outstanding_principal_naira") ?? undefined, outstandingInterestNaira: nullableNumber(row, "outstanding_interest_naira") ?? undefined, adminNote: strNull(row, "admin_note") ?? undefined, tenureDays: number(row, "tenure_days"),
         status: str(row, "status") as Loan["status"], disbursedAt: iso(row.disbursed_at), dueAt: iso(row.due_at), paidAt: iso(row.paid_at),
         providerTransfer: parseJson<Record<string, unknown> | undefined>(row.provider_transfer, undefined),
         providerReference: strNull(row, "provider_reference"),
