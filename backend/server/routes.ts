@@ -1277,7 +1277,7 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   });
 });
 
-router.post("/me/kyc", requireAuth, (req: AuthRequest, res) => {
+router.post("/me/kyc", requireAuth, async (req: AuthRequest, res) => {
   const kyc = findOrCreateKycCase(req.user!.id);
   const user = users.find((u) => u.id === req.user?.id);
   if (!user) {
@@ -1323,6 +1323,7 @@ router.post("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   user.kycStatus = kyc.status;
   kyc.updatedAt = new Date().toISOString();
   markKycChecklistComplete(user.id);
+  if (!(await persistMutation(res))) return;
   res.status(202).json({
     ok: true,
     status: kyc.status,
@@ -1439,6 +1440,7 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
   kyc.updatedAt = new Date().toISOString();
   if (user) user.kycStatus = kyc.status;
   markKycChecklistComplete(req.user!.id);
+  if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
     verificationStatus: result.status,
@@ -1637,6 +1639,7 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
   kyc.updatedAt = new Date().toISOString();
   if (user) user.kycStatus = kyc.status;
   markKycChecklistComplete(req.user!.id);
+  if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
     verificationStatus: result.status,
@@ -1675,6 +1678,7 @@ router.post("/me/kyc/verify-confirm-otp", requireAuth, async (req: AuthRequest, 
       kyc.updatedAt = now;
     }
     markKycChecklistComplete(req.user!.id);
+    if (!(await persistMutation(res))) return;
     res.json({
       ok: true,
       idType: parsed.data.idType,
@@ -1765,6 +1769,7 @@ router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"),
     if (documentType.data === "PASSPORT_PHOTO") kyc.checklist.passport = true;
     if (documentType.data === "SIGNATURE") kyc.checklist.signature = true;
     markKycChecklistComplete(req.user!.id);
+    if (!(await persistMutation(res))) return;
     res.status(201).json({ ok: true, document: record, checklist: kyc.checklist });
   } catch (error) {
     res.status(503).json({
@@ -1774,7 +1779,7 @@ router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"),
   }
 });
 
-router.post("/me/payout-accounts", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+router.post("/me/payout-accounts", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
   const parsed = payoutAccountSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -1792,6 +1797,7 @@ router.post("/me/payout-accounts", requireAuth, requireRole("INVESTOR"), (req: A
   };
   if (existing) Object.assign(existing, account);
   else payoutAccounts.push(account);
+  if (!(await persistMutation(res))) return;
   res.status(202).json({
     ok: true,
     account,
@@ -1799,7 +1805,7 @@ router.post("/me/payout-accounts", requireAuth, requireRole("INVESTOR"), (req: A
   });
 });
 
-router.post("/me/payout-accounts/:id/verify", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+router.post("/me/payout-accounts/:id/verify", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
   const account = payoutAccounts.find((a) => a.id === req.params.id && a.userId === req.user?.id);
   if (!account) {
     res.status(404).json({ ok: false, error: "Payout account not found" });
@@ -1809,6 +1815,7 @@ router.post("/me/payout-accounts/:id/verify", requireAuth, requireRole("INVESTOR
   account.verifiedAt = new Date().toISOString();
   account.verificationReference = `local-verification-${randomUUID()}`;
   account.updatedAt = new Date().toISOString();
+  if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
     account,
@@ -1838,7 +1845,7 @@ router.get("/investor/payout-account", requireAuth, requireRole("INVESTOR"), (re
   res.json({ ok: true, account: payoutAccounts.find((item) => item.userId === req.user!.id) ?? null });
 });
 
-router.put("/investor/payout-account", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+router.put("/investor/payout-account", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
   const parsed = payoutAccountSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -1856,6 +1863,7 @@ router.put("/investor/payout-account", requireAuth, requireRole("INVESTOR"), (re
   };
   if (existing) Object.assign(existing, account);
   else payoutAccounts.push(account);
+  if (!(await persistMutation(res))) return;
   res.status(202).json({
     ok: true,
     account,
@@ -1890,6 +1898,7 @@ router.post("/investor/wallet/funding", requireAuth, requireRole("INVESTOR"), as
     txRef,
     createdAt: now,
   });
+  if (!(await persistMutation(res))) return;
   try {
     const checkout = await initializeWalletFunding({
       txRef,
@@ -1947,6 +1956,7 @@ router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTO
         const wallet = findWallet(pending.userId);
         wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
       }
+      if (!(await persistMutation(res))) return;
       res.status(402).json({ ok: false, error: `Payment status=${status} currency=${currency}, wallet not credited`, txRef });
       return;
     }
@@ -1968,6 +1978,7 @@ router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTO
         // Email failure is not fatal to funding settlement
       }
     }
+    if (!(await persistMutation(res))) return;
     res.json({ ok: true, settled: settled.tx, txRef, amount, chargeAmount, reason: settled.reason ?? "settled" });
   } catch (err) {
     res.status(502).json({ ok: false, error: err instanceof Error ? err.message : "Unable to reach Flutterwave" });
@@ -2940,6 +2951,7 @@ router.post("/admin/payouts/:payoutId/retry", requireAuth, requireRole("ADMIN"),
     payout.providerTransfer = transfer;
     payout.retryCount = (payout.retryCount ?? 0) + 1;
     payout.lastAttemptAt = new Date().toISOString();
+    if (!(await persistMutation(res))) return;
     res.status(202).json({ ok: true, payout, transfer });
   } catch (error) {
     res.status(503).json({
@@ -2987,11 +2999,12 @@ router.post("/admin/users", requireAuth, requireRole("ADMIN"), async (req: AuthR
   users.push(user);
   createWallet(user.id);
   recordAdminAudit(req, "USER_CREATED", "USER", user.id, { email: user.email, roles: user.roles });
+  if (!(await persistMutation(res))) return;
   const { passwordHash: _passwordHash, ...safeUser } = user;
   res.status(201).json({ ok: true, user: safeUser });
 });
 
-router.patch("/admin/users/:id/roles", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.patch("/admin/users/:id/roles", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z.object({ roles: z.array(z.enum(["INVESTOR", "BORROWER"])).min(1) }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const user = users.find((u) => u.id === req.params.id);
@@ -2999,11 +3012,12 @@ router.patch("/admin/users/:id/roles", requireAuth, requireRole("ADMIN"), (req: 
   user.roles = parsed.data.roles as Role[];
   user.updatedAt = new Date().toISOString();
   recordAdminAudit(req, "USER_ROLES_UPDATED", "USER", user.id, { roles: user.roles });
+  if (!(await persistMutation(res))) return;
   const { passwordHash: _passwordHash, ...safeUser } = user;
   res.json({ ok: true, user: safeUser });
 });
 
-router.patch("/admin/users/:id/status", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.patch("/admin/users/:id/status", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z.object({ isActive: z.boolean() }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const user = users.find((u) => u.id === req.params.id);
@@ -3011,11 +3025,12 @@ router.patch("/admin/users/:id/status", requireAuth, requireRole("ADMIN"), (req:
   user.isActive = parsed.data.isActive;
   user.updatedAt = new Date().toISOString();
   recordAdminAudit(req, parsed.data.isActive ? "USER_ACTIVATED" : "USER_DEACTIVATED", "USER", user.id, { isActive: user.isActive });
+  if (!(await persistMutation(res))) return;
   const { passwordHash: _passwordHash, ...safeUser } = user;
   res.json({ ok: true, user: safeUser });
 });
 
-router.patch("/admin/users/:id", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.patch("/admin/users/:id", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z.object({
     fullName: z.string().min(2).max(120).optional(),
     phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")).optional(),
@@ -3027,11 +3042,12 @@ router.patch("/admin/users/:id", requireAuth, requireRole("ADMIN"), (req: AuthRe
   if (parsed.data.phone != null) user.phone = parsed.data.phone;
   user.updatedAt = new Date().toISOString();
   recordAdminAudit(req, "USER_UPDATED", "USER", user.id, { fullName: user.fullName, phone: user.phone });
+  if (!(await persistMutation(res))) return;
   const { passwordHash: _passwordHash, ...safeUser } = user;
   res.json({ ok: true, user: safeUser });
 });
 
-router.post("/admin/users/:id/kyc-reset", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.post("/admin/users/:id/kyc-reset", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z.object({
     category: z.enum(["BVN", "NIN", "LIVENESS", "ADDRESS", "ALL"]),
   }).safeParse(req.body);
@@ -3041,6 +3057,7 @@ router.post("/admin/users/:id/kyc-reset", requireAuth, requireRole("ADMIN"), (re
   const result = resetKycCategory(user.id, parsed.data.category as KycResetCategory);
   recordAdminAudit(req, "KYC_RESET", "KYC", user.id, { category: parsed.data.category, checklist: result.checklist, status: result.status });
   const kyc = findOrCreateKycCase(user.id);
+  if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
     category: parsed.data.category,
@@ -3098,11 +3115,12 @@ router.post("/admin/loan-managers", requireAuth, requireRole("ADMIN"), async (re
   };
   users.push(manager);
   recordAdminAudit(req, "LOAN_MANAGER_CREATED", "USER", manager.id, { role: "LOAN_MANAGER", email: manager.email });
+  if (!(await persistMutation(res))) return;
   const { passwordHash: _passwordHash, ...safeManager } = manager;
   res.status(201).json({ ok: true, manager: { ...safeManager, role: "LOAN_MANAGER" } });
 });
 
-router.patch("/admin/loan-managers/:id/status", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.patch("/admin/loan-managers/:id/status", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z.object({ isActive: z.boolean() }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -3116,10 +3134,11 @@ router.patch("/admin/loan-managers/:id/status", requireAuth, requireRole("ADMIN"
   manager.isActive = parsed.data.isActive;
   manager.updatedAt = new Date().toISOString();
   recordAdminAudit(req, parsed.data.isActive ? "LOAN_MANAGER_ACTIVATED" : "LOAN_MANAGER_DEACTIVATED", "USER", manager.id, { isActive: manager.isActive });
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, manager: { ...manager, passwordHash: undefined, role: "LOAN_MANAGER" } });
 });
 
-router.delete("/admin/loan-managers/:id", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.delete("/admin/loan-managers/:id", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const managerIndex = users.findIndex((user) => user.id === req.params.id && user.roles.includes("LOAN_MANAGER"));
   if (managerIndex < 0) {
     res.status(404).json({ ok: false, error: "Loan manager not found" });
@@ -3127,6 +3146,7 @@ router.delete("/admin/loan-managers/:id", requireAuth, requireRole("ADMIN"), (re
   }
   const [manager] = users.splice(managerIndex, 1);
   recordAdminAudit(req, "LOAN_MANAGER_DELETED", "USER", manager.id, { email: manager.email, role: "LOAN_MANAGER" });
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, deleted: true, managerId: manager.id });
 });
 
@@ -3146,11 +3166,12 @@ router.post("/admin/administrators", requireAuth, requireRole("ADMIN"), async (r
   const administrator = { id: randomUUID(), email: parsed.data.email.toLowerCase(), phone: parsed.data.phone, fullName: parsed.data.fullName, passwordHash: await bcrypt.hash(parsed.data.password, 12), roles: parsed.data.roles as Role[], adminPermissions: parsed.data.permissions, kycStatus: "VERIFIED" as KycStatus, createdAt: now, updatedAt: now, isActive: true };
   users.push(administrator);
   recordAdminAudit(req, "ADMIN_CREATED", "USER", administrator.id, { email: administrator.email });
+  if (!(await persistMutation(res))) return;
   const { passwordHash: _passwordHash, ...safeAdministrator } = administrator;
   res.status(201).json({ ok: true, administrator: safeAdministrator });
 });
 
-router.patch("/admin/administrators/:id/status", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.patch("/admin/administrators/:id/status", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z.object({ isActive: z.boolean() }).safeParse(req.body);
   const administrator = users.find((user) => user.id === req.params.id && user.roles.includes("ADMIN"));
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
@@ -3158,15 +3179,17 @@ router.patch("/admin/administrators/:id/status", requireAuth, requireRole("ADMIN
   administrator.isActive = parsed.data.isActive;
   administrator.updatedAt = new Date().toISOString();
   recordAdminAudit(req, parsed.data.isActive ? "ADMIN_ACTIVATED" : "ADMIN_DEACTIVATED", "USER", administrator.id);
+  if (!(await persistMutation(res))) return;
   const { passwordHash: _passwordHash, ...safeAdministrator } = administrator;
   res.json({ ok: true, administrator: safeAdministrator });
 });
 
-router.delete("/admin/administrators/:id", requireAuth, requireRole("ADMIN"), (req: AuthRequest, res) => {
+router.delete("/admin/administrators/:id", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const index = users.findIndex((user) => user.id === req.params.id && user.roles.includes("ADMIN"));
   if (index < 0) { res.status(404).json({ ok: false, error: "Administrator not found" }); return; }
   const [administrator] = users.splice(index, 1);
   recordAdminAudit(req, "ADMIN_DELETED", "USER", administrator.id, { email: administrator.email });
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, deleted: true });
 });
 
@@ -3248,6 +3271,7 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
     user.kycStatus = kyc.status;
     await notifyKyc(user, parsed.data.decision === "VERIFIED" ? "APPROVED" : "REJECTED", "KYC", kyc.rejectionReason);
   }
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, case: kyc, before });
 });
 
@@ -3268,6 +3292,7 @@ router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"
   markKycChecklistComplete(kyc.userId);
   const user = users.find((item) => item.id === kyc.userId);
   if (user) await notifyKyc(user, parsed.data.approved ? "APPROVED" : "REJECTED", category, kyc.rejectionReason);
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, case: kyc });
 });
 
@@ -3387,6 +3412,7 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
   application.updatedAt = new Date().toISOString();
   if (parsed.data.decision === "APPROVED" && previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
   if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") await sendLoanEmails(application, "REJECTED");
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, application });
 });
 
@@ -3428,6 +3454,7 @@ router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("
   }
   if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") await sendLoanEmails(application, "REJECTED");
   if (allApproved && previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, application, allStagesApproved: allApproved });
 });
 
@@ -3504,6 +3531,7 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
     });
   }
   if (previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, application });
 });
 

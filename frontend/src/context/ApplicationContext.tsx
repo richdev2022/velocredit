@@ -179,11 +179,14 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
         if (saved) { resumed = normalizeApplicationData(saved); savedIndex = getSavedSectionIndex(resumed); }
       }
       if (!cancelled && resumed) {
-        setApplication(resumed);
-        setCurrentIndex(savedIndex);
-        currentIndexRef.current = savedIndex;
-        setSectionStatusOverrides({});
-        skipNextAutoSave.current = true;
+        setApplication((current) => {
+          if (current) return current;
+          setCurrentIndex(savedIndex);
+          currentIndexRef.current = savedIndex;
+          setSectionStatusOverrides({});
+          skipNextAutoSave.current = true;
+          return resumed;
+        });
       }
     })();
     return () => { cancelled = true; };

@@ -50,7 +50,6 @@ export default function BusinessKycSection() {
     register,
     handleSubmit,
     setValue,
-    getValues,
     formState: { errors, isValid },
   } = useForm<KycForm>({
     resolver: zodResolver(kycSchema),
@@ -62,13 +61,6 @@ export default function BusinessKycSection() {
       identificationNumber: application.kyc?.identificationNumber || "",
     },
   });
-
-  useEffect(() => {
-    const bvn = application.kyc?.bvn ?? "";
-    const nin = application.kyc?.nin ?? "";
-    if (getValues("bvn") !== bvn) setValue("bvn", bvn, { shouldValidate: true });
-    if (getValues("nin") !== nin) setValue("nin", nin, { shouldValidate: true });
-  }, [application.kyc?.bvn, application.kyc?.nin, getValues, setValue]);
 
   const details = (application.kyc?.verifiedDetails ?? {}) as Record<string, unknown>;
   const pickStr = (keys: string[]) => {
@@ -107,6 +99,9 @@ export default function BusinessKycSection() {
       if (countdownRef.current) window.clearInterval(countdownRef.current);
     };
   }, [activeOtpChallenge?.challenge?.challengeId]);
+
+  const { onChange: onBvnChange, ...bvnField } = register("bvn");
+  const { onChange: onNinChange, ...ninField } = register("nin");
 
   function sync<K extends keyof KycForm>(key: K, value: KycForm[K]) {
     patchKyc({ [key]: value } as any);
@@ -246,8 +241,8 @@ export default function BusinessKycSection() {
             placeholder="11-digit BVN"
             helper="Dial *565*0# on your registered line to retrieve your BVN."
             error={errors.bvn?.message}
-            {...register("bvn")}
-            onChange={(e) => { register("bvn").onChange(e); sync("bvn", e.target.value); }}
+            {...bvnField}
+            onChange={(e) => { onBvnChange(e); sync("bvn", e.target.value); }}
           />
           <FormInput
             label="NIN"
@@ -256,8 +251,8 @@ export default function BusinessKycSection() {
             placeholder="11-digit NIN"
             helper="Found on your National Identity Card or via the NIMC app."
             error={errors.nin?.message}
-            {...register("nin")}
-            onChange={(e) => { register("nin").onChange(e); sync("nin", e.target.value); }}
+            {...ninField}
+            onChange={(e) => { onNinChange(e); sync("nin", e.target.value); }}
           />
           <div className="-mt-3 sm:col-start-1">
             <button type="button" className="btn-secondary text-xs" onClick={() => void verifyIdentity("bvn", application.kyc?.bvn || "")}>Verify BVN instantly</button>
