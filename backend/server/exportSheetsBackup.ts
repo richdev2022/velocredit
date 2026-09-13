@@ -119,7 +119,7 @@ async function ensureSheetTab(
     const found = (meta.data.sheets ?? []).find(
       (s) => s.properties?.title === tabName
     );
-    sheetId = found?.properties?.sheetId;
+    sheetId = found?.properties?.sheetId ?? undefined;
   } catch (_e) {
     sheetId = undefined;
   }
@@ -220,6 +220,13 @@ function str(v: unknown): string {
   } catch (_e) {
     return String(v);
   }
+}
+
+function documentUrl(providerFileId: string | undefined): string {
+  if (!providerFileId) return "";
+  return providerFileId.startsWith("http")
+    ? providerFileId
+    : `https://drive.google.com/file/d/${providerFileId}/view`;
 }
 
 function findUserById(userId: string): User | undefined {
@@ -506,25 +513,14 @@ function buildLoanApplicationsRows(): { header: string[]; rows: string[][] } {
       ? documents.filter(
           (d) =>
             d.userId === borrower.id &&
-            (d.type === "PASSPORT" ||
-              d.type === "PASSPORT_PHOTO" ||
-              d.documentType === "PASSPORT_PHOTO" ||
-              d.documentType === "ID_CARD_FRONT")
+            (d.documentType === "PASSPORT_PHOTO" || d.documentType === "ID_CARD_FRONT")
         )
       : [];
     const addrDocs = borrower
-      ? documents.filter(
-          (d) =>
-            d.userId === borrower.id &&
-            (d.type === "PROOF_OF_ADDRESS" || d.documentType === "PROOF_OF_ADDRESS")
-        )
+      ? documents.filter((d) => d.userId === borrower.id && d.documentType === "PROOF_OF_ADDRESS")
       : [];
     const collatDocs = borrower
-      ? documents.filter(
-          (d) =>
-            d.userId === borrower.id &&
-            (d.type === "COLLATERAL" || d.documentType === "BUSINESS_REGISTRATION")
-        )
+      ? documents.filter((d) => d.userId === borrower.id && d.documentType === "BUSINESS_REGISTRATION")
       : [];
 
     row[0] = str(app.applicationId ?? app.id);
@@ -612,9 +608,9 @@ function buildLoanApplicationsRows(): { header: string[]; rows: string[][] } {
     row[52] = str(relatedLoan?.dueAt);
 
     row[53] = str(getSnapshotField(snap, "driveFolderUrl"));
-    row[54] = str(idDocs[0]?.storageUrl);
-    row[55] = str(addrDocs[0]?.storageUrl);
-    row[56] = str(collatDocs[0]?.storageUrl);
+    row[54] = documentUrl(idDocs[0]?.providerFileId);
+    row[55] = documentUrl(addrDocs[0]?.providerFileId);
+    row[56] = documentUrl(collatDocs[0]?.providerFileId);
     row[57] = str(app.signedAgreementUrl);
     row[58] = str(draft?.lastSectionIndex);
 

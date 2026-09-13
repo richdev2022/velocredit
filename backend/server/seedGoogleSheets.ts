@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { google } from "googleapis";
-import { env } from "./config.js";
+import { env, hasDatabase } from "./config.js";
 import { sql } from "./db.js";
 import {
   initializeStore,
@@ -28,8 +28,7 @@ import type {
   LoanApplication,
   LoanStatus,
   Role,
-  ApplicantType,
-  DocumentType,
+  Document as StoredDocument,
 } from "./store.js";
 import {
   listRecentJobRuns,
@@ -168,7 +167,17 @@ function safeDate(v: string | undefined | null): string | undefined {
 }
 
 function randomBcryptPassword(): Promise<string> {
-  return bcrypt.hash(randomUUID() + randomUUID() + randomUUID(), 12);
+  return bcrypt.hash(randomUUID() + randomUUID() + randomUUID(), 10);
+}
+
+function extractGoogleDriveFileId(url: string): string {
+  const fileMatch = url.match(/drive\.google\.com\/file\/d\/([^/?]+)/);
+  if (fileMatch?.[1]) return fileMatch[1];
+  try {
+    return new URL(url).searchParams.get("id") ?? url;
+  } catch {
+    return url;
+  }
 }
 
 function sheetsService(): ReturnType<typeof google.sheets> | null {
@@ -255,13 +264,15 @@ async function seedFallbackLoanProductIfEmpty(): Promise<void> {
     description: "Personal Loan backed by fail-safe catalog seed. 18% APR.",
     minAmountNaira: 50_000,
     maxAmountNaira: 5_000_000,
-    interestRatePerAnnum: 18,
-    processingFeeRate: 2,
-    lateRepaymentPenaltyPerDay: 0.1,
-    minTenureDays: 30,
-    maxTenureDays: 365,
+    defaultTenureDays: 30,
+    interestRatePercent: 18,
+    interestType: "SIMPLE_FLAT",
+    processingFeePercent: 3,
+    lateFeePercent: 5,
+    lateFeeType: "ONE_TIME",
+    gracePeriodDays: 3,
     isActive: true,
-    config: {},
+    version: 1,
     createdAt: now,
     updatedAt: now,
   };
@@ -422,7 +433,7 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
       const applicationIdRaw = (row[0] ?? "").trim() || randomUUID();
       const existingApp = loanApplications.find((a) => a.applicationId === applicationIdRaw || a.id === applicationIdRaw);
       const statusRaw = (row[2] ?? "DRAFT").trim().toUpperCase();
-      const applicantTypeRaw = (row[1] ?? "PERSONAL").trim().toUpperCase() as ApplicantType;
+      const applicantTypeRaw = (row[1] ?? "PERSONAL").trim().toUpperCase();
       const loanAmountNaira = parseNaira(row[36]);
       const tenureDays = parseDays(row[37]);
       const totalFeesNaira = parseNaira(row[49]) || (parseNaira(row[46]) + parseNaira(row[47]) + parseNaira(row[48]));
@@ -434,23 +445,21 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
           id: randomUUID(),
           applicationId: applicationIdRaw,
           borrowerId: user.id,
-          applicantType: (applicantTypeRaw === "BUSINESS" ? "BUSINESS" : "PERSONAL") as LoanApplication["applicantType"],
-          productId: null,
-          status: (APPLICATION_STATUS_TO_LOAN_STATUS[statusRaw] ?? statusRaw ?? "DRAFT") as LoanApplication["status"],
+          applicantType: applicantTypeRaw === "BUSINESS" ? "BUSINESS" : "PERSONAL",
+          status: APPLICATION_STATUS_TO_LOAN_STATUS[statusRaw] ?? "DRAFT",
           amountNaira: loanAmountNaira,
           tenureDays,
-          purpose: row[38] ?? null,
           stageStatuses: computeApplicationStageStatuses(statusRaw),
           stageRejectionNotes: {},
           submittedAt: safeDate(row[5]),
           createdAt: safeDate(row[3]) ?? now,
           updatedAt: safeDate(row[4]) ?? now,
-          signedAgreementUrl: row[57] ?? null,
-          disbursementInstitution: null,
-          disbursementAccount: null,
+          signedAgreementUrl: row[57]?.trim() || undefined,
+          disbursementInstitution: "VELO",
           customerSnapshot: {
             fullName: user.fullName,
             email: user.email,
+            purpose: row[38] ?? null,
             phone: user.phone,
             dateOfBirth: user.dateOfBirth ?? null,
             address: user.residentialAddress,
@@ -517,20 +526,16 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
             id: loanId,
             applicationId: newApp.id,
             borrowerId: user.id,
-            productId: null,
-            status: APPLICATION_STATUS_TO_LOAN_STATUS[statusRaw] ?? "APPROVED",
+            status: statusRaw === "REPAID" ? "REPAID" : statusRaw === "DISBURSED" ? "ACTIVE" : "APPROVED",
             principalNaira: loanAmountNaira,
-            totalReceivableNaira: totalRepayment,
-            outstandingNaira: (statusRaw === "REPAID" ? 0 : totalRepayment),
-            interestNaira,
-            feesNaira: totalFeesNaira,
-            lateFeesNaira: 0,
-            annualInterestRate: totalRepayment >= loanAmountNaira && tenureDays > 0 ? Math.max(0, Math.round(((totalRepayment - loanAmountNaira) / loanAmountNaira) * (365 / tenureDays) * 10000) / 100) : 18,
+            totalInterestNaira: interestNaira,
+            totalFeesNaira,
+            totalRepaymentNaira: totalRepayment,
+            outstandingNaira: statusRaw === "REPAID" ? 0 : totalRepayment,
             tenureDays,
-            issueDate: disb,
-            maturityDate: matur,
-            disbursementDate: disb,
-            signedAgreementUrl: newApp.signedAgreementUrl ?? null,
+            disbursedAt: disb,
+            dueAt: matur,
+            paidAt: statusRaw === "REPAID" ? matur : undefined,
             createdAt: newApp.createdAt,
             updatedAt: newApp.updatedAt,
           };
@@ -548,8 +553,8 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
               interestNaira,
               feesNaira: totalFeesNaira,
               totalDueNaira: totalRepayment,
-              status: statusRaw === "REPAID" ? "PAID" : "UPCOMING",
-              paidAt: statusRaw === "REPAID" ? matur : undefined,
+              totalPaidNaira: statusRaw === "REPAID" ? totalRepayment : 0,
+              status: statusRaw === "REPAID" ? "PAID" : "PENDING",
               createdAt: newApp.createdAt,
               updatedAt: newApp.updatedAt,
             };
@@ -559,39 +564,20 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
         }
 
         // ================ Documents ================
-        const docMeta: Array<{ type: DocumentType; url: string; note?: string }> = [];
-        if (row[54]) docMeta.push({ type: "PASSPORT", url: row[54], note: `ID Type: ${row[26] ?? "unknown"}; ID: ${row[27] ? last4(row[27]) : "n/a"}` });
-        if (row[55]) docMeta.push({ type: "PROOF_OF_ADDRESS", url: row[55] });
-        if (row[56]) docMeta.push({ type: "COLLATERAL", url: row[56], note: `Collateral: ${row[39] ?? "unknown"} / ref ${row[44] ?? "n/a"}` });
+        const docMeta: Array<{ documentType: StoredDocument["documentType"]; url: string }> = [];
+        if (row[54]) docMeta.push({ documentType: row[26]?.toUpperCase().includes("CARD") ? "ID_CARD_FRONT" : "PASSPORT_PHOTO", url: row[54] });
+        if (row[55]) docMeta.push({ documentType: "PROOF_OF_ADDRESS", url: row[55] });
+        if (row[56]) docMeta.push({ documentType: "BUSINESS_REGISTRATION", url: row[56] });
         for (const dm of docMeta) {
-          const doc: typeof documents[number] = {
+          const doc: StoredDocument = {
             id: randomUUID(),
             userId: user.id,
-            kycCaseId: kycCase.id,
-            type: dm.type,
-            fileName: `${dm.type.toLowerCase()}-${user.id.slice(0, 8)}`,
-            storageUrl: dm.url,
+            documentType: dm.documentType,
+            provider: "google_drive",
+            providerFileId: extractGoogleDriveFileId(dm.url),
+            fileName: `${dm.documentType.toLowerCase()}-${user.id.slice(0, 8)}`,
             status: "VERIFIED",
             version: 1,
-            metadata: { source: "legacy-apps-script", applicationId: applicationIdRaw },
-            note: dm.note ?? undefined,
-            createdAt: newApp.createdAt,
-            updatedAt: newApp.updatedAt,
-          };
-          documents.push(doc);
-          stats.documents += 1;
-        }
-        if (newApp.signedAgreementUrl) {
-          const doc: typeof documents[number] = {
-            id: randomUUID(),
-            userId: user.id,
-            kycCaseId: null,
-            type: "SIGNED_LOAN_AGREEMENT",
-            fileName: `signed-agreement-${applicationIdRaw}`,
-            storageUrl: newApp.signedAgreementUrl,
-            status: "VERIFIED",
-            version: 1,
-            metadata: { source: "legacy-apps-script", applicationId: applicationIdRaw },
             createdAt: newApp.createdAt,
             updatedAt: newApp.updatedAt,
           };
@@ -610,7 +596,7 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
             data: { _legacyRow: row, _source: "google-sheets-seed" },
             lastSectionIndex: Math.max(0, Math.min(20, Math.trunc(lastSection))),
             createdAt: newApp.createdAt,
-            updatedAt: newApp.updatedAt,
+            updatedAt: newApp.updatedAt ?? newApp.createdAt,
           });
           stats.applicationDrafts += 1;
         }
@@ -633,7 +619,7 @@ export async function runSeedGoogleSheets(
 ): Promise<{ ok: boolean; jobId: string; stats?: EntityStats; error?: string }> {
   const spreadsheetId = opts.spreadsheetId ?? env.GOOGLE_SHEETS_SPREADSHEET_ID;
   const sheetName = opts.sheetName ?? env.GOOGLE_SHEETS_SHEET_NAME;
-  if (!env.hasDatabase() || !sql) {
+  if (!hasDatabase() || !sql) {
     const jobId = await recordJobStart("seed_google_sheets", { spreadsheetId, sheetName, note: "skipped-no-db" });
     await recordJobComplete(jobId, "SKIPPED", 0, undefined, "DATABASE_URL not configured");
     return { ok: false, jobId, error: "DATABASE_URL not configured" };
