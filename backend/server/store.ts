@@ -643,7 +643,9 @@ export function requestPersist(key?: StoreKey): void {
   if (pendingPersist) clearTimeout(pendingPersist);
   pendingPersist = setTimeout(() => {
     pendingPersist = undefined;
-    void persistStore();
+    void persistStore().catch((error) => {
+      console.error("[store/requestPersist] PostgreSQL persistence failed:", error);
+    });
   }, 2000);
 }
 
@@ -843,16 +845,11 @@ function snapshotStore(): Record<StoreKey, unknown[]> {
   return Object.fromEntries(storeKeys.map((key) => [key, rawState[key]])) as Record<StoreKey, unknown[]>;
 }
 
-export async function persistStore(): Promise<EntityCounts | null> {
-  if (!sql) return null;
+export async function persistStore(): Promise<EntityCounts> {
+  if (!sql) throw new Error("PostgreSQL is not configured.");
   const snap = snapshotStore();
   const dirtyScope: StoreKey[] = nestedDirty ? [] : [...dirtyKeys];
-  let counts: EntityCounts = {};
-  try {
-    counts = await decomposeAndUpsertAll(sql, snap, dirtyScope.length > 0 ? dirtyScope : undefined);
-  } catch (e) {
-    console.error("[store/persistStore] decomposeAndUpsertAll FAILED — continuing to runtime_state JSONB write for durability. Error:", e);
-  }
+  const counts = await decomposeAndUpsertAll(sql, snap, dirtyScope.length > 0 ? dirtyScope : undefined);
   await sql.query(
     "INSERT INTO runtime_state (id, state) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET state = EXCLUDED.state, updated_at = CURRENT_TIMESTAMP",
     ["default", JSON.stringify(snap)]

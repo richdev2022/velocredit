@@ -3,7 +3,7 @@ import { formatNaira, getSuggestedLoanAmounts } from "../utils/loanCalculator";
 
 interface Props { value:number; onChange:(v:number)=>void; error?:string; min:number; max:number; }
 export default function LoanAmountSelector({value,onChange,error,min,max}:Props){const step=(max-min)<=1_000_000?5_000:10_000;const[input,setInput]=useState(value?String(value):"");const[localError,setLocalError]=useState("");
- useEffect(()=>{setInput(value?String(value):"");},[value]);
+ useEffect(()=>{const next=value?String(value):"";setInput(current=>current.replace(/[^0-9]/g,"")===next?current:next);},[value]);
  const quickAmounts=getSuggestedLoanAmounts(min,max);
  function inputChanged(raw:string){const numeric=raw.replace(/[^0-9]/g,"");setInput(numeric);if(!numeric){setLocalError("Enter a loan amount.");return;}const n=Number(numeric);if(n<min)setLocalError(`Minimum loan amount is ${formatNaira(min)}.`);else if(n>max)setLocalError(`Maximum loan amount is ${formatNaira(max)}.`);else setLocalError("");onChange(n);}
  function pick(n:number){setInput(String(n));setLocalError("");onChange(n);}

@@ -71,6 +71,8 @@ export default function PersonalKycSection() {
   }>(null);
   const countdownRef = useRef<number | null>(null);
   const kycProfileLoadedRef = useRef(false);
+  const applicationRef = useRef(application);
+  applicationRef.current = application;
   if (!application) return null;
   const currentApplication = application;
   const bvnDisplay = application.kyc?.bvnVerified ? maskIdNumber(application.kyc?.bvn || "") : application.kyc?.bvn || "";
@@ -143,7 +145,9 @@ export default function PersonalKycSection() {
       if (cancelled || !kyc?.ok) return;
       const anyKyc = kyc as any;
       const checklist = (anyKyc.checklist || {}) as Record<string, boolean>;
-      const existingPersonal = application.personalInfo || {};
+      const latestApplication = applicationRef.current;
+      if (!latestApplication) return;
+      const existingPersonal = latestApplication.personalInfo || {};
       const prefill = anyKyc.profilePrefill as Record<string, string> | undefined;
       if (prefill) {
         const infoPatch: Record<string, string> = {};
@@ -154,7 +158,7 @@ export default function PersonalKycSection() {
         });
         if (Object.keys(infoPatch).length) patchPersonalInfo(infoPatch);
       }
-      const existingKyc = application.kyc || {};
+      const existingKyc = latestApplication.kyc || {};
       const kycPatch: Record<string, any> = {};
       const profileBvn = typeof anyKyc.bvn === "string" ? anyKyc.bvn : undefined;
       const profileNin = typeof anyKyc.nin === "string" ? anyKyc.nin : undefined;
@@ -185,7 +189,7 @@ export default function PersonalKycSection() {
         }
       }
       if (Object.keys(kycPatch).length) patchKyc(kycPatch);
-      const hasProof = Boolean(application.documents?.proofOfAddress);
+      const hasProof = Boolean(latestApplication.documents?.proofOfAddress);
       if (!hasProof) {
         const url = anyKyc.proofOfAddressUrl as string | undefined;
         const docs = anyKyc.documents as any[] | undefined;

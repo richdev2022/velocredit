@@ -159,6 +159,8 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (restoredUserIdRef.current === user.id) return;
+    restoredUserIdRef.current = user.id;
+    let cancelled = false;
     void (async () => {
       let resumed: ApplicationData | null = null;
       let savedIndex = 0;
@@ -176,16 +178,16 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
         const saved = match ? loadApplication(match.applicationId) : null;
         if (saved) { resumed = normalizeApplicationData(saved); savedIndex = getSavedSectionIndex(resumed); }
       }
-      if (resumed) {
+      if (!cancelled && resumed) {
         setApplication(resumed);
         setCurrentIndex(savedIndex);
         currentIndexRef.current = savedIndex;
         setSectionStatusOverrides({});
         skipNextAutoSave.current = true;
       }
-      restoredUserIdRef.current = user.id;
     })();
-  }, [user, application]);
+    return () => { cancelled = true; };
+  }, [user]);
 
   // ----- derived: calculation -----
   const calculation = useMemo<LoanCalculation | null>(() => {

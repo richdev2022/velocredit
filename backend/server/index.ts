@@ -4,7 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
 import { assertProductionSecrets, env } from "./config.js";
-import { databaseHealth } from "./db.js";
+import { databaseHealth, sql } from "./db.js";
 import apiRouter from "./routes.js";
 import { openapi } from "./openapi.js";
 import {
@@ -724,7 +724,7 @@ async function start(): Promise<void> {
     seedLoanProducts();
     // seedAdminLedgerOpeningBalance(100_000_000 * 100);
     getPlatformSettings();
-    await persistStore();
+    if (sql) await persistStore();
     console.log("Database initialization complete.");
     let sheetsBackupRunning = false;
     const runGuardedSheetsBackup = async (): Promise<void> => {
