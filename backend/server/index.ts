@@ -40,6 +40,7 @@ import type { IdentityVerificationEvent } from "./store.js";
 import { markKycChecklistComplete } from "./auth.js";
 import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } from "./email.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
+import { bootstrapEnvironmentAdministrator } from "./bootstrap.js";
 
 assertProductionSecrets();
 
@@ -718,6 +719,7 @@ async function start(): Promise<void> {
     console.log(`[startup] Booting Velo API (NODE_ENV=${env.NODE_ENV}, PORT=${env.API_PORT}, HOST=${env.API_HOST})…`);
     console.log("Initializing database schema...");
     const schema = await ensureDatabaseSchema();
+    await bootstrapEnvironmentAdministrator();
     console.log("Loading persisted application state...");
     await initializeStore();
     seedInvestmentPlans();

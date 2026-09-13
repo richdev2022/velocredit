@@ -2334,23 +2334,35 @@ router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), 
     applicantType: z.enum(["PERSONAL", "BUSINESS"]),
     data: z.record(z.unknown()),
     lastSectionIndex: z.number().int().min(0),
+    updatedAt: z.string().datetime(),
   }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const now = new Date().toISOString();
   const existing = applicationDrafts.find((draft) => draft.userId === req.user!.id && draft.applicationId === parsed.data.applicationId);
   if (existing) {
+    if (new Date(existing.updatedAt).getTime() > new Date(parsed.data.updatedAt).getTime()) {
+      res.json({ ok: true, draft: existing });
+      return;
+    }
     existing.applicantType = parsed.data.applicantType;
     existing.data = parsed.data.data;
     existing.lastSectionIndex = parsed.data.lastSectionIndex;
-    existing.updatedAt = now;
+    existing.updatedAt = parsed.data.updatedAt;
     if (!(await persistMutation(res))) return;
     res.json({ ok: true, draft: existing });
     return;
   }
-  const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now, updatedAt: now };
+  const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now };
   applicationDrafts.push(draft);
   if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, draft });
+});
+
+router.delete("/borrower/application-draft/:applicationId", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
+  const index = applicationDrafts.findIndex((draft) => draft.userId === req.user!.id && draft.applicationId === req.params.applicationId);
+  if (index >= 0) applicationDrafts.splice(index, 1);
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true });
 });
 
 router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {

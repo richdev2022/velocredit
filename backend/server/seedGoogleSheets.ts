@@ -402,13 +402,25 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
       if (biz && sql) {
         try {
           await sql.query(
-            `INSERT INTO borrower_profiles (user_id, business_name, business_registration_number, business_type, business_industry, years_in_business, employment_status, employer_name, monthly_income_naira, monthly_expenses_naira, business_revenue_naira, business_expenses_naira, existing_loan_obligations, expected_repayment_source, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            `INSERT INTO borrower_profiles (id, user_id, business_name, business_registration_number, business_type, business_industry, years_in_business, employment_status, employer_name, monthly_income_naira, monthly_expenses_naira, business_revenue_naira, business_expenses_naira, existing_loan_obligations, expected_repayment_source, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
              ON CONFLICT (user_id) DO UPDATE SET
                business_name = COALESCE(EXCLUDED.business_name, borrower_profiles.business_name),
                business_registration_number = COALESCE(EXCLUDED.business_registration_number, borrower_profiles.business_registration_number),
+               business_type = COALESCE(EXCLUDED.business_type, borrower_profiles.business_type),
+               business_industry = COALESCE(EXCLUDED.business_industry, borrower_profiles.business_industry),
+               years_in_business = COALESCE(EXCLUDED.years_in_business, borrower_profiles.years_in_business),
+               employment_status = COALESCE(EXCLUDED.employment_status, borrower_profiles.employment_status),
+               employer_name = COALESCE(EXCLUDED.employer_name, borrower_profiles.employer_name),
+               monthly_income_naira = COALESCE(EXCLUDED.monthly_income_naira, borrower_profiles.monthly_income_naira),
+               monthly_expenses_naira = COALESCE(EXCLUDED.monthly_expenses_naira, borrower_profiles.monthly_expenses_naira),
+               business_revenue_naira = COALESCE(EXCLUDED.business_revenue_naira, borrower_profiles.business_revenue_naira),
+               business_expenses_naira = COALESCE(EXCLUDED.business_expenses_naira, borrower_profiles.business_expenses_naira),
+               existing_loan_obligations = COALESCE(EXCLUDED.existing_loan_obligations, borrower_profiles.existing_loan_obligations),
+               expected_repayment_source = COALESCE(EXCLUDED.expected_repayment_source, borrower_profiles.expected_repayment_source),
                updated_at = EXCLUDED.updated_at`,
             [
+              `borrower-${user.id}`,
               user.id,
               row[13] ?? null,
               row[14] ?? null,
@@ -423,6 +435,7 @@ export async function processRowsIntoStore(rows: Row[]): Promise<EntityStats> {
               row[33] ? parseNaira(row[33]) : null,
               row[34] ?? null,
               row[35] ?? null,
+              now,
               now,
             ]
           );
