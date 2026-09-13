@@ -73,8 +73,14 @@ import {
   disbursementAccounts,
   accountChangeRequests,
   indexes,
+  listRecentJobRuns,
+  decomposeRuntimeStateIntoTables,
+  reloadStoreFromRelationalTables,
 } from "./store.js";
+import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
+import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { env } from "./config.js";
+import { sql } from "./db.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
 import { calculateCreditScore } from "./credit.js";
 import { evaluateLoanEligibility } from "./loanDecision.js";
@@ -115,6 +121,146 @@ function recordAdminAudit(req: AuthRequest, action: string, resourceType: string
     metadata,
     ipAddress: req.ip,
     userAgent: req.get("user-agent") ?? undefined,
+    createdAt: new Date().toISOString(),
+  });
+}
+async function dbEmailExists(email: string): Promise<boolean | null> {
+  if (!sql) return null;
+  try {
+    if (env.DEBUG_SQL === "true") {
+      try {
+        const explain = await sql.query(
+          "EXPLAIN SELECT id FROM users WHERE email ILIKE $1 LIMIT 1",
+          [email]
+        ) as unknown as Array<Record<string, unknown>>;
+        console.debug("[DEBUG_SQL] dbEmailExists EXPLAIN:", JSON.stringify(explain));
+      } catch { /* EXPLAIN failure must not block query */ }
+    }
+    const rows = await sql.query(
+      "SELECT id FROM users WHERE email ILIKE $1 LIMIT 1",
+      [email]
+    ) as unknown as Array<Record<string, unknown>>;
+    return (rows?.length ?? 0) > 0;
+  } catch (_e) {
+    console.warn("[dbEmailExists] SQL failed — falling back to in-memory check. Error:", _e);
+    return null;
+  }
+}
+async function dbHasUnresolvedBorrowing(userId: string, excludeApplicationId?: string): Promise<boolean | null> {
+  if (!sql) return null;
+  try {
+    const appParams: unknown[] = [userId];
+    let appExclude = "";
+    if (excludeApplicationId) { appParams.push(excludeApplicationId); appExclude = " AND id != $2"; }
+    const appQ = `SELECT 1 FROM loan_applications WHERE borrower_id = $1${appExclude} AND status IN ('SUBMITTED','KYC_PENDING','UNDER_REVIEW','MORE_INFORMATION_REQUIRED') LIMIT 1`;
+    const loanQ = `SELECT 1 FROM loans WHERE borrower_id = $1 AND status NOT IN ('REPAID','CANCELLED','WRITTEN_OFF') LIMIT 1`;
+    if (env.DEBUG_SQL === "true") {
+      try {
+        const explain1 = await sql.query("EXPLAIN " + appQ, appParams) as unknown as Array<Record<string, unknown>>;
+        const explain2 = await sql.query("EXPLAIN " + loanQ, [userId]) as unknown as Array<Record<string, unknown>>;
+        console.debug("[DEBUG_SQL] dbHasUnresolvedBorrowing EXPLAIN (apps):", JSON.stringify(explain1));
+        console.debug("[DEBUG_SQL] dbHasUnresolvedBorrowing EXPLAIN (loans):", JSON.stringify(explain2));
+      } catch { /* EXPLAIN failure must not block */ }
+    }
+    const openApps = await sql.query(appQ, appParams) as unknown as Array<Record<string, unknown>>;
+    if ((openApps?.length ?? 0) > 0) return true;
+    const openLoans = await sql.query(loanQ, [userId]) as unknown as Array<Record<string, unknown>>;
+    return (openLoans?.length ?? 0) > 0;
+  } catch (_e) {
+    console.warn("[dbHasUnresolvedBorrowing] SQL failed — falling back to in-memory check. Error:", _e);
+    return null;
+  }
+}
+async function dbIsBvnOrNinAlreadyVerifiedByOther(
+  bvn: string | undefined,
+  nin: string | undefined,
+  excludeKycCaseId?: string
+): Promise<{ conflict: boolean; existingUserId?: string; field?: "BVN" | "NIN" } | null> {
+  if (!sql) return null;
+  try {
+    const results: Array<{ existing_user_id: string; field: "BVN" | "NIN" }> = [];
+    if (bvn && bvn.length === 11) {
+      const params: unknown[] = [bvn];
+      let exclude = "";
+      if (excludeKycCaseId) { params.push(excludeKycCaseId); exclude = " AND id != $2"; }
+      const rows = await sql.query(
+        `SELECT user_id AS existing_user_id, 'BVN' AS field FROM kyc_cases WHERE bvn IS NOT NULL AND bvn = $1 AND bvn_verified_at IS NOT NULL${exclude} LIMIT 1`,
+        params
+      ) as unknown as Array<{ existing_user_id: string; field: "BVN" | "NIN" }>;
+      if (rows && rows.length > 0) results.push(...rows);
+    }
+    if (nin && nin.length === 11) {
+      const params: unknown[] = [nin];
+      let exclude = "";
+      if (excludeKycCaseId) { params.push(excludeKycCaseId); exclude = " AND id != $2"; }
+      const rows = await sql.query(
+        `SELECT user_id AS existing_user_id, 'NIN' AS field FROM kyc_cases WHERE nin IS NOT NULL AND nin = $1 AND nin_verified_at IS NOT NULL${exclude} LIMIT 1`,
+        params
+      ) as unknown as Array<{ existing_user_id: string; field: "BVN" | "NIN" }>;
+      if (rows && rows.length > 0) results.push(...rows);
+    }
+    if (results.length > 0) {
+      return { conflict: true, existingUserId: results[0].existing_user_id, field: results[0].field };
+    }
+    return { conflict: false };
+  } catch (_e) {
+    console.warn("[dbIsBvnOrNinAlreadyVerifiedByOther] SQL failed — falling back to in-memory check. Error:", _e);
+    return null;
+  }
+}
+async function dbWalletAvailableMinor(userId: string): Promise<number | null> {
+  if (!sql) return null;
+  try {
+    if (env.DEBUG_SQL === "true") {
+      try {
+        const explain = await sql.query(
+          "EXPLAIN SELECT available_minor FROM wallets WHERE user_id = $1 LIMIT 1",
+          [userId]
+        ) as unknown as Array<Record<string, unknown>>;
+        console.debug("[DEBUG_SQL] dbWalletAvailableMinor EXPLAIN:", JSON.stringify(explain));
+      } catch { /* ignore */ }
+    }
+    const rows = await sql.query(
+      "SELECT available_minor FROM wallets WHERE user_id = $1 LIMIT 1",
+      [userId]
+    ) as unknown as Array<{ available_minor: unknown }>;
+    if (!rows || rows.length === 0) return null;
+    const val = rows[0].available_minor;
+    if (typeof val === "bigint") return Number(val);
+    if (typeof val === "number") return val;
+    if (typeof val === "string") return parseInt(val, 10) || 0;
+    return null;
+  } catch (_e) {
+    console.warn("[dbWalletAvailableMinor] SQL failed — falling back to in-memory balance. Error:", _e);
+    return null;
+  }
+}
+function reconcileWalletFromDb(userId: string, dbAvailableMinor: number): void {
+  const wallet = findWallet(userId);
+  if (!wallet) return;
+  const memAvailable = wallet.availableMinor ?? 0;
+  if (memAvailable === dbAvailableMinor) return;
+  console.warn(
+    `[store_reconciliation_warning] Wallet for user ${userId} diverged: in-memory availableMinor=${memAvailable} DB=${dbAvailableMinor}. Overwriting in-memory state with DB truth.`
+  );
+  wallet.availableMinor = dbAvailableMinor;
+  if (typeof wallet.availableNaira !== "undefined") {
+    wallet.availableNaira = dbAvailableMinor / 100;
+  }
+  auditLogs.push({
+    id: randomUUID(),
+    userId,
+    action: "wallet_reconciliation",
+    resourceType: "WALLET",
+    resourceId: wallet.id,
+    metadata: {
+      fromAvailableMinor: memAvailable,
+      toAvailableMinor: dbAvailableMinor,
+      delta: dbAvailableMinor - memAvailable,
+      source: "db_truth_overwrite",
+    },
+    ipAddress: null as unknown as undefined,
+    userAgent: "system:wallet_reconciliation",
     createdAt: new Date().toISOString(),
   });
 }
@@ -252,7 +398,26 @@ router.post("/auth/register", async (req, res) => {
     return;
   }
   const input = parsed.data;
-  if (findUserByEmail(input.email)) {
+  const dbExists = await dbEmailExists(input.email);
+  const memExists = Boolean(findUserByEmail(input.email));
+  if (dbExists !== null && dbExists !== memExists) {
+    console.warn(
+      `[store_reconciliation_warning] Email uniqueness diverged for ${input.email}: DB=${dbExists} in-memory=${memExists}. Trusting DB truth.`
+    );
+    auditLogs.push({
+      id: randomUUID(),
+      userId: null as unknown as undefined,
+      action: "store_reconciliation_warning",
+      resourceType: "USER",
+      resourceId: null as unknown as undefined,
+      metadata: { email: input.email, dbExists, memExists, reason: "email_uniqueness_registration_gate" },
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent") ?? undefined,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  const emailTaken = dbExists !== null ? dbExists : memExists;
+  if (emailTaken) {
     res.status(409).json({ ok: false, error: "An account with this email already exists" });
     return;
   }
@@ -2117,7 +2282,26 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     return;
   }
   const input = parsed.data;
-  if (hasUnresolvedBorrowing(req.user!.id)) {
+  const dbBorrowing = await dbHasUnresolvedBorrowing(req.user!.id);
+  const memBorrowing = hasUnresolvedBorrowing(req.user!.id);
+  if (dbBorrowing !== null && dbBorrowing !== memBorrowing) {
+    console.warn(
+      `[store_reconciliation_warning] hasUnresolvedBorrowing diverged user=${req.user!.id}: DB=${dbBorrowing} in-memory=${memBorrowing}. Trusting DB truth.`
+    );
+    auditLogs.push({
+      id: randomUUID(),
+      userId: req.user!.id,
+      action: "store_reconciliation_warning",
+      resourceType: "BORROWING",
+      resourceId: null as unknown as undefined,
+      metadata: { dbBorrowing, memBorrowing, reason: "application_submit_gate" },
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent") ?? undefined,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  const unresolvedBorrowing = dbBorrowing !== null ? dbBorrowing : memBorrowing;
+  if (unresolvedBorrowing) {
     res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
     return;
   }

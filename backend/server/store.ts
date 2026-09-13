@@ -1,5 +1,8 @@
 import { randomUUID, createHash } from "node:crypto";
+import type { NeonQueryFunction } from "@neondatabase/serverless";
 import { sql } from "./db.js";
+import { decomposeAndUpsertAll, type EntityCounts, type Snapshot } from "./decompose.js";
+import { rebuildFromDatabase } from "./rebuildFromDatabase.js";
 
 export type Role = "INVESTOR" | "BORROWER" | "ADMIN" | "LOAN_MANAGER";
 export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loans", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
@@ -622,9 +625,21 @@ const rawState = {} as Record<StoreKey, unknown[]>;
 const nestedProxyCache = new WeakMap<object, object>();
 let hydrating = false;
 let pendingPersist: ReturnType<typeof setTimeout> | undefined;
+const dirtyKeys = new Set<StoreKey>();
+let nestedDirty = false;
 
-function requestPersist(): void {
+export function isDirtySetEmptyForTestingOnly(): boolean {
+  return dirtyKeys.size === 0 && !nestedDirty;
+}
+export function peekDirtyKeysForTestingOnly(): StoreKey[] {
+  if (nestedDirty) return [...storeKeys];
+  return [...dirtyKeys];
+}
+
+export function requestPersist(key?: StoreKey): void {
   if (hydrating || !sql) return;
+  if (key) dirtyKeys.add(key);
+  else nestedDirty = true;
   if (pendingPersist) clearTimeout(pendingPersist);
   pendingPersist = setTimeout(() => {
     pendingPersist = undefined;
@@ -736,7 +751,7 @@ export function rebuildIndexes(): void {
 function syncAfterMutation<T>(key: StoreKey, _values: T[]): void {
   if (hydrating) return;
   rebuildIndexes();
-  requestPersist();
+  requestPersist(key);
 }
 
 function wrapNested<T>(value: T): T {
@@ -828,33 +843,78 @@ function snapshotStore(): Record<StoreKey, unknown[]> {
   return Object.fromEntries(storeKeys.map((key) => [key, rawState[key]])) as Record<StoreKey, unknown[]>;
 }
 
-export async function persistStore(): Promise<void> {
-  if (!sql) return;
+export async function persistStore(): Promise<EntityCounts | null> {
+  if (!sql) return null;
+  const snap = snapshotStore();
+  const dirtyScope: StoreKey[] = nestedDirty ? [] : [...dirtyKeys];
+  let counts: EntityCounts = {};
+  try {
+    counts = await decomposeAndUpsertAll(sql, snap, dirtyScope.length > 0 ? dirtyScope : undefined);
+  } catch (e) {
+    console.error("[store/persistStore] decomposeAndUpsertAll FAILED — continuing to runtime_state JSONB write for durability. Error:", e);
+  }
   await sql.query(
     "INSERT INTO runtime_state (id, state) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET state = EXCLUDED.state, updated_at = CURRENT_TIMESTAMP",
-    ["default", JSON.stringify(snapshotStore())]
+    ["default", JSON.stringify(snap)]
   );
+  dirtyKeys.clear();
+  nestedDirty = false;
+  return counts;
+}
+
+function applySnapshotToCollections(snap: Record<StoreKey, unknown[]>): void {
+  hydrating = true;
+  for (const key of storeKeys) {
+    const values = snap[key];
+    if (Array.isArray(values)) collections[key].push(...values);
+  }
+  hydrating = false;
+}
+
+function snapshotIsMeaningful(snap: Record<string, unknown[]> | null): boolean {
+  if (!snap) return false;
+  for (const key of Object.keys(snap)) {
+    const arr = (snap as Record<string, unknown[]>)[key];
+    if (Array.isArray(arr) && arr.length > 0) return true;
+  }
+  return false;
 }
 
 export async function initializeStore(): Promise<void> {
   if (!sql) return;
-  const rows = await sql.query("SELECT state FROM runtime_state WHERE id = $1", ["default"]) as Array<{ state: Record<string, unknown[]> | string }>;
-  const savedState = rows[0]?.state;
-  if (savedState) {
-    const parsed = typeof savedState === "string" ? JSON.parse(savedState) as Record<string, unknown[]> : savedState;
-    hydrating = true;
-    for (const key of storeKeys) {
-      const values = parsed[key];
-      if (Array.isArray(values)) collections[key].push(...values);
-    }
-    hydrating = false;
+
+  const rebuildSnap = await rebuildFromDatabase(sql as unknown as NeonQueryFunction<false, false>);
+  const usedRelationalSource = snapshotIsMeaningful(rebuildSnap as unknown as Record<string, unknown[]>);
+
+  if (usedRelationalSource) {
+    applySnapshotToCollections(rebuildSnap as unknown as Record<StoreKey, unknown[]>);
   } else {
-    await persistStore();
+    const rows = await sql.query("SELECT state FROM runtime_state WHERE id = $1", ["default"]) as Array<{ state: Record<string, unknown[]> | string }>;
+    const savedState = rows[0]?.state;
+    if (savedState) {
+      const parsed = typeof savedState === "string" ? JSON.parse(savedState) as Record<string, unknown[]> : savedState;
+      applySnapshotToCollections(parsed);
+    } else {
+      await persistStore();
+    }
   }
+
   for (const app of loanApplications) {
     seedLoanStageStatuses(app);
   }
+
   rebuildIndexes();
+  seedDefaultCatalog();
+  seedAdminLedgerOpeningBalance();
+
+  try {
+    await decomposeAndUpsertAll(sql as unknown as NeonQueryFunction<false, false>, snapshotStore(), undefined);
+  } catch (e) {
+    console.error("[store/initializeStore] post-load full decompose pass FAILED:", e);
+  }
+
+  dirtyKeys.clear();
+  nestedDirty = false;
 }
 
 export function createWallet(userId: string): Wallet {
@@ -1119,3 +1179,127 @@ export function getEffectiveInvestorRate(investorId: string, planRatePercent: nu
   const override = settings.investorEarningRateOverrides[investorId];
   return override ?? planRatePercent ?? settings.defaultInvestmentAnnualRatePercent;
 }
+
+export function seedDefaultCatalog(): void {
+  seedInvestmentPlans();
+  seedLoanProducts();
+}
+
+export type JobStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";
+
+export type JobRun = {
+  id: string;
+  jobName: string;
+  status: JobStatus;
+  startedAt: string;
+  completedAt?: string;
+  recordsProcessed?: number;
+  error?: string;
+  metadata?: Record<string, unknown>;
+};
+
+const _sqlMaybe = () => sql as unknown as NeonQueryFunction<false, false> | null;
+
+export async function recordJobStart(jobName: string, metadata?: Record<string, unknown>): Promise<string> {
+  const db = _sqlMaybe();
+  const id = randomUUID();
+  if (db) {
+    try {
+      await db.query(
+        `INSERT INTO job_runs (id, job_name, status, started_at, records_processed, metadata)
+         VALUES ($1, $2, 'RUNNING', $3, 0, $4::jsonb)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, jobName, new Date(), metadata ? JSON.stringify(metadata) : "{}"]
+      );
+    } catch (e) {
+      console.error("[store/recordJobStart] SQL insert failed:", e);
+    }
+  }
+  return id;
+}
+
+export async function recordJobComplete(
+  jobId: string,
+  status: JobStatus,
+  recordsProcessed = 0,
+  metadata?: Record<string, unknown>,
+  error?: string
+): Promise<void> {
+  const db = _sqlMaybe();
+  if (!db) return;
+  try {
+    await db.query(
+      `UPDATE job_runs
+       SET status = $1::text,
+           completed_at = CURRENT_TIMESTAMP,
+           records_processed = $2,
+           metadata = COALESCE($3::jsonb, metadata),
+           error = $4
+       WHERE id = $5`,
+      [status, recordsProcessed, metadata ? JSON.stringify(metadata) : null, error ?? null, jobId]
+    );
+  } catch (e) {
+    console.error("[store/recordJobComplete] SQL update failed:", e);
+  }
+}
+
+export async function listRecentJobRuns(limit = 50): Promise<Array<Record<string, unknown>>> {
+  const db = _sqlMaybe();
+  if (!db) return [];
+  try {
+    const rows = await db.query(
+      `SELECT id, job_name, status, started_at, completed_at, records_processed, error, metadata
+       FROM job_runs ORDER BY started_at DESC LIMIT $1`,
+      [limit]
+    ) as unknown as Array<Record<string, unknown>>;
+    return rows;
+  } catch (e) {
+    console.error("[store/listRecentJobRuns] query failed:", e);
+    return [];
+  }
+}
+
+export async function findLastJobRun(jobName: string): Promise<Record<string, unknown> | null> {
+  const db = _sqlMaybe();
+  if (!db) return null;
+  try {
+    const rows = await db.query(
+      `SELECT id, job_name, status, started_at, completed_at, records_processed, error, metadata
+       FROM job_runs WHERE job_name = $1 ORDER BY started_at DESC LIMIT 1`,
+      [jobName]
+    ) as unknown as Array<Record<string, unknown>>;
+    return rows[0] ?? null;
+  } catch (e) {
+    console.error("[store/findLastJobRun] query failed:", e);
+    return null;
+  }
+}
+
+export async function decomposeRuntimeStateIntoTables(
+  scopeKeys?: StoreKey[]
+): Promise<EntityCounts | null> {
+  const db = _sqlMaybe();
+  if (!db) return null;
+  const snap = snapshotStore();
+  return decomposeAndUpsertAll(db, snap, scopeKeys);
+}
+
+export async function reloadStoreFromRelationalTables(): Promise<boolean> {
+  const db = _sqlMaybe();
+  if (!db) return false;
+  const snap = await rebuildFromDatabase(db);
+  if (!snapshotIsMeaningful(snap as unknown as Record<string, unknown[]>)) return false;
+  hydrating = true;
+  for (const key of storeKeys) {
+    collections[key].length = 0;
+  }
+  hydrating = false;
+  applySnapshotToCollections(snap as unknown as Record<StoreKey, unknown[]>);
+  for (const app of loanApplications) {
+    seedLoanStageStatuses(app);
+  }
+  rebuildIndexes();
+  return true;
+}
+
+export { storeKeys };

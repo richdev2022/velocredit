@@ -128,7 +128,7 @@ function adminPermissionForPath(path: string): AdminPermission | undefined {
   if (path.includes("/administrators") || path.includes("/loan-managers")) return "staff";
   if (path.includes("/investment-plans")) return "investments";
   if (path.includes("/reports")) return "reports";
-  if (path.includes("/config")) return "settings";
+  if (path.includes("/config") || path.includes("/migrations")) return "settings";
   return undefined;
 }
 

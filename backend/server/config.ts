@@ -60,6 +60,17 @@ const envSchema = z.object({
   BREVO_SENDER_EMAIL: z.string().email().optional(),
   BREVO_SENDER_NAME: z.string().default("Velo Finance"),
   BRAND_LOGO_URL: z.string().url().optional(),
+  GOOGLE_SHEETS_SPREADSHEET_ID: z.string().default("1VelRf1cdCOWkf0jk6rLyQrkWK8GOaa9e9C6eblR9bdc"),
+  GOOGLE_SHEETS_SHEET_NAME: z.string().default("Loan Applications"),
+  GOOGLE_SHEETS_BACKUP_SPREADSHEET_ID: z.string().optional(),
+  GOOGLE_SHEETS_BACKUP_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  GOOGLE_SHEETS_INGEST_AS_BACKUP_ONLY: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 }).superRefine((values, ctx) => {
   if (values.LOAN_AUTO_REVIEW_SCORE_MIN >= values.LOAN_AUTO_ELIGIBLE_SCORE_MIN) {
     ctx.addIssue({

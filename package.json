@@ -13,7 +13,10 @@
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "typecheck:api": "tsc --noEmit -p tsconfig.server.json"
+    "typecheck:api": "tsc --noEmit -p tsconfig.server.json",
+    "seed:sheets": "tsx backend/server/seedGoogleSheets.ts",
+    "export:sheets": "tsx backend/server/exportSheetsBackup.ts",
+    "migration:decompose": "tsx -e \"import('./backend/server/store.js').then(s => s.initializeStore()).then(() => console.log('decompose done'))\""
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

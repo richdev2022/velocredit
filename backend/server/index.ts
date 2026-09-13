@@ -39,6 +39,7 @@ import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, f
 import type { IdentityVerificationEvent } from "./store.js";
 import { markKycChecklistComplete } from "./auth.js";
 import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } from "./email.js";
+import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 
 assertProductionSecrets();
 
@@ -725,6 +726,20 @@ async function start(): Promise<void> {
     getPlatformSettings();
     await persistStore();
     console.log("Database initialization complete.");
+    let sheetsBackupRunning = false;
+    const runGuardedSheetsBackup = async (): Promise<void> => {
+      if (sheetsBackupRunning) return;
+      sheetsBackupRunning = true;
+      try {
+        await runExportSheetsBackup();
+      } catch (_e) {
+        console.error("[index] runExportSheetsBackup scheduled run failed:", _e);
+      } finally {
+        sheetsBackupRunning = false;
+      }
+    };
+    void runGuardedSheetsBackup();
+    setInterval(() => { void runGuardedSheetsBackup(); }, 6 * 60 * 60 * 1000).unref();
     const server = app.listen(env.API_PORT, env.API_HOST, () => {
       const databaseMessage = schema === "created"
         ? "schema initialized"
