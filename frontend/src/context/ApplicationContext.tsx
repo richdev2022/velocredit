@@ -29,10 +29,11 @@ import { generateDraftId } from "../utils/applicationId";
 import {
   loadApplication,
   saveApplication,
+  deleteApplication,
   findDraftsByEmailOrPhone,
   getSavedSectionIndex,
 } from "../utils/storage";
-import { compactApplicationForTransport, getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
+import { compactApplicationForTransport, deleteApplicationDraft, getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
 import { useAuth } from "./AuthContext";
 import type {
   LookupDraftResponse,
@@ -164,19 +165,23 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     void (async () => {
       let resumed: ApplicationData | null = null;
       let savedIndex = 0;
+      const match = findDraftsByEmailOrPhone(user.email || "", user.phone || "").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+      const local = match ? loadApplication(match.applicationId) : null;
       try {
         const remote = await getApplicationDraft();
         if (remote.draft) {
-          resumed = normalizeApplicationData(remote.draft.data as unknown as ApplicationData);
-          savedIndex = Number(remote.draft.lastSectionIndex) || 0;
+          const remoteData = normalizeApplicationData(remote.draft.data as unknown as ApplicationData);
+          if (!local || new Date(remote.draft.updatedAt).getTime() >= new Date(local.updatedAt).getTime()) {
+            resumed = remoteData;
+            savedIndex = Number(remote.draft.lastSectionIndex) || 0;
+          }
         }
       } catch (_error) {
         // Fall back to a draft previously saved in this browser.
       }
-      if (!resumed) {
-        const match = findDraftsByEmailOrPhone(user.email || "", user.phone || "").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-        const saved = match ? loadApplication(match.applicationId) : null;
-        if (saved) { resumed = normalizeApplicationData(saved); savedIndex = getSavedSectionIndex(resumed); }
+      if (!resumed && local) {
+        resumed = normalizeApplicationData(local);
+        savedIndex = getSavedSectionIndex(resumed);
       }
       if (!cancelled && resumed) {
         setApplication((current) => {
@@ -243,7 +248,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       saveApplication(application, currentIndexRef.current);
       if (getAccessToken() && application.applicantType) {
-        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current });
+        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
@@ -331,12 +336,17 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
 
   // ----- lifecycle: reset -----
   const resetApplication = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (application) {
+      deleteApplication(application.applicationId);
+      if (getAccessToken()) void deleteApplicationDraft(application.applicationId).catch(() => {});
+    }
     setApplication(null);
     setCurrentIndex(0);
     setSaveState("idle");
     setLastSavedAt(null);
     setSectionStatusOverrides({});
-  }, []);
+  }, [application]);
 
   // ----- navigation -----
   const setSectionIndex = useCallback((index: number) => {
@@ -428,7 +438,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       saveApplication(application, currentIndexRef.current);
       if (getAccessToken() && application.applicantType) {
-        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current });
+        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: compactApplicationForTransport(application as unknown as Record<string, unknown>), lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());

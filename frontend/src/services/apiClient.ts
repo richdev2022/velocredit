@@ -398,15 +398,7 @@ export function compactApplicationForTransport(input: Record<string, unknown>): 
     const { data: _data, ...metadata } = document as Record<string, unknown>;
     return [slot, metadata];
   }));
-  const kyc = { ...(application.kyc ?? {}) };
-  delete kyc.bvn;
-  delete kyc.nin;
-  delete kyc.identificationNumber;
-  delete kyc.verifiedDetails;
-  delete kyc.identityPhotoUrl;
-  delete kyc.selfieImageData;
-  const agreement = application.agreement ? { ...application.agreement, generatedHtml: null } : application.agreement;
-  return { ...application, documents, kyc, agreement };
+  return { ...application, documents };
 }
 
 export async function submitBorrowerApplication(input: Record<string, unknown>): Promise<SubmitBorrowerApplicationResponse> {
@@ -436,8 +428,11 @@ export interface ApplicationDraftResponse { ok: true; draft: { applicationId: st
 export async function getApplicationDraft(): Promise<ApplicationDraftResponse> {
   return request("/api/v1/borrower/application-draft");
 }
-export async function saveApplicationDraft(input: { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; data: Record<string, unknown>; lastSectionIndex: number }): Promise<ApplicationDraftResponse> {
+export async function saveApplicationDraft(input: { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; data: Record<string, unknown>; lastSectionIndex: number; updatedAt: string }): Promise<ApplicationDraftResponse> {
   return request("/api/v1/borrower/application-draft", { method: "PUT", body: JSON.stringify(input) });
+}
+export async function deleteApplicationDraft(applicationId: string): Promise<{ ok: true }> {
+  return request(`/api/v1/borrower/application-draft/${encodeURIComponent(applicationId)}`, { method: "DELETE" });
 }
 
 export async function getBorrowerCreditHistory(): Promise<{ ok: true; events: unknown[]; scores: unknown[]; reports: unknown[]; }> {
