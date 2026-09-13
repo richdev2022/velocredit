@@ -610,7 +610,7 @@ router.post("/auth/admin/login", async (req, res) => {
       email: env.ADMIN_EMAIL!.toLowerCase(),
       phone: "",
       fullName: "Velo Administrator",
-      passwordHash: configuredAdminPasswordHash ?? await bcrypt.hash(env.ADMIN_PASSWORD!, 12),
+      passwordHash: configuredAdminPasswordHash || await bcrypt.hash(env.ADMIN_PASSWORD!, 12),
       roles: ["ADMIN"],
       kycStatus: "VERIFIED",
       createdAt: now,

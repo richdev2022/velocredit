@@ -25,7 +25,7 @@ export async function bootstrapEnvironmentAdministrator(): Promise<void> {
   }
   if (!env.ADMIN_EMAIL || (!env.ADMIN_PASSWORD && !env.ADMIN_PASSWORD_HASH)) return;
 
-  const passwordHash = env.ADMIN_PASSWORD_HASH ?? await bcrypt.hash(env.ADMIN_PASSWORD!, 12);
+  const passwordHash = env.ADMIN_PASSWORD_HASH || await bcrypt.hash(env.ADMIN_PASSWORD!, 12);
   const rows = await sql.query(
     `INSERT INTO users (id, email, phone, full_name, password_hash, kyc_status, created_at, updated_at, is_active)
      VALUES ($1, $2, $3, $4, $5, 'VERIFIED', $6, $6, TRUE)
