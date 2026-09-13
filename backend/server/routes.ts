@@ -76,6 +76,7 @@ import {
   listRecentJobRuns,
   decomposeRuntimeStateIntoTables,
   reloadStoreFromRelationalTables,
+  persistStore,
 } from "./store.js";
 import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
@@ -98,6 +99,22 @@ import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeE
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
+
+async function persistMutation(res: any): Promise<boolean> {
+  if (!sql) {
+    res.status(503).json({ ok: false, error: "PostgreSQL is not configured. Your information was not saved." });
+    return false;
+  }
+  try {
+    await persistStore();
+    return true;
+  } catch (error) {
+    console.error("[routes] PostgreSQL persistence failed:", error);
+    res.status(503).json({ ok: false, error: "Unable to save your information. Please try again." });
+    return false;
+  }
+}
+
 const normalizePhone = (value: unknown): unknown => {
   if (typeof value !== "string") return value;
   const digits = value.replace(/[\s()-]/g, "");
@@ -395,6 +412,10 @@ router.post("/auth/register", async (req, res) => {
     return;
   }
   const input = parsed.data;
+  if (!sql) {
+    res.status(503).json({ ok: false, error: "PostgreSQL is not configured. Account registration is unavailable." });
+    return;
+  }
   const dbExists = await dbEmailExists(input.email);
   const memExists = Boolean(findUserByEmail(input.email));
   if (dbExists !== null && dbExists !== memExists) {
@@ -451,6 +472,7 @@ router.post("/auth/register", async (req, res) => {
     user.email,
     user.preferredOtpChannel
   );
+  if (!(await persistMutation(res))) return;
   const safeUser = {
     id: user.id,
     email: user.email,
@@ -2004,7 +2026,7 @@ router.get("/investor/investments", requireAuth, requireRole("INVESTOR"), (req: 
   res.json({ ok: true, investments: investments.filter((item) => item.investorId === req.user!.id).map((investment) => ({ ...investment, accrual: calculateInvestmentAccrual(investment, now) })) });
 });
 
-router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
   const parsed = createInvestmentSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -2079,6 +2101,7 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), (req:
     txRef: `VELO-INVEST-${investment.id}`,
     createdAt: startsAt.toISOString(),
   });
+  if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, investment });
 });
 
@@ -2249,7 +2272,7 @@ router.get("/borrower/application-draft", requireAuth, requireRole("BORROWER"), 
   res.json({ ok: true, draft: drafts[0] ?? null });
 });
 
-router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const parsed = z.object({
     applicationId: z.string().min(1),
     applicantType: z.enum(["PERSONAL", "BUSINESS"]),
@@ -2264,11 +2287,13 @@ router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), 
     existing.data = parsed.data.data;
     existing.lastSectionIndex = parsed.data.lastSectionIndex;
     existing.updatedAt = now;
+    if (!(await persistMutation(res))) return;
     res.json({ ok: true, draft: existing });
     return;
   }
   const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now, updatedAt: now };
   applicationDrafts.push(draft);
+  if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, draft });
 });
 
@@ -2486,10 +2511,11 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     occurredAt: now,
     createdAt: now,
   });
+  if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, application });
 });
 
-router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
   if (!application) {
     res.status(404).json({ ok: false, error: "Application not found" });
@@ -2561,6 +2587,7 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
   }
   application.customerSnapshot = snapshot;
   application.updatedAt = new Date().toISOString();
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, application });
 });
 
@@ -2583,6 +2610,7 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
   application.status = "SUBMITTED";
   application.submittedAt = application.submittedAt ?? new Date().toISOString();
   application.updatedAt = new Date().toISOString();
+  if (!(await persistMutation(res))) return;
   if (!wasSubmitted) await sendLoanEmails(application, "SUBMITTED");
   res.json({ ok: true, application });
 });
