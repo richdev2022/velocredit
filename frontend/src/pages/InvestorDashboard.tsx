@@ -5,6 +5,7 @@ import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
 import ReceiptPrint from "../components/ReceiptDownload";
 import OtpLoginSettings from "../components/OtpLoginSettings";
 import InvestorWithdrawalForm from "../components/InvestorWithdrawalForm";
+import ProfileSettings from "../components/ProfileSettings";
 import { useAuth } from "../context/AuthContext";
 import {
   fundWallet,
@@ -2324,6 +2325,9 @@ function InvestorProfile(props: any) {
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Profile</p>
           <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Personal information</h1>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            Review and edit your account details, email and phone below.
+          </p>
         </div>
       </div>
       <section className="velo-card p-4 sm:p-5 lg:p-6">
@@ -2336,6 +2340,7 @@ function InvestorProfile(props: any) {
           ))}
         </div>
       </section>
+      <ProfileSettings />
       <OtpLoginSettings />
     </div>
   );

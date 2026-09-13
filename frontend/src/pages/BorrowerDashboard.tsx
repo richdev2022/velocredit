@@ -12,6 +12,7 @@ import {
 } from "../services/apiClient";
 import BorrowerDisbursementSection from "../components/BorrowerDisbursementSection";
 import OtpLoginSettings from "../components/OtpLoginSettings";
+import ProfileSettings from "../components/ProfileSettings";
 import Icon from "../components/Icon";
 
 type DashboardData = {
@@ -1856,7 +1857,7 @@ function BorrowerProfile(props: any) {
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Profile</p>
         <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Personal information</h1>
         <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-          Your account details and access roles.
+          Your account details, access roles and edit controls.
         </p>
       </div>
 
@@ -1899,6 +1900,7 @@ function BorrowerProfile(props: any) {
           </div>
         </div>
       </section>
+      <ProfileSettings />
       <OtpLoginSettings />
     </div>
   );
