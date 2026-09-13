@@ -14,6 +14,7 @@ function migrationStatements(source: string): string[] {
 const MIGRATION_FILES = [
   "001_initial_schema.sql",
   "002_add_missing_columns.sql",
+  "003_harden_required_defaults.sql",
 ];
 
 export async function ensureDatabaseSchema(): Promise<"created" | "skipped"> {

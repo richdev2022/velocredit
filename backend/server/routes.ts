@@ -78,7 +78,6 @@ import {
   reloadStoreFromRelationalTables,
   persistStore,
 } from "./store.js";
-import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { env } from "./config.js";
 import { sql } from "./db.js";
@@ -453,6 +452,7 @@ router.post("/auth/register", async (req, res) => {
     updatedAt: now,
     isActive: false,
     preferredOtpChannel: input.preferredOtpChannel,
+    otpLoginEnabled: false,
     dateOfBirth: input.dateOfBirth,
     residentialAddress: input.residentialAddress as Record<string, unknown> | undefined,
     occupation: input.occupation,
@@ -605,20 +605,38 @@ router.post("/auth/admin/login", async (req, res) => {
     res.status(401).json({ ok: false, error: "Invalid admin credentials" });
     return;
   }
+  if (isEnvironmentAdmin && !persistedAdmin) {
+    const now = new Date().toISOString();
+    users.push({
+      id: "env-admin",
+      email: env.ADMIN_EMAIL!.toLowerCase(),
+      phone: "",
+      fullName: "Velo Administrator",
+      passwordHash: configuredAdminPasswordHash ?? await bcrypt.hash(env.ADMIN_PASSWORD!, 12),
+      roles: ["ADMIN"],
+      kycStatus: "VERIFIED",
+      createdAt: now,
+      updatedAt: now,
+      isActive: true,
+      otpLoginEnabled: false,
+    });
+  }
+  const databaseAdmin = persistedAdmin ?? findUserByEmail(parsed.data.email)!;
   const admin = {
-    id: persistedAdmin?.id ?? "env-admin",
-    email: persistedAdmin?.email ?? env.ADMIN_EMAIL!.toLowerCase(),
-    phone: persistedAdmin?.phone ?? "",
-    fullName: persistedAdmin?.fullName ?? "Velo Administrator",
-    passwordHash: persistedAdmin?.passwordHash ?? configuredAdminPasswordHash ?? "",
-    roles: persistedAdmin?.roles ?? ["ADMIN"] as Role[],
-    adminPermissions: persistedAdmin?.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : persistedAdmin?.adminPermissions,
-    kycStatus: "VERIFIED" as KycStatus,
-    createdAt: new Date().toISOString(),
+    id: databaseAdmin.id,
+    email: databaseAdmin.email,
+    phone: databaseAdmin.phone,
+    fullName: databaseAdmin.fullName,
+    passwordHash: databaseAdmin.passwordHash,
+    roles: databaseAdmin.roles,
+    adminPermissions: databaseAdmin.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : databaseAdmin.adminPermissions,
+    kycStatus: databaseAdmin.kycStatus,
+    createdAt: databaseAdmin.createdAt,
   };
   try {
     const challenge = await createOtpChallenge(admin.id, "LOGIN_STEP_UP", "", admin.email, parsed.data.channel);
     auditLogs.push({ id: randomUUID(), userId: admin.id, action: "ADMIN_LOGIN_INITIATED", resourceType: "AUTH", resourceId: admin.email, metadata: { channel: parsed.data.channel }, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
+    if (!(await persistMutation(res))) return;
     res.json({
       ok: true,
       requiresOtp: true,
