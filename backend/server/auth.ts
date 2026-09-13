@@ -28,15 +28,6 @@ import { sendEmail, welcomeEmail, loginAttemptEmail } from "./email.js";
 import { sendWhatsAppText, maskPhoneForWa } from "./providers/meta.js";
 
 const secret = env.JWT_SECRET ?? "local-development-secret-change-me-please-32chars-min";
-let adminPasswordHashOverride: string | undefined;
-
-export function getAdminPasswordHashOverride(): string | undefined {
-  return adminPasswordHashOverride;
-}
-
-export function setAdminPasswordHashOverride(value: string): void {
-  adminPasswordHashOverride = value;
-}
 
 export type AuthRequest = Request & {
   user?: Pick<User, "id" | "email" | "roles" | "fullName" | "kycStatus" | "adminPermissions">;
@@ -347,8 +338,10 @@ export async function confirmPasswordReset(resetId: string, rawToken: string, ne
   }
   const user = users.find((u) => u.id === record.userId);
   if (!user) return { ok: false, error: "User not found" };
+  const now = new Date().toISOString();
   user.passwordHash = await bcrypt.hash(newPassword, 12);
-  record.consumedAt = new Date().toISOString();
+  user.updatedAt = now;
+  record.consumedAt = now;
   return { ok: true };
 }
 
