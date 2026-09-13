@@ -52,6 +52,7 @@ const envSchema = z.object({
   OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(60),
   OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  DEBUG_SQL: z.enum(["true", "false"]).default("false"),
   LOAN_AUTO_ELIGIBLE_SCORE_MIN: z.coerce.number().int().min(300).max(850).default(650),
   LOAN_AUTO_REVIEW_SCORE_MIN: z.coerce.number().int().min(300).max(850).default(550),
   LOAN_REMINDER_DAYS: z.string().default("7,3,0"),

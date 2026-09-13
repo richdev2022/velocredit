@@ -244,9 +244,6 @@ function reconcileWalletFromDb(userId: string, dbAvailableMinor: number): void {
     `[store_reconciliation_warning] Wallet for user ${userId} diverged: in-memory availableMinor=${memAvailable} DB=${dbAvailableMinor}. Overwriting in-memory state with DB truth.`
   );
   wallet.availableMinor = dbAvailableMinor;
-  if (typeof wallet.availableNaira !== "undefined") {
-    wallet.availableNaira = dbAvailableMinor / 100;
-  }
   auditLogs.push({
     id: randomUUID(),
     userId,
