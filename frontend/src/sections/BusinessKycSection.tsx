@@ -49,6 +49,8 @@ export default function BusinessKycSection() {
   const {
     register,
     handleSubmit,
+    setValue,
+    getValues,
     formState: { errors, isValid },
   } = useForm<KycForm>({
     resolver: zodResolver(kycSchema),
@@ -60,6 +62,13 @@ export default function BusinessKycSection() {
       identificationNumber: application.kyc?.identificationNumber || "",
     },
   });
+
+  useEffect(() => {
+    const bvn = application.kyc?.bvn ?? "";
+    const nin = application.kyc?.nin ?? "";
+    if (getValues("bvn") !== bvn) setValue("bvn", bvn, { shouldValidate: true });
+    if (getValues("nin") !== nin) setValue("nin", nin, { shouldValidate: true });
+  }, [application.kyc?.bvn, application.kyc?.nin, getValues, setValue]);
 
   const details = (application.kyc?.verifiedDetails ?? {}) as Record<string, unknown>;
   const pickStr = (keys: string[]) => {

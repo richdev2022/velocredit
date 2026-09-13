@@ -849,8 +849,7 @@ function snapshotStore(): Record<StoreKey, unknown[]> {
 export async function persistStore(): Promise<EntityCounts> {
   if (!sql) throw new Error("PostgreSQL is not configured.");
   const snap = snapshotStore();
-  const dirtyScope: StoreKey[] = nestedDirty ? [] : [...dirtyKeys];
-  const counts = await decomposeAndUpsertAll(sql, snap, dirtyScope.length > 0 ? dirtyScope : undefined);
+  const counts = await decomposeAndUpsertAll(sql, snap);
   await sql.query(
     "INSERT INTO runtime_state (id, state) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET state = EXCLUDED.state, updated_at = CURRENT_TIMESTAMP",
     ["default", JSON.stringify(snap)]
