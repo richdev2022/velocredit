@@ -19,6 +19,7 @@ type IconName =
   | "message"
   | "money"
   | "save"
+  | "shield"
   | "sparkles"
   | "target"
   | "wallet"
@@ -50,6 +51,7 @@ export default function Icon({ name, size = 16, strokeWidth = 2, ...props }: Ico
     message: <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.7 9.7 0 0 1-4.2-1L3 20l1.3-4.1A8.2 8.2 0 0 1 3 11.5 8.5 8.5 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5Z"/>,
     money: <><circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.4-.8-1.5-1.5-3-1.5-1.7 0-3 1-3 2.2 0 1.4 1.3 2 3 2.3 1.7.4 3 1 3 2.4 0 1.2-1.3 2.1-3 2.1-1.5 0-2.6-.6-3-1.5M12 6v12"/></>,
     save: <><path d="M5 3h12l3 3v15H4V4a1 1 0 0 1 1-1Z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></>,
+    shield: <path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6l-8-4Z"/>,
     sparkles: <><path d="m12 3 .9 4.1L17 8l-4.1.9L12 13l-.9-4.1L7 8l4.1-.9L12 3Z"/><path d="m19 14 .5 2.5L22 17l-2.5.5L19 20l-.5-2.5L16 17l2.5-.5L19 14ZM5 14l.5 2.5L8 17l-2.5.5L5 20l-.5-2.5L2 17l2.5-.5L5 14Z"/></>,
     target: <><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2"/></>,
     wallet: <><path d="M4 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h12"/><path d="M16 14h3"/></>,
