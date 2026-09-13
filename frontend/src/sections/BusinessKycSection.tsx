@@ -347,6 +347,7 @@ export default function BusinessKycSection() {
                 phone={currentApplication.businessRep?.phone}
                 idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
                 idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
+                verifiedDetails={currentApplication.kyc?.verifiedDetails ?? null}
                 onResult={(result) => {
                   setVerification((current) => ({ ...current, liveness: result.success ? "Verified" : result.message }));
                   if (result.success) {

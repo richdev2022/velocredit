@@ -11,6 +11,7 @@ interface Props {
   idType: "BVN" | "NIN";
   idNumber: string;
   dateOfBirth?: string;
+  verifiedDetails?: Record<string, unknown> | null;
   onResult: (result: { success: boolean; message: string; selfieImageData?: string }) => void;
 }
 
@@ -62,22 +63,44 @@ function extractSelfieImage(response: { data?: Record<string, unknown> }): strin
   return undefined;
 }
 
-export default function PremblyKycWidgetButton({ fullName, email, phone, idType, idNumber, dateOfBirth, onResult }: Props) {
+export default function PremblyKycWidgetButton({ fullName, email, phone, idType, idNumber, dateOfBirth, verifiedDetails, onResult }: Props) {
   const { user } = useAuth();
-  const resolvedEmail = (email ?? user?.email ?? "").trim();
-  const resolvedPhone = (phone ?? user?.phone ?? "").trim();
+  const details = (verifiedDetails ?? {}) as Record<string, unknown>;
+  const pickStr = (keys: string[]): string => {
+    for (const key of keys) {
+      const v = details[key];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+    return "";
+  };
+  const mergedFullName = (fullName ?? user?.fullName ?? pickStr(["full_name", "fullName", "name"]) ?? "").trim();
+  const [rawFirstName = "", ...rawLastNames] = mergedFullName.split(/\s+/);
+  const authFirstName = user?.fullName?.trim().split(/\s+/)[0];
+  const authLastName = user?.fullName?.trim().split(/\s+/).slice(1).join(" ");
+  const fallbackFirst = authFirstName || pickStr(["first_name", "firstName"]);
+  const fallbackLast = authLastName || pickStr(["last_name", "lastName", "surname"]);
+  const firstName = rawFirstName || fallbackFirst || "Applicant";
+  const lastName = rawLastNames.join(" ").trim() || fallbackLast || "User";
+  const lastNames = lastName ? lastName.split(/\s+/) : [];
+  const rawEmail = (email ?? user?.email ?? pickStr(["email", "emailAddress", "email_address"]) ?? "").trim();
+  const resolvedEmail = rawEmail
+    ? rawEmail
+    : /^\d{11}$/.test((idNumber ?? "").replace(/[^\d]/g, ""))
+      ? `${idType.toLowerCase()}.${(idNumber ?? "").replace(/[^\d]/g, "")}@liveness.local`
+      : "";
+  const resolvedPhone = (phone ?? user?.phone ?? pickStr(["phone_number", "phoneNumber", "phone", "mobile", "telephoneno"]) ?? "").trim();
   const phoneDigits = resolvedPhone.replace(/\D/g, "");
   const normalizedPhone = phoneDigits.startsWith("234") && phoneDigits.length === 13
     ? `+${phoneDigits}`
     : phoneDigits.startsWith("0") && phoneDigits.length === 11
       ? `+234${phoneDigits.slice(1)}`
       : resolvedPhone.replace(/[^\d+]/g, "");
-  const [firstName = "", ...lastNames] = (fullName ?? user?.fullName ?? "").trim().split(/\s+/);
+  const resolvedDob = (dateOfBirth ?? pickStr(["date_of_birth", "dateOfBirth", "birthdate", "dob"])).trim();
   const widgetId = config.premblyWidgetId;
   const widgetKey = config.premblyWidgetKey;
   const cleanId = (idNumber ?? "").replace(/[^\d]/g, "");
   const userRef = user?.id ?? `${idType}-${cleanId}`;
-  const canRenderWidget = Boolean(widgetId && widgetKey && /^\d{11}$/.test(cleanId) && firstName && resolvedEmail);
+  const canRenderWidget = Boolean(widgetId && widgetKey && /^\d{11}$/.test(cleanId));
   const [sending, setSending] = useState(false);
   const [lastError, setLastError] = useState<string | undefined>(undefined);
 
@@ -90,7 +113,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
     widget_id: widgetId,
     user_ref: userRef,
     is_test: config.premblyWidgetIsTest,
-    metadata: { user_id: userRef, id_type: idType, id_number: cleanId, date_of_birth: dateOfBirth ?? "" },
+    metadata: { user_id: userRef, id_type: idType, id_number: cleanId, date_of_birth: resolvedDob },
     callback: (response: { status?: string | boolean; code?: string; message?: string; verification_status?: string; data?: Record<string, unknown> }) => {
       const success = isSuccessResponse(response);
       const selfie = extractSelfieImage(response);
@@ -117,7 +140,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
         setSending(false);
       });
     },
-  }), [cleanId, dateOfBirth, firstName, idType, lastNames, normalizedPhone, onResult, resolvedEmail, userRef, widgetId, widgetKey]));
+  }), [cleanId, resolvedDob, firstName, idType, lastNames, normalizedPhone, onResult, resolvedEmail, userRef, widgetId, widgetKey]));
 
   if (!widgetId || !widgetKey) {
     return (
@@ -140,8 +163,16 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
     );
   }
   function handleStart() {
+    if (!widgetId || !widgetKey) {
+      setLastError("Identity widget is not configured. Please contact support or check your environment keys.");
+      return;
+    }
+    if (!/^\d{11}$/.test(cleanId)) {
+      setLastError("Please verify your BVN or NIN first (must be 11 digits) before starting the liveness scan.");
+      return;
+    }
     if (!canRenderWidget) {
-      setLastError("Verified BVN/NIN details are not available yet. Refresh the verification details and try again.");
+      setLastError("Verified identity details are not ready yet. Re-verify your BVN/NIN or refresh the page and try again.");
       return;
     }
     setSending(true);
@@ -177,7 +208,7 @@ export default function PremblyKycWidgetButton({ fullName, email, phone, idType,
           </>
         )}
       </button>
-      {!canRenderWidget && !lastError && <p className="text-xs text-slate-500">Loading verified identity details for the secure camera check.</p>}
+      {!canRenderWidget && !lastError && /^\d{11}$/.test(cleanId) && <p className="text-xs text-slate-500">Loading verified identity details for the secure camera check.</p>}
       {lastError && <p className="break-words text-xs font-medium text-red-600">{lastError}</p>}
     </div>
   );

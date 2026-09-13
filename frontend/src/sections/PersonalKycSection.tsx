@@ -617,6 +617,7 @@ export default function PersonalKycSection() {
                 idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
                 idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
                 dateOfBirth={identityInfo.dateOfBirth}
+                verifiedDetails={currentApplication.kyc?.verifiedDetails ?? null}
                 onResult={(result) => {
                   setVerification((current) => ({ ...current, liveness: result.message }));
                   if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS", ...(result.selfieImageData ? { selfieImageData: result.selfieImageData } : {}) });

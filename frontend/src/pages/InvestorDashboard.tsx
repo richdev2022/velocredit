@@ -1646,7 +1646,7 @@ function InvestorKyc(props: any) {
                     Liveness check completed · cannot retrigger
                   </div>
                 ) : (
-                  <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} onResult={onPremblyLivenessResult} />
+                  <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} verifiedDetails={kyc?.verifiedDetails ?? null} onResult={onPremblyLivenessResult} />
                 )}
                 {!livenessLocked && (checklist.selfieUploaded || checklist.liveness) && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400"><Icon name="check" size={13} />Liveness verified</span>}
               </div>
