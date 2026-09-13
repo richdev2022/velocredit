@@ -20,5 +20,6 @@ export async function bootstrapEnvironmentAdministrator(): Promise<void> {
   if (!userId) throw new Error("Unable to bootstrap the environment administrator");
 
   await sql.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMIN') ON CONFLICT DO NOTHING", [userId]);
+  await sql.query("INSERT INTO env (key, value, updated_at) VALUES ('admin_email', $1::jsonb, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at", [JSON.stringify(env.ADMIN_EMAIL.toLowerCase()), now]);
   await sql.query("INSERT INTO admin_profiles (id, user_id, created_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO NOTHING", [`admin-${userId}`, userId, now]);
 }

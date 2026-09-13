@@ -40,6 +40,7 @@ import type { IdentityVerificationEvent } from "./store.js";
 import { markKycChecklistComplete } from "./auth.js";
 import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } from "./email.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
+import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { bootstrapEnvironmentAdministrator } from "./bootstrap.js";
 
 assertProductionSecrets();
@@ -722,6 +723,10 @@ async function start(): Promise<void> {
     await bootstrapEnvironmentAdministrator();
     console.log("Loading persisted application state...");
     await initializeStore();
+    if (sql && env.GOOGLE_SHEETS_SPREADSHEET_ID && users.length <= 1) {
+      const seeded = await runSeedGoogleSheets();
+      if (!seeded.ok) console.error(`[startup] Google Sheets seed failed: ${seeded.error ?? "unknown error"}`);
+    }
     seedInvestmentPlans();
     seedLoanProducts();
     // seedAdminLedgerOpeningBalance(100_000_000 * 100);

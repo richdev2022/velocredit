@@ -18,3 +18,9 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS application_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS document_slot TEXT;
 CREATE INDEX IF NOT EXISTS documents_application_id_idx ON documents (application_id);
 CREATE UNIQUE INDEX IF NOT EXISTS application_drafts_user_application_idx ON application_drafts (user_id, application_id);
+
+CREATE TABLE IF NOT EXISTS env (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

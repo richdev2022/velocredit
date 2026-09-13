@@ -6,7 +6,7 @@
 // through every section again from the top.
 // ============================================================================
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import ApplicantTypeSelector from "../components/ApplicantTypeSelector";
 import Icon from "../components/Icon";
 import SectionShell from "../components/SectionShell";
@@ -98,7 +98,7 @@ function computeResumeSectionIndex(app: ApplicationData, applicantType: Applican
 }
 
 export default function ApplicantTypeSection() {
-  const { application, update, markSectionStatus, navigate, next, saveNow, startNewApplication, loadExisting, currentIndex, sections } = useApplication();
+  const { application, update, markSectionStatus, navigate, next, saveNow, startNewApplication, currentIndex, sections } = useApplication();
   const [busyResuming, setBusyResuming] = useState(false);
   const [selected, setSelected] = useState<ApplicantType | null>(application?.applicantType || null);
 
@@ -129,21 +129,7 @@ export default function ApplicantTypeSection() {
     if (!switchingType) {
       setBusyResuming(true);
       try {
-        const remote = await getApplicationDraft().catch(() => (null as null));
-        let appForJump = workingApp;
-        if (remote && remote.draft && remote.draft.data) {
-          try {
-            const remoteData = remote.draft.data as unknown as ApplicationData;
-            const remoteType = remoteData.applicantType || workingApp.applicantType;
-            if (remoteType === selected) {
-              appForJump = remoteData;
-              loadExisting(remote.draft.applicationId || workingApp.applicationId, remoteData, null);
-            }
-          } catch (_e) { /* ignore */ }
-        }
-        targetIndex = computeResumeSectionIndex(appForJump, selected);
-      } catch (_err) {
-        targetIndex = workingApp && !switchingType ? computeResumeSectionIndex(workingApp, selected) : 1;
+        targetIndex = computeResumeSectionIndex(workingApp, selected);
       } finally {
         setBusyResuming(false);
       }

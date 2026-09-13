@@ -392,13 +392,7 @@ export async function submitLoanApplication(id: string): Promise<LoanApplication
 export interface SubmitBorrowerApplicationResponse { ok: true; loan?: { applicationId?: string; id?: string; status?: LoanStatus }; error?: string; }
 
 export function compactApplicationForTransport(input: Record<string, unknown>): Record<string, unknown> {
-  const application = { ...input } as Record<string, any>;
-  const documents = Object.fromEntries(Object.entries(application.documents ?? {}).map(([slot, document]) => {
-    if (!document || typeof document !== "object") return [slot, document];
-    const { data: _data, ...metadata } = document as Record<string, unknown>;
-    return [slot, metadata];
-  }));
-  return { ...application, documents };
+  return { ...input };
 }
 
 export async function submitBorrowerApplication(input: Record<string, unknown>): Promise<SubmitBorrowerApplicationResponse> {
