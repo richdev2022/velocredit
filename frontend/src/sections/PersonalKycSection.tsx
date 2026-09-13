@@ -133,11 +133,6 @@ export default function PersonalKycSection() {
   });
 
   useEffect(() => {
-    if (application.kyc?.bvn) setValue("bvn", application.kyc.bvn, { shouldValidate: true, shouldDirty: true });
-    if (application.kyc?.nin) setValue("nin", application.kyc.nin, { shouldValidate: true, shouldDirty: true });
-  }, [application.kyc?.bvn, application.kyc?.nin, setValue]);
-
-  useEffect(() => {
     if (kycProfileLoadedRef.current) return;
     kycProfileLoadedRef.current = true;
     let cancelled = false;
@@ -204,6 +199,9 @@ export default function PersonalKycSection() {
     }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  const { onChange: onBvnChange, ...bvnField } = register("bvn");
+  const { onChange: onNinChange, ...ninField } = register("nin");
 
   function sync<K extends keyof KycForm>(key: K, value: KycForm[K]) {
     patchKyc({ [key]: value } as any);
@@ -395,8 +393,8 @@ export default function PersonalKycSection() {
               placeholder="11-digit BVN"
               helper="Dial *565*0# on your registered line to retrieve your BVN."
               error={errors.bvn?.message}
-              {...register("bvn")}
-              onChange={(e) => { register("bvn").onChange(e); sync("bvn", e.target.value); }}
+              {...bvnField}
+              onChange={(e) => { onBvnChange(e); sync("bvn", e.target.value); }}
             />
           )}
           {ninLocked ? (
@@ -422,8 +420,8 @@ export default function PersonalKycSection() {
               placeholder="11-digit NIN"
               helper="Found on your National Identity Card or via the NIMC app."
               error={errors.nin?.message}
-              {...register("nin")}
-              onChange={(e) => { register("nin").onChange(e); sync("nin", e.target.value); }}
+              {...ninField}
+              onChange={(e) => { onNinChange(e); sync("nin", e.target.value); }}
             />
           )}
           <div className="sm:col-start-1">

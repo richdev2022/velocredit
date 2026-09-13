@@ -399,6 +399,11 @@ export function compactApplicationForTransport(input: Record<string, unknown>): 
     return [slot, metadata];
   }));
   const kyc = { ...(application.kyc ?? {}) };
+  delete kyc.bvn;
+  delete kyc.nin;
+  delete kyc.identificationNumber;
+  delete kyc.verifiedDetails;
+  delete kyc.identityPhotoUrl;
   delete kyc.selfieImageData;
   const agreement = application.agreement ? { ...application.agreement, generatedHtml: null } : application.agreement;
   return { ...application, documents, kyc, agreement };
