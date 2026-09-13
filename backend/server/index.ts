@@ -398,7 +398,7 @@ app.get("/api/v1/webhooks/prembly", (req, res) => {
 app.post(
   "/api/v1/webhooks/prembly",
   express.raw({ type: "application/json", limit: "1mb" }),
-  (req, res) => {
+  async (req, res) => {
     const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
     const signature = req.header("x-prembly-signature") ?? req.header("signature") ?? undefined;
     if (!verifyPremblyWebhook(signature, rawBody)) {
@@ -432,12 +432,6 @@ app.post(
     const matches = providerRef
       ? identityVerificationEvents.filter((e) => e.provider === "prembly" && e.providerReference === providerRef)
       : [];
-    if (matches.length === 0 && verificationType) {
-      const recent = [...identityVerificationEvents]
-        .filter((e) => e.provider === "prembly" && (!verificationType || e.verificationType === verificationType))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-      if (recent) matches.push(recent);
-    }
     for (const match of matches) {
       match.status = success ? "SUCCESS" : "FAILED";
       match.rawResponse = { ...(match.rawResponse ?? {}), webhook: event };
@@ -458,6 +452,13 @@ app.post(
         if (user) markKycChecklistComplete(user.id);
       }
     }
+    try {
+      await persistStore();
+    } catch (error) {
+      console.error("[webhooks/prembly] PostgreSQL persistence failed:", error);
+      res.status(503).json({ ok: false, error: "Unable to persist Prembly webhook" });
+      return;
+    }
     res.status(202).json({ ok: true, accepted: true, matches: matches.length });
   }
 );
@@ -468,7 +469,7 @@ app.get("/api/v1/webhooks/prembly/kyc", (_req, res) => {
 app.post(
   "/api/v1/webhooks/prembly/kyc",
   express.raw({ type: "application/json", limit: "5mb" }),
-  (req, res) => {
+  async (req, res) => {
     const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
     const signature = req.header("x-prembly-signature") ?? req.header("signature") ?? undefined;
     if (!verifyPremblyWebhook(signature, rawBody)) {
@@ -534,7 +535,7 @@ app.post(
       }
       if (selfieImageData) break;
     }
-    const matches: { kycCaseId: string; via: "providerRef" | "metadata.bvn" | "metadata.nin" | "userId" | "recent.liveness" }[] = [];
+    const matches: { kycCaseId: string; via: "providerRef" | "metadata.bvn" | "metadata.nin" | "userId" }[] = [];
     if (providerRef) {
       const byRef = identityVerificationEvents.find((e) => e.provider === "prembly" && e.providerReference === providerRef);
       if (byRef) matches.push({ kycCaseId: byRef.kycCaseId, via: "providerRef" });
@@ -550,12 +551,6 @@ app.post(
     if (matches.length === 0 && ninFromMeta) {
       const byNin = kycCases.find((k) => typeof k.nin === "string" && k.nin.replace(/\D/g, "") === ninFromMeta);
       if (byNin) matches.push({ kycCaseId: byNin.id, via: "metadata.nin" });
-    }
-    if (matches.length === 0 && isLivenessEvent) {
-      const recentLiveness = [...identityVerificationEvents]
-        .filter((e) => e.provider === "prembly" && e.verificationType === "LIVENESS")
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-      if (recentLiveness) matches.push({ kycCaseId: recentLiveness.kycCaseId, via: "recent.liveness" });
     }
     const now = new Date().toISOString();
     for (const hit of matches) {
@@ -590,6 +585,13 @@ app.post(
       kyc.updatedAt = now;
       const user = users.find((u) => u.id === kyc.userId);
       if (user) markKycChecklistComplete(user.id);
+    }
+    try {
+      await persistStore();
+    } catch (error) {
+      console.error("[webhooks/prembly/kyc] PostgreSQL persistence failed:", error);
+      res.status(503).json({ ok: false, error: "Unable to persist Prembly webhook" });
+      return;
     }
     res.status(200).json({ ok: true, processed: true, success, matches: matches.length, liveness: isLivenessEvent, selfieExtracted: Boolean(selfieImageData) });
   }

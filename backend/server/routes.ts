@@ -610,7 +610,7 @@ router.post("/auth/admin/login", async (req, res) => {
       email: env.ADMIN_EMAIL!.toLowerCase(),
       phone: "",
       fullName: "Velo Administrator",
-      passwordHash: configuredAdminPasswordHash ?? await bcrypt.hash(env.ADMIN_PASSWORD!, 12),
+      passwordHash: configuredAdminPasswordHash || await bcrypt.hash(env.ADMIN_PASSWORD!, 12),
       roles: ["ADMIN"],
       kycStatus: "VERIFIED",
       createdAt: now,
@@ -1415,15 +1415,9 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
       }
     }
     let phoneRequiresOwnershipProof = false;
-    let normalizedPhone: string | undefined;
-    if (identityPhone) {
-      const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
-      let normalized = digitsOnly;
-      if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
-      normalizedPhone = normalized;
-      if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user?.phone) {
-        phoneRequiresOwnershipProof = true;
-      }
+    const normalizedPhone = loginOtpPhone(identityPhone);
+    if (normalizedPhone) {
+      phoneRequiresOwnershipProof = true;
     }
     if (phoneRequiresOwnershipProof && normalizedPhone) {
       const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";
@@ -1489,7 +1483,7 @@ router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image
     return;
   }
   const result = await verifyIdentityWithFace({ type, number, image: req.file.buffer.toString("base64"), dateOfBirth: typeof req.body.dateOfBirth === "string" ? req.body.dateOfBirth : undefined });
-  identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: type ?? "LIVENESS", providerReference: result.providerReference, status: result.status, matchScore: result.matchScore, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
+  identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: "LIVENESS", providerReference: result.providerReference, status: result.status, matchScore: result.matchScore, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
   setKycCategoryResult(kyc, "LIVENESS", result.status === "SUCCESS" ? "VERIFIED" : "REJECTED", result.errorMessage);
   if (result.status !== "SUCCESS") {
     kyc.status = "REJECTED";
@@ -1624,15 +1618,9 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
       }
     }
     let phoneRequiresOwnershipProof = false;
-    let normalizedPhone: string | undefined;
-    if (identityPhone) {
-      const digitsOnly = identityPhone.replace(/[^0-9]/g, "");
-      let normalized = digitsOnly;
-      if (digitsOnly.startsWith("234") && digitsOnly.length === 13) normalized = "0" + digitsOnly.slice(3);
-      normalizedPhone = normalized;
-      if (normalized && /^0\d{10}$/.test(normalized) && normalized !== user?.phone) {
-        phoneRequiresOwnershipProof = true;
-      }
+    const normalizedPhone = loginOtpPhone(identityPhone);
+    if (normalizedPhone) {
+      phoneRequiresOwnershipProof = true;
     }
     if (phoneRequiresOwnershipProof && normalizedPhone) {
       const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";

@@ -110,4 +110,7 @@ export function assertProductionSecrets(): void {
   if (!env.ADMIN_EMAIL || (!env.ADMIN_PASSWORD && !env.ADMIN_PASSWORD_HASH)) {
     throw new Error("Node admin credentials are required in production.");
   }
+  if (!env.PREMBLY_WEBHOOK_SECRET) {
+    throw new Error("PREMBLY_WEBHOOK_SECRET is required in production.");
+  }
 }

@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import { randomInt } from "node:crypto";
 import type { NeonQueryFunction } from "@neondatabase/serverless";
 import { sql } from "./db.js";
 import { decomposeAndUpsertAll, type EntityCounts, type Snapshot } from "./decompose.js";
@@ -1057,7 +1058,7 @@ export function hashToken(value: string): string {
 }
 
 export function generateOtpCode(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return randomInt(100000, 1_000_000).toString();
 }
 
 export function seedInvestmentPlans(): void {
