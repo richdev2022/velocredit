@@ -126,6 +126,7 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
         residentialAddress: parseJson<Record<string, unknown> | undefined>(row.residential_address, undefined),
         occupation: strNull(row, "occupation"),
         sourceOfFunds: strNull(row, "source_of_funds"),
+        metadata: parseJson<Record<string, unknown>>(row.metadata, {}),
       };
       snapshot.users.push(user);
     }
@@ -293,6 +294,7 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
         outstandingNaira: number(row, "outstanding_naira"), tenureDays: number(row, "tenure_days"),
         status: str(row, "status") as Loan["status"], disbursedAt: iso(row.disbursed_at), dueAt: iso(row.due_at), paidAt: iso(row.paid_at),
         providerTransfer: parseJson<Record<string, unknown> | undefined>(row.provider_transfer, undefined),
+        providerReference: strNull(row, "provider_reference"),
         createdAt: iso(row.created_at) ?? new Date().toISOString(), updatedAt: iso(row.updated_at),
       };
       snapshot.loans.push(loan);
@@ -476,7 +478,11 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
         accountNumber: typeof account.accountNumber === "string" ? account.accountNumber : undefined,
         accountName: typeof account.accountName === "string" ? account.accountName : undefined,
         status: str(row, "status") as LoanDisbursement["status"], providerTransfer: parseJson<Record<string, unknown> | null>(row.provider_transfer, null),
-        providerReference: strNull(row, "provider_reference") ?? null, createdAt: iso(row.created_at) ?? new Date().toISOString(), updatedAt: iso(row.updated_at),
+        providerReference: strNull(row, "provider_reference") ?? null,
+        applicationId: strNull(row, "application_id") ?? undefined,
+        narration: strNull(row, "narration"), error: strNull(row, "error"),
+        processedAt: iso(row.processed_at), retryOfId: strNull(row, "retry_of_id"), retryCount: number(row, "retry_count"),
+        createdAt: iso(row.created_at) ?? new Date().toISOString(), updatedAt: iso(row.updated_at),
       };
       snapshot.loanDisbursements.push(disbursement);
     }

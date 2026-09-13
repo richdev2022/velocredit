@@ -22,3 +22,18 @@ ALTER TABLE investments ALTER COLUMN plan_version SET NOT NULL;
 UPDATE investor_withdrawals SET retry_count = 0 WHERE retry_count IS NULL;
 ALTER TABLE investor_withdrawals ALTER COLUMN retry_count SET DEFAULT 0;
 ALTER TABLE investor_withdrawals ALTER COLUMN retry_count SET NOT NULL;
+
+ALTER TABLE payout_accounts ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS provider_reference TEXT;
+
+ALTER TABLE disbursements DROP CONSTRAINT IF EXISTS disbursements_loan_id_key;
+ALTER TABLE disbursements ADD COLUMN IF NOT EXISTS application_id TEXT;
+ALTER TABLE disbursements ADD COLUMN IF NOT EXISTS narration TEXT;
+ALTER TABLE disbursements ADD COLUMN IF NOT EXISTS error TEXT;
+ALTER TABLE disbursements ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
+ALTER TABLE disbursements ADD COLUMN IF NOT EXISTS retry_of_id TEXT REFERENCES disbursements(id);
+ALTER TABLE disbursements ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS disbursements_loan_id_idx ON disbursements (loan_id);
+
+ALTER TABLE admin_ledger_entries ADD CONSTRAINT admin_ledger_entries_loan_id_fkey
+  FOREIGN KEY (loan_id) REFERENCES loans(id) NOT VALID;
