@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sql } from "./db.js";
 
@@ -15,6 +16,7 @@ const MIGRATION_FILES = [
   "001_initial_schema.sql",
   "002_add_missing_columns.sql",
   "003_harden_required_defaults.sql",
+  "004_align_profiles_and_documents.sql",
 ];
 
 export async function ensureDatabaseSchema(): Promise<"created" | "skipped"> {

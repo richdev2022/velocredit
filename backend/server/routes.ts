@@ -1335,14 +1335,8 @@ router.post("/me/kyc", requireAuth, async (req: AuthRequest, res) => {
     return;
   }
   if (parsed.data.checklist) Object.assign(kyc.checklist, parsed.data.checklist);
-  if (parsed.data.bvn) {
-    kyc.bvn = parsed.data.bvn;
-    kyc.checklist.bvn = true;
-  }
-  if (parsed.data.nin) {
-    kyc.nin = parsed.data.nin;
-    kyc.checklist.nin = true;
-  }
+  if (parsed.data.bvn) kyc.bvn = parsed.data.bvn;
+  if (parsed.data.nin) kyc.nin = parsed.data.nin;
   if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
   const requiredChecklistComplete = kyc.checklist.bvn && kyc.checklist.nin && kyc.checklist.proofOfAddress;
   if (requiredChecklistComplete) {
@@ -1502,9 +1496,12 @@ router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image
   let selfieImageData: string | undefined;
   if (result.status === "SUCCESS") {
     kyc.checklist.liveness = true;
+    kyc.selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
     kyc.updatedAt = new Date().toISOString();
-    selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+    markKycChecklistComplete(req.user!.id);
+    selfieImageData = kyc.selfieImageData;
   }
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, verificationStatus: result.status, providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist, selfieImageData });
 });
 
@@ -1568,6 +1565,7 @@ router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequ
     }
     markKycChecklistComplete(req.user!.id);
   }
+  if (!(await persistMutation(res))) return;
   res.json({ ok: true, verificationStatus: parsed.data.status, providerConfigured: true, checklist: kyc.checklist, selfieImageData });
 });
 
