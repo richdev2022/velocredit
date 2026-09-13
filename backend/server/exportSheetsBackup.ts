@@ -558,8 +558,8 @@ function buildLoanApplicationsRows(): { header: string[]; rows: string[][] } {
     row[22] = str(rep?.email);
     row[23] = str(rep?.address);
 
-    row[24] = str(kyc?.bvn);
-    row[25] = str(kyc?.nin);
+    row[24] = str(kyc?.bvn ? `***${String(kyc.bvn).slice(-4)}` : "");
+    row[25] = str(kyc?.nin ? `***${String(kyc.nin).slice(-4)}` : "");
     row[26] = str(getSnapshotField(snap, "idType"));
     row[27] = str(getSnapshotField(snap, "idNumber"));
 
@@ -638,6 +638,11 @@ export async function runExportSheetsBackup(): Promise<{
   totalRows: number;
   error?: string;
 }> {
+  if (!env.GOOGLE_SHEETS_BACKUP_ENABLED) {
+    const jobId = await recordJobStart(`sheets_backup_export:${new Date().toISOString()}`, { skipped: true, reason: "disabled" });
+    await recordJobComplete(jobId, "SKIPPED", 0, { skipped: true, reason: "disabled" });
+    return { ok: true, jobId, totalRows: 0 };
+  }
   const svc = sheetsWriteService();
   const spreadsheetId =
     env.GOOGLE_SHEETS_BACKUP_SPREADSHEET_ID ?? env.GOOGLE_SHEETS_SPREADSHEET_ID;

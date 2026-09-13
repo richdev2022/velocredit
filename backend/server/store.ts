@@ -152,6 +152,9 @@ export interface IdentityVerificationEvent {
 export interface Document {
   id: string;
   userId: string;
+  applicationId?: string;
+  documentSlot?: string;
+  note?: string;
   documentType: "PASSPORT_PHOTO" | "PROOF_OF_ADDRESS" | "SIGNATURE" | "BVN_SLIP" | "NIN_SLIP" | "BUSINESS_REGISTRATION" | "ID_CARD_FRONT" | "ID_CARD_BACK";
   provider: "google_drive" | "s3" | "cloudinary" | "manual";
   providerFileId: string;
@@ -348,6 +351,7 @@ export interface Loan {
   outstandingNaira: number;
   outstandingPrincipalNaira?: number;
   outstandingInterestNaira?: number;
+  adminNote?: string;
   tenureDays: number;
   status: LoanStatus;
   disbursedAt?: string;

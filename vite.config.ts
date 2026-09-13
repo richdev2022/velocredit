@@ -12,6 +12,17 @@ export default defineConfig({
       ReactPropTypes: resolve(process.cwd(), "frontend/src/utils/premblyPropTypesShim.ts"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "react-vendor": ["react", "react-dom", "react-router-dom"],
+          "forms-vendor": ["react-hook-form", "@hookform/resolvers", "zod"],
+          "pdf-vendor": ["jspdf"],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     host: true,

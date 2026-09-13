@@ -398,7 +398,12 @@ export function compactApplicationForTransport(input: Record<string, unknown>): 
     const { data: _data, ...metadata } = document as Record<string, unknown>;
     return [slot, metadata];
   }));
-  return { ...application, documents };
+  return {
+    ...application,
+    documents,
+    kyc: application.kyc ? { ...application.kyc, selfieImageData: undefined } : application.kyc,
+    agreement: application.agreement ? { ...application.agreement, generatedHtml: null } : application.agreement,
+  };
 }
 
 export async function submitBorrowerApplication(input: Record<string, unknown>): Promise<SubmitBorrowerApplicationResponse> {
