@@ -215,9 +215,9 @@ export default function BusinessRepSection() {
           </p>
         </div>
 
-        <div className="rounded-2xl border border-velo-100 bg-velo-50/50 p-4 sm:p-5 space-y-5">
+        <div className="rounded-2xl border border-velo-100 bg-velo-50/50 dark:border-slate-700 dark:bg-slate-900/60 p-4 sm:p-5 space-y-5">
           <div>
-            <h3 className="text-sm font-bold text-velo-900">Disbursement Account Information</h3>
+            <h3 className="text-sm font-bold text-velo-900 dark:text-white">Disbursement Account Information</h3>
             <p className="mt-1 text-xs text-slate-500">Your approved loan will be disbursed into this account.</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">

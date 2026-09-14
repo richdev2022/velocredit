@@ -11,6 +11,7 @@ import SearchableSelect from "../components/SearchableSelect";
 import SelectInput from "../components/SelectInput";
 import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
+import { useAuth } from "../context/AuthContext";
 import { disbursementAccountSchema, personalInfoSchema, type DisbursementAccountForm, type PersonalInfoForm } from "../utils/validation";
 import { NIGERIAN_STATES, lgasForState, STATE_NAMES } from "../utils/nigerianStates";
 import { getAccessToken } from "../services/apiClient";
@@ -19,6 +20,7 @@ import Icon from "../components/Icon";
 
 export default function PersonalInfoSection() {
   const { application, patchPersonalInfo, patchDisbursementAccount, markSectionStatus, next } = useApplication();
+  const { user } = useAuth();
   if (!application) return null;
 
   const {
@@ -50,6 +52,22 @@ export default function PersonalInfoSection() {
   const stateValue = watch("state");
   const lgaOptions = stateValue ? lgasForState(stateValue) : ["Other"];
   const identityVerified = application.kyc.bvnVerified === true || application.kyc.ninVerified === true;
+  const verifiedDetails = (application.kyc.verifiedDetails ?? {}) as Record<string, unknown>;
+  const verifiedName = ["full_name", "fullName", "name"].map((key) => verifiedDetails[key]).find((value): value is string => typeof value === "string" && Boolean(value.trim())) || "";
+  const verifiedDob = ["date_of_birth", "dateOfBirth", "birthdate", "dob"].map((key) => verifiedDetails[key]).find((value): value is string => typeof value === "string" && Boolean(value.trim())) || "";
+
+  useEffect(() => {
+    const fullName = verifiedName || user?.fullName || application.personalInfo.fullName;
+    const dateOfBirth = verifiedDob || application.personalInfo.dateOfBirth;
+    const phone = user?.phone || application.personalInfo.phone;
+    const email = user?.email || application.personalInfo.email;
+    const patch: Record<string, string> = {};
+    if (fullName && fullName !== application.personalInfo.fullName) { setValue("fullName", fullName); patch.fullName = fullName; }
+    if (dateOfBirth && dateOfBirth !== application.personalInfo.dateOfBirth) { setValue("dateOfBirth", dateOfBirth); patch.dateOfBirth = dateOfBirth; }
+    if (phone && phone !== application.personalInfo.phone) { setValue("phone", phone); patch.phone = phone; }
+    if (email && email !== application.personalInfo.email) { setValue("email", email); patch.email = email; }
+    if (Object.keys(patch).length) patchPersonalInfo(patch);
+  }, [application.personalInfo, application.kyc.verifiedDetails, patchPersonalInfo, setValue, user?.email, user?.fullName, user?.phone, verifiedDob, verifiedName]);
 
   const [banks, setBanks] = useState<Array<{ id: number; name: string; code: string }>>([]);
   const [selectedBank, setSelectedBank] = useState(application.disbursementAccount?.bankCode ?? "");
@@ -160,7 +178,7 @@ export default function PersonalInfoSection() {
             required
             placeholder="e.g. John Doe"
             error={errors.fullName?.message}
-            readOnly={identityVerified}
+            readOnly={Boolean(verifiedName || user?.fullName || identityVerified)}
             {...register("fullName")}
             onChange={(e) => { register("fullName").onChange(e); sync("fullName", e.target.value); }}
           />
@@ -170,7 +188,6 @@ export default function PersonalInfoSection() {
             type="tel"
             placeholder="e.g. 0801 234 5678"
             error={errors.phone?.message}
-            readOnly={identityVerified}
             {...register("phone")}
             onChange={(e) => { register("phone").onChange(e); sync("phone", e.target.value); }}
           />
@@ -191,7 +208,7 @@ export default function PersonalInfoSection() {
             required
             type="date"
             error={errors.dateOfBirth?.message}
-            readOnly={identityVerified}
+            readOnly={Boolean(verifiedDob || identityVerified)}
             {...register("dateOfBirth")}
             onChange={(e) => { register("dateOfBirth").onChange(e); sync("dateOfBirth", e.target.value); }}
           />
@@ -205,9 +222,9 @@ export default function PersonalInfoSection() {
           </p>
         </div>
 
-        <div className="rounded-2xl border border-velo-100 bg-velo-50/50 p-4 sm:p-5 space-y-5">
+        <div className="rounded-2xl border border-velo-100 bg-velo-50/50 dark:border-slate-700 dark:bg-slate-900/60 p-4 sm:p-5 space-y-5">
           <div>
-            <h3 className="text-sm font-bold text-velo-900">Disbursement Account Information</h3>
+            <h3 className="text-sm font-bold text-velo-900 dark:text-white">Disbursement Account Information</h3>
             <p className="mt-1 text-xs text-slate-500">Your approved loan will be disbursed into this account.</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">

@@ -7,6 +7,7 @@
 
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { useState } from "react";
 import SaveProgress from "./SaveProgress";
 import ProgressSteps from "./ProgressSteps";
 import { useApplication } from "../context/ApplicationContext";
@@ -37,16 +38,21 @@ export default function SectionShell({
   hideSaveExit = false,
 }: SectionShellProps) {
   const navigate = useNavigate();
-  const { sections, currentIndex, saveState, lastSavedAt, markSectionStatus, saveNow, next, goToSection } = useApplication();
+  const { sections, currentIndex, saveState, lastSavedAt, markSectionStatus, saveNow, next, prev } = useApplication();
+  const [continueBusy, setContinueBusy] = useState(false);
 
-  function handleSaveAndContinue() {
-    const current = sections[currentIndex];
-    if (current) markSectionStatus(current.key, "completed");
-    void saveNow();
-    if (onContinue) {
-      onContinue();
-    } else {
-      next();
+  async function handleSaveAndContinue() {
+    if (continueBusy) return;
+    setContinueBusy(true);
+    try {
+      await saveNow();
+      if (onContinue) {
+        onContinue();
+      } else {
+        next();
+      }
+    } finally {
+      setContinueBusy(false);
     }
   }
 
@@ -99,14 +105,17 @@ export default function SectionShell({
                 Save & Exit
               </button>
             )}
-            <button type="button" onClick={handleSaveAndContinue} disabled={!canContinue} className="btn-primary w-full sm:w-auto">
-              {continueLabel || "Save & Continue"}
+            <button type="button" onClick={() => void handleSaveAndContinue()} disabled={continueBusy || saveState === "saving"} className="btn-primary w-full sm:w-auto">
+              {continueBusy || saveState === "saving" ? "Saving…" : (continueLabel || "Save & Continue")}
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                 <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
             </button>
           </div>
-          <div className="sm:order-1">
+          <div className="sm:order-1 flex items-center gap-1">
+            {currentIndex > 0 && (
+              <button type="button" onClick={prev} className="btn-secondary text-xs">Back</button>
+            )}
             {!hideSaveExit && (
               <button type="button" onClick={handleSaveProgress} className="btn-ghost text-xs">
                 Save Progress
