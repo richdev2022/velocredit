@@ -2015,6 +2015,13 @@ router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTO
       res.status(422).json({ ok: false, error: "Transaction reference missing from Flutterwave response", txRef });
       return;
     }
+    const pending = walletTransactions.find((t) => t.txRef === txRef && t.type === "DEPOSIT");
+    const verifiedCurrency = String(fwData.currency ?? "").toUpperCase();
+    const verifiedAmountMinor = Math.round(Number(fwData.amount ?? 0) * 100);
+    if (!pending || pending.userId !== req.user!.id || verifiedCurrency !== "NGN" || verifiedAmountMinor !== pending.amountMinor) {
+      res.status(422).json({ ok: false, error: "Verified transaction does not match this wallet funding request", txRef });
+      return;
+    }
     if (!verification.settled) {
       const pending = walletTransactions.find((t) => t.txRef === txRef);
       if (pending && pending.status === "PENDING_PROVIDER_CONFIRMATION") {
@@ -2075,7 +2082,10 @@ router.get("/payments/flutterwave/return", async (req, res) => {
         const fwData = verification.data ?? {};
         txRef = (fwData.tx_ref as string) ?? txRef;
         providerRef = (fwData.flw_ref as string) ?? providerRef;
-        if (verification.settled) {
+        const pending = txRef ? walletTransactions.find((t) => t.txRef === txRef && t.type === "DEPOSIT") : undefined;
+        const verifiedCurrency = String(fwData.currency ?? "").toUpperCase();
+        const verifiedAmountMinor = Math.round(Number(fwData.amount ?? 0) * 100);
+        if (verification.settled && pending && verifiedCurrency === "NGN" && verifiedAmountMinor === pending.amountMinor) {
           verifiedSettled = true;
         } else {
           if (txRef) {
@@ -4133,7 +4143,7 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     return;
   }
   const settings = getPlatformSettings();
-  const minWithdrawNaira = Number(settings.investorWithdrawalMinAmountNaira ?? 200);
+  const minWithdrawNaira = Math.max(200, Number(settings.investorWithdrawalMinAmountNaira ?? 200));
   if (parsed.data.amountNaira < minWithdrawNaira) {
     res.status(400).json({ ok: false, error: `Minimum withdrawal amount is ₦${minWithdrawNaira.toLocaleString("en-NG")}` });
     return;
@@ -4284,7 +4294,7 @@ router.put("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async 
     investorWithdrawalFeePercent: z.number().min(0).max(100).optional(),
     investorWithdrawalFeeFlatMinor: z.number().int().min(0).optional(),
     investorWithdrawalFeeFlatNaira: z.number().min(0).optional(),
-    investorWithdrawalMinAmountNaira: z.number().min(0).optional(),
+    investorWithdrawalMinAmountNaira: z.number().min(200).optional(),
     defaultInvestmentAnnualRatePercent: z.number().min(0).max(100).optional(),
   });
   const parsed = schema.safeParse(req.body);
@@ -4486,7 +4496,7 @@ router.post("/admin/withdrawals/:withdrawalId/retry", requireAuth, requireRole("
     return;
   }
   const settings = getPlatformSettings();
-  const minWithdrawNaira = Number(settings.investorWithdrawalMinAmountNaira ?? 200);
+  const minWithdrawNaira = Math.max(200, Number(settings.investorWithdrawalMinAmountNaira ?? 200));
   if (Number(withdrawal.amountNaira) < minWithdrawNaira) {
     res.status(400).json({ ok: false, error: `Minimum withdrawal amount is ₦${minWithdrawNaira.toLocaleString("en-NG")}. Update withdrawal amount.` });
     return;

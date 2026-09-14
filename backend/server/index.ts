@@ -43,7 +43,7 @@ import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } f
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { bootstrapEnvironmentAdministrator } from "./bootstrap.js";
-import { verifyTransaction, verifyTransfer } from "./providers/flutterwave.js";
+import { verifyTransaction, verifyTransactionWithRetry, verifyTransfer } from "./providers/flutterwave.js";
 
 assertProductionSecrets();
 
@@ -78,7 +78,7 @@ app.use((req, res, next) => {
 app.post(
   "/api/v1/webhooks/flutterwave",
   express.raw({ type: "application/json", limit: "1mb" }),
-  (req, res) => {
+  async (req, res) => {
     const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
     if (!verifyFlutterwaveWebhook(req.header("verif-hash") ?? undefined, rawBody)) {
       res.status(401).json({ ok: false, error: "Invalid webhook signature" });
@@ -119,15 +119,21 @@ app.post(
 
       if (success) {
         const walletTx = walletTransactions.find((t) => t.txRef === txRef && t.type === "DEPOSIT");
-        if (walletTx) {
-          if (walletTx.status !== "COMPLETED" && walletTx.status !== "SUCCESSFUL") {
-            if (currency === "NGN" && amount > 0) {
-              const settled = settleWalletDeposit({ txRef, providerReference, providerTransactionId: String(data.id ?? providerReference) });
+        const transactionId = String(data.id ?? "");
+        if (walletTx && walletTx.status !== "COMPLETED" && walletTx.status !== "SUCCESSFUL" && transactionId) {
+          try {
+            const verification = await verifyTransactionWithRetry(transactionId, 3, 2000);
+            const verified = verification.data ?? {};
+            const verifiedTxRef = String(verified.tx_ref ?? "");
+            const verifiedCurrency = String(verified.currency ?? "").toUpperCase();
+            const verifiedAmountMinor = Math.round(Number(verified.amount ?? 0) * 100);
+            if (verification.settled && verifiedTxRef === walletTx.txRef && verifiedCurrency === "NGN" && verifiedAmountMinor === walletTx.amountMinor) {
+              const settled = settleWalletDeposit({ txRef, providerReference, providerTransactionId: transactionId });
               if (settled.ok && settled.user && settled.wallet && settled.reason !== "already_settled") {
                 const balanceNaira = Math.round(settled.wallet.availableMinor) / 100;
                 const emailTemplate = investorWalletFundedEmail({
                   investorName: settled.user.fullName,
-                  amountNaira: amount,
+                  amountNaira: Math.round(walletTx.amountMinor) / 100,
                   balanceNaira,
                   reference: providerReference,
                 });
@@ -155,6 +161,8 @@ app.post(
                 }).catch(() => undefined);
               }
             }
+          } catch (error) {
+            console.error("[webhooks/flutterwave] wallet funding verification failed:", error);
           }
         }
 
