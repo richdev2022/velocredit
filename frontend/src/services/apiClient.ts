@@ -24,7 +24,7 @@ export function getAccessToken(): string | null { return sessionStorage.getItem(
 export function clearAccessToken(): void { sessionStorage.removeItem(TOKEN_KEY); }
 export function setAccessToken(token: string): void { sessionStorage.setItem(TOKEN_KEY, token); }
 
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 120_000;
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
