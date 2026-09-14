@@ -14,9 +14,21 @@ import { useApplication } from "../context/ApplicationContext";
 import { useAuth } from "../context/AuthContext";
 import { disbursementAccountSchema, personalInfoSchema, type DisbursementAccountForm, type PersonalInfoForm } from "../utils/validation";
 import { NIGERIAN_STATES, lgasForState, STATE_NAMES } from "../utils/nigerianStates";
-import { getAccessToken } from "../services/apiClient";
+import { getAccessToken, getMyKyc } from "../services/apiClient";
 import { config } from "../utils/config";
 import Icon from "../components/Icon";
+
+function getTextValue(source: Record<string, unknown>, keys: string[]): string {
+  return keys.map((key) => source[key]).find((value): value is string => typeof value === "string" && Boolean(value.trim()))?.trim() ?? "";
+}
+
+function toDateInputValue(value: string): string {
+  const isoDate = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDate) return `${isoDate[1]}-${isoDate[2]}-${isoDate[3]}`;
+  const dayFirstDate = value.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (!dayFirstDate) return "";
+  return `${dayFirstDate[3]}-${dayFirstDate[2].padStart(2, "0")}-${dayFirstDate[1].padStart(2, "0")}`;
+}
 
 export default function PersonalInfoSection() {
   const { application, patchPersonalInfo, patchDisbursementAccount, markSectionStatus, next } = useApplication();
@@ -58,7 +70,7 @@ export default function PersonalInfoSection() {
 
   useEffect(() => {
     const fullName = verifiedName || user?.fullName || application.personalInfo.fullName;
-    const dateOfBirth = verifiedDob || application.personalInfo.dateOfBirth;
+    const dateOfBirth = toDateInputValue(verifiedDob) || toDateInputValue(user?.dateOfBirth ?? "") || application.personalInfo.dateOfBirth;
     const phone = user?.phone || application.personalInfo.phone;
     const email = user?.email || application.personalInfo.email;
     const patch: Record<string, string> = {};
@@ -67,7 +79,22 @@ export default function PersonalInfoSection() {
     if (phone && phone !== application.personalInfo.phone) { setValue("phone", phone); patch.phone = phone; }
     if (email && email !== application.personalInfo.email) { setValue("email", email); patch.email = email; }
     if (Object.keys(patch).length) patchPersonalInfo(patch);
-  }, [application.personalInfo, application.kyc.verifiedDetails, patchPersonalInfo, setValue, user?.email, user?.fullName, user?.phone, verifiedDob, verifiedName]);
+  }, [application.personalInfo, application.kyc.verifiedDetails, patchPersonalInfo, setValue, user?.dateOfBirth, user?.email, user?.fullName, user?.phone, verifiedDob, verifiedName]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getMyKyc().then((kyc) => {
+      if (cancelled || !kyc.ok) return;
+      const details = { ...(kyc.verifiedDetails ?? {}), ...(kyc.normalizedFields?.nin ?? {}), ...(kyc.normalizedFields?.bvn ?? {}), ...(kyc.profilePrefill ?? {}) };
+      const fullName = getTextValue(details, ["fullName", "full_name", "name"]);
+      const dateOfBirth = toDateInputValue(getTextValue(details, ["dateOfBirth", "date_of_birth", "birthdate", "dob"]));
+      const patch: Record<string, string> = {};
+      if (fullName && fullName !== application.personalInfo.fullName) { setValue("fullName", fullName); patch.fullName = fullName; }
+      if (dateOfBirth && dateOfBirth !== application.personalInfo.dateOfBirth) { setValue("dateOfBirth", dateOfBirth); patch.dateOfBirth = dateOfBirth; }
+      if (Object.keys(patch).length) patchPersonalInfo(patch);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [application.personalInfo.dateOfBirth, application.personalInfo.fullName, patchPersonalInfo, setValue]);
 
   const [banks, setBanks] = useState<Array<{ id: number; name: string; code: string }>>([]);
   const [selectedBank, setSelectedBank] = useState(application.disbursementAccount?.bankCode ?? "");

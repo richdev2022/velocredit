@@ -55,10 +55,12 @@ const allowedOrigins = env.API_ORIGIN
   .split(",")
   .map((origin) => origin.trim().replace(/\/$/, ""))
   .filter(Boolean);
+const isBuilderPreviewOrigin = (origin: string): boolean => /^https:\/\/[a-z0-9-]+\.builderio\.dev$/i.test(origin);
 app.use(cors({
   credentials: true,
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin.replace(/\/$/, ""))) {
+    const normalizedOrigin = origin?.replace(/\/$/, "");
+    if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin) || isBuilderPreviewOrigin(normalizedOrigin)) {
       callback(null, true);
       return;
     }
