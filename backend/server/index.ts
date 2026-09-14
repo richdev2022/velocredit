@@ -387,8 +387,7 @@ app.post(
           walletTx.updatedAt = new Date().toISOString();
           const wallet = wallets.find((w) => w.id === walletTx.walletId);
           if (wallet) {
-            const amountMinor = Math.round(Number(amount) * 100);
-            wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - amountMinor);
+            wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - walletTx.amountMinor);
           }
         }
         const repayment = repayments.find((p) => p.txRef === txRef);
@@ -397,6 +396,15 @@ app.post(
           repayment.updatedAt = new Date().toISOString();
         }
       }
+    }
+    try {
+      await persistStore();
+    } catch (error) {
+      const eventIndex = providerEvents.findIndex((item) => item.provider === "flutterwave" && item.eventKey === eventKey);
+      if (eventIndex >= 0) providerEvents.splice(eventIndex, 1);
+      console.error("[webhooks/flutterwave] PostgreSQL persistence failed:", error);
+      res.status(503).json({ ok: false, error: "Unable to persist Flutterwave webhook" });
+      return;
     }
     res.status(202).json({ ok: true, accepted: true, eventKey });
   }
