@@ -88,6 +88,8 @@ import {
   createInvestorPayout,
   initializeWalletFunding,
   verifyTransaction,
+  verifyTransactionWithRetry,
+  verifyTransferWithRetry,
   resolveBankAccount,
   listBanks,
 } from "./providers/flutterwave.js";
@@ -2003,28 +2005,28 @@ router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTO
     return;
   }
   try {
-    const verification = await verifyTransaction(parsed.data.transactionId);
-    const fwData = (verification.data ?? {}) as Record<string, unknown>;
+    const verification = await verifyTransactionWithRetry(parsed.data.transactionId, 3, 1500);
+    const fwData = verification.data ?? {};
     const txRef = (fwData.tx_ref as string) ?? undefined;
     const flwRef = (fwData.flw_ref as string) ?? undefined;
     const amount = Number(fwData.amount);
     const chargeAmount = Number(fwData.charged_amount ?? fwData.amount);
-    const status = String(fwData.status ?? verification.status ?? "").toLowerCase();
-    const currency = String(fwData.currency ?? "NGN").toUpperCase();
     if (!txRef) {
-      res.status(422).json({ ok: false, error: "Transaction reference missing from Flutterwave response" });
+      res.status(422).json({ ok: false, error: "Transaction reference missing from Flutterwave response", txRef });
       return;
     }
-    if (status !== "successful" || currency !== "NGN") {
+    if (!verification.settled) {
       const pending = walletTransactions.find((t) => t.txRef === txRef);
       if (pending && pending.status === "PENDING_PROVIDER_CONFIRMATION") {
-        pending.status = "FAILED";
-        pending.updatedAt = new Date().toISOString();
-        const wallet = findWallet(pending.userId);
-        wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
+        if (verification.status === "failed") {
+          pending.status = "FAILED";
+          pending.updatedAt = new Date().toISOString();
+          const wallet = findWallet(pending.userId);
+          wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
+        }
       }
       if (!(await persistMutation(res))) return;
-      res.status(402).json({ ok: false, error: `Payment status=${status} currency=${currency}, wallet not credited`, txRef });
+      res.status(402).json({ ok: false, error: `Payment status=${verification.status}, wallet not credited`, txRef, status: verification.status });
       return;
     }
     const settled = settleWalletDeposit({ txRef, providerReference: flwRef, providerTransactionId: parsed.data.transactionId });
@@ -2066,30 +2068,38 @@ router.get("/payments/flutterwave/return", async (req, res) => {
     res.redirect(302, `${base}?${params.toString()}`);
   };
   try {
+    let verifiedSettled = false;
     if (providerTxId) {
       try {
-        const verification = await verifyTransaction(providerTxId);
-        const fwData = (verification.data ?? {}) as Record<string, unknown>;
+        const verification = await verifyTransactionWithRetry(providerTxId, 3, 1000);
+        const fwData = verification.data ?? {};
         txRef = (fwData.tx_ref as string) ?? txRef;
         providerRef = (fwData.flw_ref as string) ?? providerRef;
-        const fwStatus = String(fwData.status ?? verification.status ?? "").toLowerCase();
-        const currency = String(fwData.currency ?? "NGN").toUpperCase();
-        if (fwStatus !== "successful" || currency !== "NGN") {
+        if (verification.settled) {
+          verifiedSettled = true;
+        } else {
           if (txRef) {
             const pending = walletTransactions.find((t) => t.txRef === txRef);
             if (pending && pending.status === "PENDING_PROVIDER_CONFIRMATION") {
-              pending.status = "FAILED";
-              pending.updatedAt = new Date().toISOString();
-              const wallet = findWallet(pending.userId);
-              wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
+              if (verification.status === "failed") {
+                pending.status = "FAILED";
+                pending.updatedAt = new Date().toISOString();
+                const wallet = findWallet(pending.userId);
+                wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
+              }
             }
           }
-          safeRedirect(false, `Payment status=${fwStatus || status || "unknown"}`);
+          safeRedirect(false, `Payment status=${verification.status || status || "unknown"}`);
           return;
         }
       } catch (_verr) {
-        // If verify fails but tx_ref exists, continue; webhook may settle later
+        safeRedirect(false, "Payment verification failed. Please check your wallet balance later or contact support.");
+        return;
       }
+    }
+    if (!verifiedSettled) {
+      safeRedirect(false, status === "successful" ? "Waiting for server confirmation. Check your wallet shortly." : (status ? `Payment status=${status}` : "No payment confirmation received."));
+      return;
     }
     if (!txRef) {
       safeRedirect(false, "No transaction reference in redirect");
@@ -4027,11 +4037,12 @@ function reverseInvestorWithdrawal(withdrawal: (typeof investorWithdrawals)[numb
   }
 }
 
-async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals)[number]): Promise<{ transfer?: Record<string, unknown>; error?: string }> {
+async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals)[number]): Promise<{ transfer?: Record<string, unknown>; verification?: Record<string, unknown>; finalStatus?: string; error?: string }> {
   withdrawal.status = "PROCESSING";
   withdrawal.retryCount = (withdrawal.retryCount ?? 0) + 1;
   withdrawal.lastAttemptAt = new Date().toISOString();
   withdrawal.updatedAt = withdrawal.lastAttemptAt;
+  let initialTransfer: Record<string, unknown> | null = null;
   try {
     const transfer = await createInvestorPayout({
       txRef: `WITHDRAWAL-${withdrawal.id}`,
@@ -4041,22 +4052,54 @@ async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals
       beneficiaryName: String(withdrawal.accountName),
       narration: withdrawal.narration || `Velo investor withdrawal ${withdrawal.id}`,
     });
+    initialTransfer = transfer as unknown as Record<string, unknown>;
+    withdrawal.providerTransfer = { ...(withdrawal.providerTransfer ?? {}), initiate: transfer as unknown as Record<string, unknown> } as unknown as Record<string, unknown>;
     const providerStatus = String(transfer.status ?? "").toLowerCase();
     if (providerStatus !== "success") throw new Error(transfer.message || "Withdrawal provider rejected the transfer");
-    withdrawal.status = "SUCCESSFUL";
-    withdrawal.providerTransfer = transfer as unknown as Record<string, unknown>;
-    withdrawal.providerReference = String((transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? (transfer as unknown as { data?: { id?: number | string } }).data?.id ?? "");
-    withdrawal.error = undefined;
-    withdrawal.processedAt = new Date().toISOString();
-    withdrawal.updatedAt = withdrawal.processedAt;
-    return { transfer: transfer as unknown as Record<string, unknown> };
+    const transferData = (transfer as unknown as { data?: { id?: number | string; reference?: string } }) ?? {};
+    const rawId = transferData?.data?.id;
+    const rawRef = transferData?.data?.reference;
+    const transferId = rawId !== undefined && rawId !== null ? String(rawId) : "";
+    const reference = rawRef !== undefined && rawRef !== null ? String(rawRef) : `WITHDRAWAL-${withdrawal.id}`;
+    withdrawal.providerReference = reference || transferId;
+    withdrawal.updatedAt = new Date().toISOString();
+    const verification = await verifyTransferWithRetry(transferId, reference, 3, 3000);
+    withdrawal.providerTransfer = { ...(withdrawal.providerTransfer ?? {}), verification: verification as unknown as Record<string, unknown> } as unknown as Record<string, unknown>;
+    const now = new Date().toISOString();
+    if (verification.settled) {
+      withdrawal.status = "SUCCESSFUL";
+      withdrawal.error = undefined;
+      withdrawal.processedAt = now;
+      withdrawal.updatedAt = now;
+      return { transfer: initialTransfer ?? undefined, verification: verification as unknown as Record<string, unknown>, finalStatus: "SUCCESSFUL" };
+    } else if (verification.status === "failed") {
+      const failReason =
+        (verification.data && typeof (verification.data as Record<string, unknown>).complete_message === "string"
+          ? String((verification.data as Record<string, unknown>).complete_message)
+          : undefined) ||
+        (verification.raw instanceof Error ? verification.raw.message : undefined) ||
+        "Transfer verification returned failed status";
+      withdrawal.status = "FAILED";
+      withdrawal.error = failReason;
+      withdrawal.updatedAt = now;
+      reverseInvestorWithdrawal(withdrawal, failReason);
+      return { transfer: initialTransfer ?? undefined, verification: verification as unknown as Record<string, unknown>, finalStatus: "FAILED", error: failReason };
+    } else {
+      withdrawal.status = "PROCESSING";
+      withdrawal.error = verification.status === "error" && verification.raw instanceof Error ? verification.raw.message : `Awaiting provider confirmation (status=${verification.status}). Final status will be updated via webhook.`;
+      withdrawal.updatedAt = now;
+      return { transfer: initialTransfer ?? undefined, verification: verification as unknown as Record<string, unknown>, finalStatus: "PROCESSING" };
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Withdrawal provider unavailable";
     withdrawal.status = "FAILED";
     withdrawal.error = message;
     withdrawal.updatedAt = new Date().toISOString();
+    if (initialTransfer) {
+      withdrawal.providerTransfer = { ...(withdrawal.providerTransfer ?? {}), initiateError: message } as unknown as Record<string, unknown>;
+    }
     reverseInvestorWithdrawal(withdrawal, message);
-    return { error: message };
+    return { transfer: initialTransfer ?? undefined, error: message, finalStatus: "FAILED" };
   }
 }
 
@@ -4090,6 +4133,11 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     return;
   }
   const settings = getPlatformSettings();
+  const minWithdrawNaira = Number(settings.investorWithdrawalMinAmountNaira ?? 200);
+  if (parsed.data.amountNaira < minWithdrawNaira) {
+    res.status(400).json({ ok: false, error: `Minimum withdrawal amount is ₦${minWithdrawNaira.toLocaleString("en-NG")}` });
+    return;
+  }
   const feePercent = settings.investorWithdrawalFeePercent ?? 0;
   const flatMinor = settings.investorWithdrawalFeeFlatMinor ?? 0;
   const amountMinor = Math.round(parsed.data.amountNaira * 100);
@@ -4196,11 +4244,18 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
       sentAt: emailRes.sent ? new Date().toISOString() : undefined,
     });
   }).catch(() => undefined);
+  const finalStatus = execution.finalStatus ?? (execution.error ? "FAILED" : "PROCESSING");
+  let responseMessage = "Withdrawal submitted.";
+  if (finalStatus === "SUCCESSFUL") responseMessage = "Withdrawal processed successfully and confirmed by the provider.";
+  else if (finalStatus === "FAILED") responseMessage = execution.error ? `Withdrawal failed and the wallet balance was restored: ${execution.error}` : "Withdrawal failed and the wallet balance was restored.";
+  else if (finalStatus === "PROCESSING") responseMessage = "Withdrawal has been submitted and is being processed by the provider. Final status will be confirmed shortly.";
   res.json({
-    ok: true,
+    ok: finalStatus !== "FAILED",
     withdrawal: withdrawalEntry,
-    message: execution.error ? "Withdrawal failed and the wallet balance was restored." : "Withdrawal submitted successfully.",
+    message: responseMessage,
+    finalStatus,
     providerResponse: execution.transfer,
+    providerVerification: execution.verification,
     feeBreakdown: {
       flatNaira: Math.round(flatMinor) / 100,
       percentNaira: Math.round(feePercentMinor) / 100,
@@ -4229,6 +4284,7 @@ router.put("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async 
     investorWithdrawalFeePercent: z.number().min(0).max(100).optional(),
     investorWithdrawalFeeFlatMinor: z.number().int().min(0).optional(),
     investorWithdrawalFeeFlatNaira: z.number().min(0).optional(),
+    investorWithdrawalMinAmountNaira: z.number().min(0).optional(),
     defaultInvestmentAnnualRatePercent: z.number().min(0).max(100).optional(),
   });
   const parsed = schema.safeParse(req.body);
@@ -4244,6 +4300,9 @@ router.put("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async 
     updates.investorWithdrawalFeeFlatMinor = parsed.data.investorWithdrawalFeeFlatMinor;
   } else if (parsed.data.investorWithdrawalFeeFlatNaira !== undefined) {
     updates.investorWithdrawalFeeFlatMinor = Math.round(parsed.data.investorWithdrawalFeeFlatNaira * 100);
+  }
+  if (parsed.data.investorWithdrawalMinAmountNaira !== undefined) {
+    updates.investorWithdrawalMinAmountNaira = parsed.data.investorWithdrawalMinAmountNaira;
   }
   if (parsed.data.defaultInvestmentAnnualRatePercent !== undefined) {
     updates.defaultInvestmentAnnualRatePercent = parsed.data.defaultInvestmentAnnualRatePercent;
@@ -4426,6 +4485,12 @@ router.post("/admin/withdrawals/:withdrawalId/retry", requireAuth, requireRole("
     res.status(400).json({ ok: false, error: `Only failed withdrawals can be retried. Current status: ${withdrawal.status}` });
     return;
   }
+  const settings = getPlatformSettings();
+  const minWithdrawNaira = Number(settings.investorWithdrawalMinAmountNaira ?? 200);
+  if (Number(withdrawal.amountNaira) < minWithdrawNaira) {
+    res.status(400).json({ ok: false, error: `Minimum withdrawal amount is ₦${minWithdrawNaira.toLocaleString("en-NG")}. Update withdrawal amount.` });
+    return;
+  }
   const wallet = findWallet(withdrawal.investorId);
   const amountMinor = Math.round(Number(withdrawal.amountNaira) * 100);
   if (!wallet || wallet.availableMinor < amountMinor) {
@@ -4453,11 +4518,18 @@ router.post("/admin/withdrawals/:withdrawalId/retry", requireAuth, requireRole("
   }
   const execution = await executeInvestorWithdrawal(withdrawal);
   if (!(await persistMutation(res))) return;
+  const finalStatus = execution.finalStatus ?? (execution.error ? "FAILED" : "PROCESSING");
+  let responseMessage = "Withdrawal retry submitted.";
+  if (finalStatus === "SUCCESSFUL") responseMessage = "Withdrawal retry processed successfully and confirmed by the provider.";
+  else if (finalStatus === "FAILED") responseMessage = execution.error ? `Withdrawal retry failed and the wallet balance was restored: ${execution.error}` : "Withdrawal retry failed and the wallet balance was restored.";
+  else if (finalStatus === "PROCESSING") responseMessage = "Withdrawal retry has been submitted and is being processed. Final status will be confirmed shortly.";
   res.json({
-    ok: true,
+    ok: finalStatus !== "FAILED",
     withdrawal,
-    message: execution.error ? "Withdrawal retry failed and the wallet balance was restored." : "Withdrawal retry submitted successfully.",
+    message: responseMessage,
+    finalStatus,
     providerResponse: execution.transfer,
+    providerVerification: execution.verification,
   });
 });
 

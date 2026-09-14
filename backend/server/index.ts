@@ -34,6 +34,7 @@ import {
   notifications,
   settleWalletDeposit,
   loanDisbursements,
+  investorWithdrawals,
 } from "./store.js";
 import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
 import type { IdentityVerificationEvent } from "./store.js";
@@ -42,6 +43,7 @@ import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } f
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { bootstrapEnvironmentAdministrator } from "./bootstrap.js";
+import { verifyTransaction, verifyTransfer } from "./providers/flutterwave.js";
 
 assertProductionSecrets();
 

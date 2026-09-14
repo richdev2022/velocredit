@@ -574,6 +574,7 @@ export interface PlatformSettings {
   id: string;
   investorWithdrawalFeePercent: number;
   investorWithdrawalFeeFlatMinor: number;
+  investorWithdrawalMinAmountNaira: number;
   investorEarningRateOverrides: Record<string, number>;
   defaultInvestmentAnnualRatePercent: number;
   updatedAt: string;
@@ -1171,12 +1172,19 @@ export function seedAdminLedgerOpeningBalance(openingBalanceMinor: number): void
 }
 
 export function getPlatformSettings(): PlatformSettings {
-  if (platformSettings.length > 0) return platformSettings[0];
+  if (platformSettings.length > 0) {
+    const existing = platformSettings[0];
+    if (existing.investorWithdrawalMinAmountNaira === undefined) {
+      existing.investorWithdrawalMinAmountNaira = 200;
+    }
+    return existing;
+  }
   const now = new Date().toISOString();
   const defaults: PlatformSettings = {
     id: randomUUID(),
     investorWithdrawalFeePercent: 1,
     investorWithdrawalFeeFlatMinor: 0,
+    investorWithdrawalMinAmountNaira: 200,
     investorEarningRateOverrides: {},
     defaultInvestmentAnnualRatePercent: 12,
     updatedAt: now,
@@ -1186,13 +1194,16 @@ export function getPlatformSettings(): PlatformSettings {
   return defaults;
 }
 
-export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "investorWithdrawalFeePercent" | "investorWithdrawalFeeFlatMinor" | "investorEarningRateOverrides" | "defaultInvestmentAnnualRatePercent">>): PlatformSettings {
+export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "investorWithdrawalFeePercent" | "investorWithdrawalFeeFlatMinor" | "investorWithdrawalMinAmountNaira" | "investorEarningRateOverrides" | "defaultInvestmentAnnualRatePercent">>): PlatformSettings {
   const settings = getPlatformSettings();
   if (updates.investorWithdrawalFeePercent !== undefined) {
     settings.investorWithdrawalFeePercent = Math.max(0, Math.min(100, Number(updates.investorWithdrawalFeePercent)));
   }
   if (updates.investorWithdrawalFeeFlatMinor !== undefined) {
     settings.investorWithdrawalFeeFlatMinor = Math.max(0, Number(updates.investorWithdrawalFeeFlatMinor));
+  }
+  if (updates.investorWithdrawalMinAmountNaira !== undefined) {
+    settings.investorWithdrawalMinAmountNaira = Math.max(0, Number(updates.investorWithdrawalMinAmountNaira));
   }
   if (updates.investorEarningRateOverrides !== undefined) {
     settings.investorEarningRateOverrides = { ...updates.investorEarningRateOverrides };
