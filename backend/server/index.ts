@@ -34,12 +34,13 @@ import {
   notifications,
   settleWalletDeposit,
   loanDisbursements,
+  loanApplications,
   investorWithdrawals,
 } from "./store.js";
 import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
 import type { IdentityVerificationEvent } from "./store.js";
 import { markKycChecklistComplete } from "./auth.js";
-import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail } from "./email.js";
+import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail, loanDisbursedEmail } from "./email.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { bootstrapEnvironmentAdministrator } from "./bootstrap.js";
@@ -266,6 +267,7 @@ app.post(
             (l.providerTransfer as { data?: { reference?: string } }).data?.reference === transferRef
         );
         if (disbursementLoan) {
+          const wasDisbursed = disbursementLoan.status === "DISBURSED";
           disbursementLoan.status = "DISBURSED";
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
           disbursementLoan.disbursedAt = new Date().toISOString();
@@ -288,15 +290,23 @@ app.post(
               d.providerTransfer = { ...(d.providerTransfer ?? {}), webhook: data } as unknown as Record<string, unknown>;
             }
           }
-          creditHistory.push({
-            id: crypto.randomUUID(),
-            userId: disbursementLoan.borrowerId,
-            loanId: disbursementLoan.id,
-            eventType: "LOAN_DISBURSED",
-            detail: `Disbursement confirmed via provider ${disbursementLoan.providerReference}`,
-            occurredAt: new Date().toISOString(),
-            createdAt: new Date().toISOString(),
-          });
+          if (!wasDisbursed) {
+            creditHistory.push({
+              id: crypto.randomUUID(),
+              userId: disbursementLoan.borrowerId,
+              loanId: disbursementLoan.id,
+              eventType: "LOAN_DISBURSED",
+              detail: `Disbursement confirmed via provider ${disbursementLoan.providerReference}`,
+              occurredAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+            });
+            const borrower = users.find((user) => user.id === disbursementLoan.borrowerId);
+            const application = loanApplications.find((item) => item.id === disbursementLoan.applicationId);
+            if (borrower) {
+              const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? disbursementLoan.applicationId, amountNaira: Number(disbursementLoan.principalNaira) });
+              void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+            }
+          }
         }
         const payout = payouts.find(
           (p) =>

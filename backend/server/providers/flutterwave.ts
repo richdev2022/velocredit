@@ -192,7 +192,8 @@ export async function verifyTransferWithRetry(
   transferId: string,
   reference = "",
   maxAttempts = 3,
-  backoffMs = 3000
+  backoffMs = 3000,
+  expectedAmountNaira?: number
 ): Promise<{ status: string; data?: Record<string, unknown>; settled: boolean; raw: unknown }> {
   let lastError: unknown = null;
   let lastRaw: unknown = null;
@@ -204,8 +205,10 @@ export async function verifyTransferWithRetry(
       lastRaw = result;
       const fwData = (result?.data ?? {}) as Record<string, unknown>;
       const status = String(fwData.status ?? result?.status ?? "").toLowerCase();
+      const currency = String(fwData.currency ?? "NGN").toUpperCase();
+      const amountMatches = expectedAmountNaira === undefined || Number(fwData.amount ?? 0) === expectedAmountNaira;
       const settled =
-        status === "successful" || status === "success";
+        (status === "successful" || status === "success") && currency === "NGN" && amountMatches;
       const terminal = settled || status === "failed" || attempt === maxAttempts;
       if (terminal) {
         return { status, data: fwData, settled, raw: result };

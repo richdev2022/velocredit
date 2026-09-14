@@ -40,12 +40,18 @@ export default function SectionShell({
   const navigate = useNavigate();
   const { sections, currentIndex, saveState, lastSavedAt, markSectionStatus, saveNow, next, prev } = useApplication();
   const [continueBusy, setContinueBusy] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   async function handleSaveAndContinue() {
     if (continueBusy) return;
     setContinueBusy(true);
+    setSaveError("");
     try {
-      await saveNow();
+      const result = await saveNow();
+      if (!result?.ok) {
+        setSaveError(result?.error || "Your progress could not be saved. Please try again.");
+        return;
+      }
       if (onContinue) {
         onContinue();
       } else {
@@ -56,8 +62,13 @@ export default function SectionShell({
     }
   }
 
-  function handleSaveAndExit() {
-    void saveNow();
+  async function handleSaveAndExit() {
+    setSaveError("");
+    const result = await saveNow();
+    if (!result?.ok) {
+      setSaveError(result?.error || "Your progress could not be saved. Please try again.");
+      return;
+    }
     navigate("/apply/dashboard");
   }
 
@@ -67,12 +78,17 @@ export default function SectionShell({
     next();
   }
 
-  function handleSaveProgress() {
+  async function handleSaveProgress() {
     const current = sections[currentIndex];
     if (current && current.status === "not_started") {
       markSectionStatus(current.key, "in_progress");
     }
-    void saveNow();
+    setSaveError("");
+    const result = await saveNow();
+    if (!result?.ok) {
+      setSaveError(result?.error || "Your progress could not be saved. Please try again.");
+      return;
+    }
     navigate("/apply/dashboard");
   }
 
@@ -90,6 +106,7 @@ export default function SectionShell({
         </div>
 
         <div className="mt-5">
+          {saveError && <div role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{saveError}</div>}
           {children}
         </div>
 
@@ -101,7 +118,7 @@ export default function SectionShell({
               </button>
             )}
             {!hideSaveExit && (
-              <button type="button" onClick={handleSaveAndExit} className="btn-secondary">
+              <button type="button" onClick={() => void handleSaveAndExit()} className="btn-secondary">
                 Save & Exit
               </button>
             )}
@@ -117,7 +134,7 @@ export default function SectionShell({
               <button type="button" onClick={prev} className="btn-secondary text-xs">Back</button>
             )}
             {!hideSaveExit && (
-              <button type="button" onClick={handleSaveProgress} className="btn-ghost text-xs">
+              <button type="button" onClick={() => void handleSaveProgress()} className="btn-ghost text-xs">
                 Save Progress
               </button>
             )}

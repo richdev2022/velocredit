@@ -94,7 +94,7 @@ import {
   listBanks,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanDisbursedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
@@ -3643,7 +3643,7 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
 });
 
 router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), async (req, res) => {
-  const application = loanApplications.find((a) => a.id === req.params.loanId);
+  const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
   const loan = loans.find((l) => l.applicationId === req.params.loanId || l.id === req.params.loanId);
   if (!loan) {
     res.status(404).json({ ok: false, error: "Loan record not found. Approve the application first." });
@@ -3720,17 +3720,26 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     loan.status = "DISBURSEMENT_PENDING";
     loan.providerTransfer = transfer;
     loan.updatedAt = now;
-    creditHistory.push({
-      id: randomUUID(),
-      userId: loan.borrowerId,
-      loanId: loan.id,
-      eventType: "LOAN_DISBURSED",
-      detail: `Disbursement initiated for loan ${loan.id}`,
-      occurredAt: now,
-      createdAt: now,
-    });
+    const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
+    const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 3, 500, Number(loan.principalNaira));
+    if (verification.settled) {
+      const settledAt = new Date().toISOString();
+      loan.status = "DISBURSED";
+      loan.disbursedAt = settledAt;
+      loan.updatedAt = settledAt;
+      loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);
+      disbursement.status = "SUCCESSFUL";
+      disbursement.processedAt = settledAt;
+      disbursement.updatedAt = settledAt;
+      creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
+      const borrower = users.find((user) => user.id === loan.borrowerId);
+      if (borrower) {
+        const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.id, amountNaira: Number(loan.principalNaira) });
+        void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+      }
+    }
     if (!(await persistMutation(res))) return;
-    res.status(202).json({ ok: true, loan, transfer, disbursement });
+    res.status(verification.settled ? 200 : 202).json({ ok: true, loan, transfer, disbursement });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
     const last = loanDisbursements[loanDisbursements.length - 1];
