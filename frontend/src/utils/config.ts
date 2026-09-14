@@ -205,10 +205,10 @@ function mergeTenureFees(base: TenureFeeOverrides, overrides?: TenureFeeOverride
 }
 
 // Effective config — apply admin overrides on top of base
-function buildProgram(base: LoanProgramConfig, override?: Partial<LoanProgramConfig>): LoanProgramConfig {
+function buildProgram(base: LoanProgramConfig, override?: Partial<LoanProgramConfig>, globalLimits?: LoanLimits): LoanProgramConfig {
   return {
     ...base,
-    loanLimits: { ...base.loanLimits, ...(override?.loanLimits || {}) },
+    loanLimits: globalLimits ?? { ...base.loanLimits, ...(override?.loanLimits || {}) },
     tenures: override?.tenures && override.tenures.length > 0 ? override.tenures : base.tenures,
     fees: {
       interest: { ...base.fees.interest, ...(override?.fees?.interest || {}) },
@@ -257,9 +257,10 @@ const basePrograms: Record<LoanProgramKey, LoanProgramConfig> = {
 baseConfig.loanPrograms = basePrograms;
 
 export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOverrides()): AppConfig {
+  const loanLimits = { ...baseConfig.loanLimits, ...(overrides.loanLimits || {}) };
   const eff: AppConfig = {
     ...baseConfig,
-    loanLimits: { ...baseConfig.loanLimits, ...(overrides.loanLimits || {}) },
+    loanLimits,
     tenures: overrides.tenures && overrides.tenures.length > 0 ? overrides.tenures : baseConfig.tenures,
     fees: {
       interest:      { ...baseConfig.fees.interest,      ...(overrides.fees?.interest || {}) },
@@ -269,8 +270,8 @@ export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOve
     },
     tenureFees: mergeTenureFees(baseConfig.tenureFees, overrides.tenureFees),
     loanPrograms: {
-      PERSONAL: buildProgram(basePrograms.PERSONAL, overrides.loanPrograms?.PERSONAL),
-      BUSINESS: buildProgram(basePrograms.BUSINESS, overrides.loanPrograms?.BUSINESS),
+      PERSONAL: buildProgram(basePrograms.PERSONAL, overrides.loanPrograms?.PERSONAL, loanLimits),
+      BUSINESS: buildProgram(basePrograms.BUSINESS, overrides.loanPrograms?.BUSINESS, loanLimits),
     },
     companyName: overrides.companyName || baseConfig.companyName,
     companyWebsite: overrides.companyWebsite || baseConfig.companyWebsite,

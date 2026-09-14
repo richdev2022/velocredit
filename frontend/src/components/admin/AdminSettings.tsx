@@ -373,6 +373,17 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     return Object.keys(result).length > 0 ? result : undefined;
   }
 
+  function updateGlobalLimits(patch: Partial<LoanProgramConfig["loanLimits"]>) {
+    const limits = { min, max, defaultAmount, ...patch };
+    if (patch.min !== undefined) setMin(patch.min);
+    if (patch.max !== undefined) setMax(patch.max);
+    if (patch.defaultAmount !== undefined) setDefaultAmount(patch.defaultAmount);
+    setPrograms((current) => ({
+      PERSONAL: { ...current.PERSONAL, loanLimits: limits },
+      BUSINESS: { ...current.BUSINESS, loanLimits: limits },
+    }));
+  }
+
   async function handleSave() {
     const overrides: AdminConfigOverride = {
       loanLimits: {
@@ -548,22 +559,22 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           </Section>
 
-          <Section title="Loan Amount Limits" subtitle="Legacy global defaults retained for compatibility. New applications use the loan program settings above." icon={<Icon name="money" size={20} />}>
+          <Section title="Loan Amount Limits" subtitle="Global limits automatically apply to both Personal and Business loans." icon={<Icon name="money" size={20} />}>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <NumberField
                 label="Minimum Loan Amount (₦)"
                 value={min}
-                onChange={setMin}
+                onChange={(value) => updateGlobalLimits({ min: value })}
               />
               <NumberField
                 label="Maximum Loan Amount (₦)"
                 value={max}
-                onChange={setMax}
+                onChange={(value) => updateGlobalLimits({ max: value })}
               />
               <NumberField
                 label="Default Amount (₦)"
                 value={defaultAmount}
-                onChange={setDefaultAmount}
+                onChange={(value) => updateGlobalLimits({ defaultAmount: value })}
               />
             </div>
           </Section>

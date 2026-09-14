@@ -2407,11 +2407,13 @@ router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), 
     existing.data = parsed.data.data;
     existing.lastSectionIndex = parsed.data.lastSectionIndex;
     existing.updatedAt = parsed.data.updatedAt;
+    if (!await persistMutation(res)) return;
     res.json({ ok: true, draft: existing });
     return;
   }
   const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now };
   applicationDrafts.push(draft);
+  if (!await persistMutation(res)) return;
   res.status(201).json({ ok: true, draft });
 });
 
@@ -5051,11 +5053,32 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     loan.status = "DISBURSEMENT_PENDING";
     loan.providerTransfer = transfer;
     loan.updatedAt = now;
-    res.status(202).json({ ok: true, disbursement: retry, providerResponse: transfer });
+    const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
+    const verification = await verifyTransferWithRetry(transferId, retry.providerReference, 3, 500, Number(loan.principalNaira));
+    if (verification.settled) {
+      const settledAt = new Date().toISOString();
+      loan.status = "DISBURSED";
+      loan.disbursedAt = settledAt;
+      loan.updatedAt = settledAt;
+      loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? retry.providerReference);
+      retry.status = "SUCCESSFUL";
+      retry.processedAt = settledAt;
+      retry.updatedAt = settledAt;
+      creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
+      const borrower = users.find((user) => user.id === loan.borrowerId);
+      const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+      if (borrower) {
+        const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.applicationId, amountNaira: Number(loan.principalNaira) });
+        void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+      }
+    }
+    if (!await persistMutation(res)) return;
+    res.status(verification.settled ? 200 : 202).json({ ok: true, loan, disbursement: retry, providerResponse: transfer });
   } catch (error) {
     retry.status = "FAILED";
     retry.error = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
     retry.updatedAt = new Date().toISOString();
+    if (!await persistMutation(res)) return;
     res.status(503).json({ ok: false, disbursement: retry, error: retry.error });
   }
 });
