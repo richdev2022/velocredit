@@ -1493,11 +1493,11 @@ function FeeField({
         </div>
       </div>
       <div className="space-y-2.5">
-        <div className="flex items-center gap-2">
+        <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,8rem)_minmax(0,1fr)_auto] lg:items-center">
           <select
             value={value.type}
             onChange={(e) => onChange({ ...value, type: e.target.value as "flat" | "percentage" })}
-            className={`velo-input !py-2 text-xs font-bold w-28 shrink-0 ${compact ? "!py-1.5 text-[10px]" : ""}`}
+            className={`velo-input !py-2 text-xs font-bold w-full ${compact ? "!py-1.5 text-[10px]" : ""}`}
           >
             <option value="flat">Flat (₦)</option>
             <option value="percentage">Percentage (%)</option>
@@ -1508,14 +1508,12 @@ function FeeField({
             step={value.type === "percentage" ? 0.1 : 500}
             value={value.value}
             onChange={(e) => onChange({ ...value, value: Number(e.target.value) || 0 })}
-            className={`velo-input !py-2 text-sm font-bold flex-1 ${compact ? "!py-1.5 text-xs" : ""}`}
+            className={`velo-input !py-2 text-base font-bold w-full min-w-0 ${compact ? "!py-1.5 text-sm" : ""}`}
           />
-          <span className={`text-xs font-bold text-slate-500 w-6 ${compact ? "text-[10px]" : ""}`}>
+          <span className={`text-xs font-bold text-slate-500 lg:w-6 ${compact ? "text-[10px]" : ""}`}>
             {value.type === "flat" ? "₦" : "%"}
           </span>
-
-
-</div>
+        </div>
         <label className={`flex items-center gap-2 text-slate-600 cursor-pointer select-none ${compact ? "text-[10px]" : "text-[11px]"}`}>
           <input
             type="checkbox"

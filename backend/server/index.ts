@@ -780,6 +780,10 @@ async function start(): Promise<void> {
     void runGuardedSheetsBackup();
     setInterval(() => { void runGuardedSheetsBackup(); }, 6 * 60 * 60 * 1000).unref();
     const server = app.listen(env.API_PORT, env.API_HOST, () => {
+      server.requestTimeout = 120_000;
+      server.timeout = 120_000;
+      server.headersTimeout = 125_000;
+      server.keepAliveTimeout = 65_000;
       const databaseMessage = schema === "created"
         ? "schema initialized"
         : "schema skipped (DATABASE_URL is not configured)";
