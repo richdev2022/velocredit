@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compactApplicationForTransport } from "./apiClient";
+import { compactApplicationForTransport, saveApplicationDraft, setAccessToken } from "./apiClient";
+import { afterEach, vi } from "vitest";
 import { isValidWithdrawalDestination } from "../components/InvestorWithdrawalForm";
 import { paginateRepayments, repaymentProgressValues, sortRepaymentsRecentFirst } from "../pages/BorrowerDashboard";
 
@@ -35,6 +36,27 @@ describe("loan application transport", () => {
     expect((compact.collateral as Record<string, unknown>).description).toBe("A vehicle");
     expect((compact.witness as Record<string, unknown>).fullName).toBe("Witness");
     expect(JSON.stringify(compact)).not.toContain("large-binary-payload");
+  });
+});
+
+describe("loan application draft persistence", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the current in-memory draft to the authenticated backend endpoint", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
+    vi.stubGlobal("window", { setTimeout, clearTimeout, dispatchEvent: vi.fn() });
+    setAccessToken("borrower-token");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, draft: null }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const updatedAt = "2026-01-02T03:04:05.000Z";
+
+    await saveApplicationDraft({ applicationId: "draft-1", applicantType: "PERSONAL", data: { personalInfo: { fullName: "Ada Borrower" } }, lastSectionIndex: 2, updatedAt });
+
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/v1/borrower/application-draft"), expect.objectContaining({ method: "PUT" }));
+    const [, options] = fetchMock.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual(expect.objectContaining({ applicationId: "draft-1", lastSectionIndex: 2, updatedAt }));
+    expect(options.headers.get("Authorization")).toBe("Bearer borrower-token");
   });
 });
 
