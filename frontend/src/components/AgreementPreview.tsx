@@ -48,7 +48,7 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
 
   return (
     <div className="agreement-print-target velo-card overflow-hidden">
-      <div className="no-print flex items-center justify-between px-4 sm:px-5 py-3 border-b border-slate-100 bg-slate-50/50">
+      <div className="no-print flex items-center justify-between px-4 sm:px-5 py-3 border-b border-slate-100 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-900">
         <div>
           <h3 className="text-sm font-semibold text-velo-900">Agreement Preview</h3>
           <p className="text-xs text-slate-500">Scroll to read the complete agreement before continuing.</p>
@@ -59,7 +59,7 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
       </div>
       <div
         ref={contentRef}
-        className="agreement-print max-h-[70vh] overflow-y-auto p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content"
+        className="agreement-print max-h-[70vh] overflow-y-auto p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content dark:bg-slate-950 dark:text-slate-200"
         dangerouslySetInnerHTML={{ __html: agreementCss() + html }}
       />
       <div className="no-print border-t border-slate-100 px-4 py-2 text-xs text-slate-500" aria-live="polite">
@@ -72,6 +72,13 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
 function agreementCss(): string {
   return `<style>
     .agreement-doc { font-family: 'Poppins', system-ui, -apple-system, sans-serif; color: #1f2937; line-height: 1.65; }
+    .dark .agreement-doc { color: #e2e8f0; }
+    .dark .agreement-doc .agr-p, .dark .agreement-doc .pn-line { color: #cbd5e1; }
+    .dark .agreement-doc .agr-h1, .dark .agreement-doc .agr-h2, .dark .agreement-doc strong, .dark .agreement-doc b, .dark .agreement-doc .val, .dark .agreement-doc .pn-name, .dark .agreement-doc .sr-val { color: #f8fafc; }
+    .dark .agreement-doc .agr-header, .dark .agreement-doc .party-lender, .dark .agreement-doc .summary, .dark .agreement-doc .lender-brand-panel, .dark .agreement-doc .end-note { background: #17243d; }
+    .dark .agreement-doc .party-borrower, .dark .agreement-doc .collateral-card { background: #1e293b; border-color: #475569; }
+    .dark .agreement-doc .agr-sub-title, .dark .agreement-doc .agr-meta, .dark .agreement-doc .pn-desc, .dark .agreement-doc .pn-sub, .dark .agreement-doc .collateral-grid span, .dark .agreement-doc .media-placeholder { color: #94a3b8; }
+    .dark .agreement-doc .sr-row { border-color: #334155; }
     .agreement-doc strong, .agreement-doc b { font-weight: 700; color: #0C2947; }
     .agreement-doc .val { font-weight: 700; color: #0C2947; }
     .agreement-doc .val-emph { font-weight: 700; color: #B91C1C; }

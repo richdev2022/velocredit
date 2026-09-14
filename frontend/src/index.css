@@ -48,7 +48,12 @@
   .dark .bg-emerald-50 { background-color: #052e16; }
   .dark .bg-blue-50 { background-color: #172554; }
   .dark .bg-violet-50 { background-color: #2e1065; }
-  .dark .bg-sky-50 { background-color: #082f49; }
+  .dark .bg-sky-50, .dark .bg-sky-50\/70 { background-color: #082f49; }
+  .dark .bg-velo-50\/50, .dark .bg-velo-50\/40 { background-color: #17243d; }
+  .dark .from-velo-50\/40 { --tw-gradient-from: #17243d var(--tw-gradient-from-position); }
+  .dark .to-white { --tw-gradient-to: #0f172a var(--tw-gradient-to-position); }
+  .dark .border-sky-100, .dark .border-sky-200 { border-color: #164e63; }
+  .dark .text-sky-700, .dark .text-sky-900 { color: #7dd3fc; }
   .dark .text-red-600, .dark .text-red-700 { color: #fca5a5; }
   .dark .text-amber-700, .dark .text-amber-800 { color: #fcd34d; }
   .dark .text-blue-700 { color: #93c5fd; }
@@ -271,8 +276,8 @@
   .no-print { display: none !important; }
   body.printing-agreement #root,
   body.printing-agreement #root * { visibility: hidden !important; }
-  body.printing-agreement .agreement-print-target,
-  body.printing-agreement .agreement-print-target * { visibility: visible !important; }
+  body.printing-agreement #root .agreement-print-target,
+  body.printing-agreement #root .agreement-print-target * { visibility: visible !important; }
   body.printing-agreement .agreement-print-target {
     position: static !important;
     display: block !important;
