@@ -30,6 +30,7 @@ import {
   adminRetryWithdrawal,
   type AdminLedgerEntry,
 } from "../../services/adminApi";
+import { adminListLoanProducts, adminCreateLoanProduct, adminPatchLoanProduct } from "../../services/apiClient";
 import { formatNaira } from "../../utils/loanCalculator";
 import { calculateLoan } from "../../utils/loanCalculator";
 import type { TenureOption, FeeConfiguration, FeeKey, FeeConfig, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey } from "../../types/loan";
@@ -420,6 +421,23 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     try {
       saveAdminOverrides(overrides);
       refreshConfig(overrides);
+      const products = (await adminListLoanProducts()).products;
+      for (const [type, program] of Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>) {
+        const existing = products.find((product: any) => String(product.name).toUpperCase().includes(type));
+        const productInput = {
+          name: `${type === "PERSONAL" ? "Personal" : "Business"} Loan`,
+          minAmountNaira: program.loanLimits.min,
+          maxAmountNaira: program.loanLimits.max,
+          defaultTenureDays: program.tenures[0]?.value || 30,
+          interestRatePercent: program.fees.interest.value,
+          interestType: "ANNUALIZED" as const,
+          processingFeePercent: program.fees.processingFee.type === "percentage" ? program.fees.processingFee.value : 0,
+          lateFeePercent: program.fees.lateFee.type === "percentage" ? program.fees.lateFee.value : 0,
+          isActive: true,
+        };
+        if (existing) await adminPatchLoanProduct(existing.id, productInput);
+        else await adminCreateLoanProduct(productInput);
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (error) {

@@ -94,7 +94,7 @@ import {
   listBanks,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanDisbursedEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
@@ -346,11 +346,16 @@ async function sendLoanEmails(application: (typeof loanApplications)[number], ev
     : loanDecisionEmail({ name: borrowerName, applicationId: application.applicationId, status: event, amountNaira, note: application.manualNote });
   const messages = [{ email: borrowerEmail, name: borrowerName, ...borrowerMessage }];
 
-  if (event === "SUBMITTED") {
+  if (event === "SUBMITTED" || event === "APPROVED") {
     const admins = users.filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || (user.roles.includes("LOAN_MANAGER") && user.adminPermissions?.includes(loanNotificationPermission))));
     const recipients = [...admins.map((user) => ({ email: user.email, name: user.fullName })), ...(env.ADMIN_EMAIL ? [{ email: env.ADMIN_EMAIL, name: "Velo Administrator" }] : [])];
     const uniqueRecipients = recipients.filter((recipient, index, all) => all.findIndex((item) => item.email.toLowerCase() === recipient.email.toLowerCase()) === index);
-    messages.push(...uniqueRecipients.map((recipient) => ({ ...recipient, ...loanApplicationSubmittedEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira, recipient: "reviewer" }) })));
+    messages.push(...uniqueRecipients.map((recipient) => ({
+      ...recipient,
+      ...(event === "SUBMITTED"
+        ? loanApplicationSubmittedEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira, recipient: "reviewer" })
+        : loanAwaitingDisbursementEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira })),
+    })));
   }
 
   await Promise.all(messages.filter((message) => message.email).map(async (message) => { try { await sendEmail({ to: message.email, name: message.name, subject: message.subject, html: message.html }); } catch { /* notification failure must not block loan processing */ } }));
@@ -378,6 +383,26 @@ const ninVerifySchema = z.object({ nin: z.string().regex(/^\d{11}$/, "NIN must b
 const payoutAccountSchema = z.object({ accountName: z.string().min(2), accountNumber: z.string().regex(/^\d{10}$/, "Account number must be 10 digits"), bankCode: z.string().min(2), bankName: z.string().optional() });
 const createInvestmentSchema = z.object({ amountNaira: z.number().positive().finite(), planId: z.string().min(1).optional(), tenureDays: z.number().int().positive().default(90), annualRatePercent: z.number().nonnegative().default(12) });
 const earlyLiquiditySchema = z.object({ otpChallengeId: z.string().optional(), otpCode: z.string().optional() });
+function compactApplicationPayload(input: Record<string, unknown>): Record<string, unknown> {
+  const compactDocuments = Object.fromEntries(
+    Object.entries((input.documents && typeof input.documents === "object" ? input.documents : {}) as Record<string, unknown>).map(([slot, value]) => {
+      if (!value || typeof value !== "object") return [slot, value];
+      const { data: _data, ...metadata } = value as Record<string, unknown>;
+      return [slot, metadata];
+    }),
+  );
+  const sourceKyc = input.kyc && typeof input.kyc === "object" ? input.kyc as Record<string, unknown> : {};
+  const { verifiedDetails: _verifiedDetails, selfieImageData: _selfieImageData, identityPhotoUrl: _identityPhotoUrl, ...kyc } = sourceKyc;
+  return {
+    ...input,
+    kyc,
+    documents: compactDocuments,
+    agreement: input.agreement && typeof input.agreement === "object"
+      ? { ...(input.agreement as Record<string, unknown>), generatedHtml: null }
+      : input.agreement,
+  };
+}
+
 const loanApplicationSchema = z.object({
   applicationId: z.string().optional(),
   applicantType: z.enum(["PERSONAL", "BUSINESS"]).default("PERSONAL"),
@@ -1296,6 +1321,9 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     if (source[key] != null) profilePrefill[key] = source[key];
   }
   const proofOfAddressUrl = userDocs.find((d) => d.documentType === "PROOF_OF_ADDRESS")?.providerFileId;
+  const safeVerificationEvents = identityVerificationEvents
+    .filter((event) => event.kycCaseId === kyc.id)
+    .map(({ rawResponse: _rawResponse, ...event }) => event);
   res.json({
     ok: true,
     status: kyc.status,
@@ -1306,17 +1334,14 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     submittedAt: kyc.submittedAt,
     rejectionReason: kyc.rejectionReason,
     documents: userDocs,
-    verificationEvents: identityVerificationEvents.filter((e) => e.kycCaseId === kyc.id),
-    identityPhoto,
-    selfieImageData: typeof kyc.selfieImageData === "string" ? kyc.selfieImageData : undefined,
+    verificationEvents: safeVerificationEvents,
+    selfieImageData: undefined,
     livenessStatus: kyc.livenessStatus,
     livenessManualUploaded: kyc.livenessManualUploaded ?? false,
     verifiedDetails: Object.keys(source).length ? source : undefined,
     normalizedFields: Object.keys(normalizedFields).length ? normalizedFields : undefined,
     profilePrefill: Object.keys(profilePrefill).length ? profilePrefill : undefined,
     proofOfAddressUrl,
-    bvn: typeof kyc.bvn === "string" ? kyc.bvn : undefined,
-    nin: typeof kyc.nin === "string" ? kyc.nin : undefined,
   });
 });
 
@@ -2404,14 +2429,14 @@ router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), 
       return;
     }
     existing.applicantType = parsed.data.applicantType;
-    existing.data = parsed.data.data;
+    existing.data = compactApplicationPayload(parsed.data.data);
     existing.lastSectionIndex = parsed.data.lastSectionIndex;
     existing.updatedAt = parsed.data.updatedAt;
     if (!await persistMutation(res)) return;
     res.json({ ok: true, draft: existing });
     return;
   }
-  const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now };
+  const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, data: compactApplicationPayload(parsed.data.data), createdAt: now };
   applicationDrafts.push(draft);
   if (!await persistMutation(res)) return;
   res.status(201).json({ ok: true, draft });
@@ -2429,7 +2454,7 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const input = parsed.data;
+  const input = { ...parsed.data, ...compactApplicationPayload(parsed.data) };
   const dbBorrowing = await dbHasUnresolvedBorrowing(req.user!.id);
   const memBorrowing = hasUnresolvedBorrowing(req.user!.id);
   if (dbBorrowing !== null && dbBorrowing !== memBorrowing) {
@@ -3646,7 +3671,7 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
 
 router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
-  const loan = loans.find((l) => l.applicationId === req.params.loanId || l.id === req.params.loanId);
+  const loan = loans.find((l) => l.applicationId === req.params.loanId || l.applicationId === application?.id || l.id === req.params.loanId);
   if (!loan) {
     res.status(404).json({ ok: false, error: "Loan record not found. Approve the application first." });
     return;
@@ -3668,21 +3693,6 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
   }
   try {
     const amountMinor = Math.round(Number(loan.principalNaira) * 100);
-    appendAdminLedger({
-      entryType: "LOAN_DISBURSEMENT",
-      referenceId: loan.id,
-      borrowerId: loan.borrowerId,
-      loanId: loan.id,
-      amountMinor,
-      direction: "DEBIT",
-      description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
-      metadata: {
-        provider: "flutterwave",
-        applicationId: application?.applicationId,
-        accountBank: account.bankCode,
-        accountNumber: account.accountNumber,
-      },
-    });
     const now = new Date().toISOString();
     const disbursement: (typeof import("./store.js").loanDisbursements)[number] = {
       id: randomUUID(),
@@ -3713,6 +3723,19 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       accountBank: account.bankCode,
       beneficiaryName: account.accountName ?? snapshot.fullName ?? "Borrower",
       narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
+    });
+    if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
+      throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the disbursement transfer");
+    }
+    appendAdminLedger({
+      entryType: "LOAN_DISBURSEMENT",
+      referenceId: loan.id,
+      borrowerId: loan.borrowerId,
+      loanId: loan.id,
+      amountMinor,
+      direction: "DEBIT",
+      description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
+      metadata: { provider: "flutterwave", applicationId: application?.applicationId, accountBank: account.bankCode },
     });
     disbursement.providerTransfer = transfer as unknown as Record<string, unknown>;
     disbursement.providerReference = (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? disbursement.id);
@@ -5042,6 +5065,19 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
       accountBank: prev.bankCode,
       beneficiaryName: prev.accountName ?? "Borrower",
       narration: retry.narration ?? `Velo loan disbursement retry ${loan.id}`,
+    });
+    if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
+      throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the retry transfer");
+    }
+    appendAdminLedger({
+      entryType: "LOAN_DISBURSEMENT",
+      referenceId: retry.id,
+      borrowerId: loan.borrowerId,
+      loanId: loan.id,
+      amountMinor: Math.round(Number(prev.amountNaira) * 100),
+      direction: "DEBIT",
+      description: `Admin ledger debit for loan disbursement retry - loan ${loan.id}`,
+      metadata: { provider: "flutterwave", retryOfId: prev.id, accountBank: prev.bankCode },
     });
     retry.providerTransfer = transfer as unknown as Record<string, unknown>;
     retry.providerReference =

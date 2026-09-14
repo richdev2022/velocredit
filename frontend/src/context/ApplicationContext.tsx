@@ -47,6 +47,23 @@ import type {
 
 const AUTOSAVE_DEBOUNCE_MS = 1500;
 
+function compactApplicationData(application: ApplicationData): Record<string, unknown> {
+  const documents = Object.fromEntries(
+    Object.entries(application.documents ?? {}).map(([slot, document]) => {
+      if (!document) return [slot, document];
+      const { data: _data, ...metadata } = document as unknown as Record<string, unknown>;
+      return [slot, metadata];
+    }),
+  );
+  const { verifiedDetails: _verifiedDetails, selfieImageData: _selfieImageData, identityPhotoUrl: _identityPhotoUrl, ...kyc } = application.kyc ?? {};
+  return {
+    ...application,
+    kyc,
+    documents,
+    agreement: application.agreement ? { ...application.agreement, generatedHtml: null } : application.agreement,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Section metadata
 // ---------------------------------------------------------------------------
@@ -252,7 +269,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       saveApplication(draft, currentIndexRef.current);
       if (getAccessToken() && draft.applicantType) {
-        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: draft as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
+        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: compactApplicationData(draft), lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
@@ -466,7 +483,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       saveApplication(draft, currentIndexRef.current);
       if (draft.applicantType) {
-        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: draft as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
+        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: compactApplicationData(draft), lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
@@ -485,7 +502,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     try {
       const res = getAccessToken()
         ? await (async () => {
-            const response = await submitBorrowerApplication(application as unknown as Record<string, unknown>);
+            const response = await submitBorrowerApplication(compactApplicationData(application));
             return { ok: response.ok, applicationId: String(response.loan?.applicationId ?? response.loan?.id ?? application.applicationId), status: "SUBMITTED" as const, error: response.error };
           })()
         : { ok: false, applicationId: application.applicationId, status: application.status, error: "Please sign in before submitting your loan application." };

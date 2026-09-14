@@ -56,6 +56,21 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
   const loan = response.loan || response.application || {};
   const source = response.application || loan;
   const snapshot = source.customerSnapshot || loan.customerSnapshot || {};
+  const calculation = snapshot.calculation || {};
+  const normalizedLoan = {
+    ...loan,
+    amount: loan.amount ?? loan.amountNaira ?? loan.principalNaira ?? 0,
+    tenure: loan.tenure ?? loan.tenureDays ?? 0,
+    purpose: loan.purpose ?? snapshot.loanRequest?.purpose ?? "",
+    interest: loan.interest ?? loan.totalInterestNaira ?? calculation.interest ?? 0,
+    serviceFee: loan.serviceFee ?? calculation.serviceFee ?? 0,
+    processingFee: loan.processingFee ?? loan.totalFeesNaira ?? calculation.processingFee ?? 0,
+    lateFee: loan.lateFee ?? calculation.lateFee ?? 0,
+    totalFees: loan.totalFees ?? loan.totalFeesNaira ?? calculation.totalFees ?? 0,
+    totalRepayment: loan.totalRepayment ?? loan.totalRepaymentNaira ?? calculation.totalRepayment ?? 0,
+    disbursementDate: loan.disbursementDate ?? loan.disbursedAt,
+    repaymentDate: loan.repaymentDate ?? loan.dueAt ?? calculation.repaymentDate,
+  };
   const applicantType = (source.applicantType || (snapshot.businessInfo?.businessName ? "BUSINESS" : "PERSONAL")) as "PERSONAL" | "BUSINESS";
   return {
     applicationId: source.applicationId || loan.applicationId || loan.id,
@@ -69,7 +84,7 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
     businessRep: snapshot.businessRep || {},
     kyc: snapshot.kyc || {},
     financial: snapshot.personalFinancial || snapshot.businessFinancial || {},
-    loan,
+    loan: normalizedLoan,
     documents: source.documents || snapshot.documents || loan.documents || {},
     customerSnapshot: snapshot,
     creditReportSnapshot: source.creditReportSnapshot || loan.creditReportSnapshot,
