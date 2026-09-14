@@ -14,19 +14,9 @@ import { useApplication } from "../context/ApplicationContext";
 import { useAuth } from "../context/AuthContext";
 import { disbursementAccountSchema, personalInfoSchema, type DisbursementAccountForm, type PersonalInfoForm } from "../utils/validation";
 import { NIGERIAN_STATES, lgasForState, STATE_NAMES } from "../utils/nigerianStates";
-import { getAccessToken, getMyKyc } from "../services/apiClient";
+import { getAccessToken } from "../services/apiClient";
 import { config } from "../utils/config";
 import Icon from "../components/Icon";
-
-function getTextValue(source: Record<string, unknown>, keys: string[]): string {
-  return keys.map((key) => source[key]).find((value): value is string => typeof value === "string" && Boolean(value.trim()))?.trim() ?? "";
-}
-
-function getVerifiedName(source: Record<string, unknown>): string {
-  const fullName = getTextValue(source, ["fullName", "full_name", "name"]);
-  if (fullName) return fullName;
-  return ["firstName", "middleName", "lastName"].map((key) => getTextValue(source, [key])).filter(Boolean).join(" ");
-}
 
 function toDateInputValue(value: string): string {
   const isoDate = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -86,21 +76,6 @@ export default function PersonalInfoSection() {
     if (email && email !== application.personalInfo.email) { setValue("email", email); patch.email = email; }
     if (Object.keys(patch).length) patchPersonalInfo(patch);
   }, [application.personalInfo, application.kyc.verifiedDetails, patchPersonalInfo, setValue, user?.dateOfBirth, user?.email, user?.fullName, user?.phone, verifiedDob, verifiedName]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void getMyKyc().then((kyc) => {
-      if (cancelled || !kyc.ok) return;
-      const details = { ...(kyc.verifiedDetails ?? {}), ...(kyc.normalizedFields?.nin ?? {}), ...(kyc.normalizedFields?.bvn ?? {}), ...(kyc.profilePrefill ?? {}) };
-      const fullName = getVerifiedName(details);
-      const dateOfBirth = toDateInputValue(getTextValue(details, ["dateOfBirth", "date_of_birth", "birthdate", "dob"]));
-      const patch: Record<string, string> = {};
-      if (fullName && fullName !== application.personalInfo.fullName) { setValue("fullName", fullName); patch.fullName = fullName; }
-      if (dateOfBirth && dateOfBirth !== application.personalInfo.dateOfBirth) { setValue("dateOfBirth", dateOfBirth); patch.dateOfBirth = dateOfBirth; }
-      if (Object.keys(patch).length) patchPersonalInfo(patch);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [application.personalInfo.dateOfBirth, application.personalInfo.fullName, patchPersonalInfo, setValue]);
 
   const [banks, setBanks] = useState<Array<{ id: number; name: string; code: string }>>([]);
   const [selectedBank, setSelectedBank] = useState(application.disbursementAccount?.bankCode ?? "");
@@ -241,7 +216,6 @@ export default function PersonalInfoSection() {
             required
             type="date"
             error={errors.dateOfBirth?.message}
-            readOnly={Boolean(verifiedDob || identityVerified)}
             {...register("dateOfBirth")}
             onChange={(e) => { register("dateOfBirth").onChange(e); sync("dateOfBirth", e.target.value); }}
           />

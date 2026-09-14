@@ -418,7 +418,7 @@ export function compactApplicationForTransport(input: Record<string, unknown>): 
   const application = { ...input } as Record<string, any>;
   const documents = Object.fromEntries(Object.entries(application.documents ?? {}).map(([slot, document]) => {
     if (!document || typeof document !== "object") return [slot, document];
-    const { data: _data, ...metadata } = document as Record<string, unknown>;
+    const { data: _data, previewUrl: _previewUrl, ...metadata } = document as Record<string, unknown>;
     return [slot, metadata];
   }));
   return {
