@@ -10,7 +10,7 @@ export type OtpAction = "SIGNUP_VERIFY" | "LOGIN_STEP_UP" | "PAYOUT_ACCOUNT_CHAN
 export type ConsentType = "TERMS" | "PRIVACY" | "IDENTITY_VERIFICATION" | "CREDIT_REPORT" | "INVESTMENT_AGREEMENT" | "LOAN_AGREEMENT" | "ELECTRONIC_COMMUNICATIONS";
 export type NotificationChannel = "SMS" | "EMAIL" | "WHATSAPP" | "IN_APP";
 
-export interface SessionUser { id: string; email: string; fullName: string; phone: string; roles: Role[]; kycStatus?: KycStatus; createdAt: string; }
+export interface SessionUser { id: string; email: string; fullName: string; phone: string; dateOfBirth?: string; roles: Role[]; kycStatus?: KycStatus; createdAt: string; }
 export interface AuthResponse { ok: true; accessToken: string; user: SessionUser; }
 export type OtpChannel = "SMS" | "WHATSAPP" | "EMAIL";
 export interface RegistrationVerification { userId: string; challengeId: string; expiresAt: string; channel: OtpChannel; resendAvailableAt: string; resendSecondsRemaining: number; }
