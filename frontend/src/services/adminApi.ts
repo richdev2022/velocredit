@@ -4,12 +4,33 @@ import { config } from "../utils/config";
 const ADMIN_TOKEN_KEY = "velo:admin-token";
 const ADMIN_ROLE_KEY = "velo:admin-role";
 const API_URL = config.apiUrl;
+const REQUEST_TIMEOUT_MS = 30_000;
 export interface AdminApplicationSummary { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: string; applicantName: string; email: string; phone: string; loanAmount: number; totalRepayment: number; tenure: string; repaymentDate: string; dateCreated: string; dateSubmitted: string; dateUpdated: string; driveFolderUrl: string; }
 export interface AdminApplicationDetail { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: string; createdAt: string; updatedAt: string; submittedAt: string; personalInfo: any; businessInfo: any; businessRep: any; kyc: any; financial: any; loan: any; documents: any; customerSnapshot?: any; creditReportSnapshot?: any; }
 export interface AdminStats { counts: Record<string, number>; total: number; totalLoanAmount: number; totalRepayment: number; totalLoanDisbursed: number; realizedRevenue: number; awaitingRevenue: number; }
 
 function token() { return sessionStorage.getItem(ADMIN_TOKEN_KEY); }
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> { const headers = new Headers(options.headers); headers.set("Content-Type", "application/json"); if (token()) headers.set("Authorization", `Bearer ${token()}`); const response = await fetch(`${API_URL}${path}`, { ...options, headers }); const body = await response.json().catch(() => ({})); const invalidOrExpiredToken = typeof body.error === "string" && /invalid or expired token/i.test(body.error); if (response.status === 401 || invalidOrExpiredToken) { clearAdminToken(); window.dispatchEvent(new Event("velo:admin-unauthorized")); } if (!response.ok) throw new Error(body.error || body.message || "Admin API request failed"); return body as T; }
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  if (token()) headers.set("Authorization", `Bearer ${token()}`);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { ...options, headers, signal: options.signal ?? controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("The request timed out. Please try again.");
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+  const body = await response.json().catch(() => ({}));
+  const invalidOrExpiredToken = typeof body.error === "string" && /invalid or expired token/i.test(body.error);
+  if (response.status === 401 || invalidOrExpiredToken) { clearAdminToken(); window.dispatchEvent(new Event("velo:admin-unauthorized")); }
+  if (!response.ok) throw new Error(body.error || body.message || "Admin API request failed");
+  return body as T;
+}
 export function getAdminToken() { return token(); }
 export function setAdminToken(value: string) { sessionStorage.setItem(ADMIN_TOKEN_KEY, value); }
 export function getAdminRole() { return sessionStorage.getItem(ADMIN_ROLE_KEY); }

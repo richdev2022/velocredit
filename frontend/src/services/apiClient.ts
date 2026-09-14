@@ -24,6 +24,8 @@ export function getAccessToken(): string | null { return sessionStorage.getItem(
 export function clearAccessToken(): void { sessionStorage.removeItem(TOKEN_KEY); }
 export function setAccessToken(token: string): void { sessionStorage.setItem(TOKEN_KEY, token); }
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   const isFormData = options.body instanceof FormData;
@@ -31,7 +33,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const adminToken = sessionStorage.getItem("velo:admin-token");
   const token = path.startsWith("/api/v1/admin/") ? adminToken || getAccessToken() : getAccessToken() || adminToken;
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { ...options, headers, signal: options.signal ?? controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("The request timed out. Please try again.");
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
   const body = await response.json().catch(() => ({}));
   const invalidOrExpiredToken = typeof body.error === "string" && /invalid or expired token/i.test(body.error);
   if (response.status === 401 || invalidOrExpiredToken) {
@@ -90,7 +102,17 @@ export async function login(input: { email: string; password: string }): Promise
   const adminToken = sessionStorage.getItem("velo:admin-token");
   const token = getAccessToken() || adminToken;
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${API_URL}/api/v1/auth/login`, { method: "POST", body: JSON.stringify(input), headers });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}/api/v1/auth/login`, { method: "POST", body: JSON.stringify(input), headers, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("The request timed out. Please try again.");
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
   const body = await response.json().catch(() => ({}));
   if (response.ok) {
     if (body.requiresOtp) return body as LoginStepUpRequired;
