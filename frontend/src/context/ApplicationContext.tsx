@@ -241,14 +241,13 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     if (application) saveApplication(application, currentIndex);
   }, [application, currentIndex]);
 
-  async function triggerBackendSave(): Promise<void> {
-    if (!application) return;
-    if (application.status === "SUBMITTED") return;
+  async function triggerBackendSave(draft = application): Promise<void> {
+    if (!draft || draft.status === "SUBMITTED") return;
     setSaveState("saving");
     try {
-      saveApplication(application, currentIndexRef.current);
-      if (getAccessToken() && application.applicantType) {
-        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
+      saveApplication(draft, currentIndexRef.current);
+      if (getAccessToken() && draft.applicantType) {
+        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: draft as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
@@ -352,7 +351,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const setSectionIndex = useCallback((index: number) => {
     currentIndexRef.current = index;
     setCurrentIndex(index);
-    setApplication((prev) => (prev ? { ...prev, lastSectionIndex: index } : prev));
+    setApplication((prev) => (prev ? touch({ ...prev, lastSectionIndex: index }) : prev));
   }, []);
 
   const navigate = useCallback((index: number) => {
@@ -434,18 +433,29 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   // ----- save now (explicit) -----
   const saveNow = useCallback(async (): Promise<SaveDraftResponse | null> => {
     if (!application) return null;
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    const draft = { ...application, lastSectionIndex: currentIndexRef.current, updatedAt: new Date().toISOString() };
+    setApplication((current) => current?.applicationId === draft.applicationId ? draft : current);
+    if (!getAccessToken()) {
+      saveApplication(draft, currentIndexRef.current);
+      setSaveState("error");
+      return { ok: false, applicationId: draft.applicationId, status: draft.status, error: "Please sign in before saving your application." };
+    }
     setSaveState("saving");
     try {
-      saveApplication(application, currentIndexRef.current);
-      if (getAccessToken() && application.applicantType) {
-        await saveApplicationDraft({ applicationId: application.applicationId, applicantType: application.applicantType, data: application as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: application.updatedAt });
+      saveApplication(draft, currentIndexRef.current);
+      if (draft.applicantType) {
+        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: draft as unknown as Record<string, unknown>, lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
       }
       setSaveState("saved");
       setLastSavedAt(new Date().toISOString());
-      return { ok: true, applicationId: application.applicationId, status: application.status };
+      return { ok: true, applicationId: draft.applicationId, status: draft.status };
     } catch (e: any) {
       setSaveState("error");
-      return { ok: false, applicationId: application.applicationId, status: application.status, error: e?.message || "Save failed" };
+      return { ok: false, applicationId: draft.applicationId, status: draft.status, error: e?.message || "Save failed" };
     }
   }, [application]);
 
