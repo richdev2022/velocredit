@@ -76,8 +76,10 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     setSaving(true);
     setSaveMsg(null);
     try {
-      await adminDisburseLoan(app.applicationId);
-      setSaveMsg("Disbursement submitted to Flutterwave for confirmation.");
+      const response = await adminDisburseLoan(app.applicationId);
+      const nextStatus = (response.loan as { status?: string } | undefined)?.status;
+      if (nextStatus) setApp((current) => current ? { ...current, status: nextStatus, loan: { ...current.loan, ...(response.loan as object) } } : current);
+      setSaveMsg(nextStatus === "DISBURSED" ? "Loan disbursed successfully." : "Disbursement submitted to Flutterwave for confirmation.");
     } catch (err: any) {
       setSaveMsg(err?.message || "Unable to initiate disbursement.");
     } finally {
