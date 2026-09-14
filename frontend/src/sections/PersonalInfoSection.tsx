@@ -22,6 +22,12 @@ function getTextValue(source: Record<string, unknown>, keys: string[]): string {
   return keys.map((key) => source[key]).find((value): value is string => typeof value === "string" && Boolean(value.trim()))?.trim() ?? "";
 }
 
+function getVerifiedName(source: Record<string, unknown>): string {
+  const fullName = getTextValue(source, ["fullName", "full_name", "name"]);
+  if (fullName) return fullName;
+  return ["firstName", "middleName", "lastName"].map((key) => getTextValue(source, [key])).filter(Boolean).join(" ");
+}
+
 function toDateInputValue(value: string): string {
   const isoDate = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (isoDate) return `${isoDate[1]}-${isoDate[2]}-${isoDate[3]}`;
@@ -86,7 +92,7 @@ export default function PersonalInfoSection() {
     void getMyKyc().then((kyc) => {
       if (cancelled || !kyc.ok) return;
       const details = { ...(kyc.verifiedDetails ?? {}), ...(kyc.normalizedFields?.nin ?? {}), ...(kyc.normalizedFields?.bvn ?? {}), ...(kyc.profilePrefill ?? {}) };
-      const fullName = getTextValue(details, ["fullName", "full_name", "name"]);
+      const fullName = getVerifiedName(details);
       const dateOfBirth = toDateInputValue(getTextValue(details, ["dateOfBirth", "date_of_birth", "birthdate", "dob"]));
       const patch: Record<string, string> = {};
       if (fullName && fullName !== application.personalInfo.fullName) { setValue("fullName", fullName); patch.fullName = fullName; }

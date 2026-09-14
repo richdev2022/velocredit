@@ -378,6 +378,26 @@ const ninVerifySchema = z.object({ nin: z.string().regex(/^\d{11}$/, "NIN must b
 const payoutAccountSchema = z.object({ accountName: z.string().min(2), accountNumber: z.string().regex(/^\d{10}$/, "Account number must be 10 digits"), bankCode: z.string().min(2), bankName: z.string().optional() });
 const createInvestmentSchema = z.object({ amountNaira: z.number().positive().finite(), planId: z.string().min(1).optional(), tenureDays: z.number().int().positive().default(90), annualRatePercent: z.number().nonnegative().default(12) });
 const earlyLiquiditySchema = z.object({ otpChallengeId: z.string().optional(), otpCode: z.string().optional() });
+function compactApplicationPayload(input: Record<string, unknown>): Record<string, unknown> {
+  const compactDocuments = Object.fromEntries(
+    Object.entries((input.documents && typeof input.documents === "object" ? input.documents : {}) as Record<string, unknown>).map(([slot, value]) => {
+      if (!value || typeof value !== "object") return [slot, value];
+      const { data: _data, ...metadata } = value as Record<string, unknown>;
+      return [slot, metadata];
+    }),
+  );
+  const sourceKyc = input.kyc && typeof input.kyc === "object" ? input.kyc as Record<string, unknown> : {};
+  const { verifiedDetails: _verifiedDetails, selfieImageData: _selfieImageData, identityPhotoUrl: _identityPhotoUrl, ...kyc } = sourceKyc;
+  return {
+    ...input,
+    kyc,
+    documents: compactDocuments,
+    agreement: input.agreement && typeof input.agreement === "object"
+      ? { ...(input.agreement as Record<string, unknown>), generatedHtml: null }
+      : input.agreement,
+  };
+}
+
 const loanApplicationSchema = z.object({
   applicationId: z.string().optional(),
   applicantType: z.enum(["PERSONAL", "BUSINESS"]).default("PERSONAL"),
@@ -1296,6 +1316,9 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     if (source[key] != null) profilePrefill[key] = source[key];
   }
   const proofOfAddressUrl = userDocs.find((d) => d.documentType === "PROOF_OF_ADDRESS")?.providerFileId;
+  const safeVerificationEvents = identityVerificationEvents
+    .filter((event) => event.kycCaseId === kyc.id)
+    .map(({ rawResponse: _rawResponse, ...event }) => event);
   res.json({
     ok: true,
     status: kyc.status,
@@ -1306,17 +1329,14 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     submittedAt: kyc.submittedAt,
     rejectionReason: kyc.rejectionReason,
     documents: userDocs,
-    verificationEvents: identityVerificationEvents.filter((e) => e.kycCaseId === kyc.id),
-    identityPhoto,
-    selfieImageData: typeof kyc.selfieImageData === "string" ? kyc.selfieImageData : undefined,
+    verificationEvents: safeVerificationEvents,
+    selfieImageData: undefined,
     livenessStatus: kyc.livenessStatus,
     livenessManualUploaded: kyc.livenessManualUploaded ?? false,
     verifiedDetails: Object.keys(source).length ? source : undefined,
     normalizedFields: Object.keys(normalizedFields).length ? normalizedFields : undefined,
     profilePrefill: Object.keys(profilePrefill).length ? profilePrefill : undefined,
     proofOfAddressUrl,
-    bvn: typeof kyc.bvn === "string" ? kyc.bvn : undefined,
-    nin: typeof kyc.nin === "string" ? kyc.nin : undefined,
   });
 });
 
@@ -2404,14 +2424,14 @@ router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), 
       return;
     }
     existing.applicantType = parsed.data.applicantType;
-    existing.data = parsed.data.data;
+    existing.data = compactApplicationPayload(parsed.data.data);
     existing.lastSectionIndex = parsed.data.lastSectionIndex;
     existing.updatedAt = parsed.data.updatedAt;
     if (!await persistMutation(res)) return;
     res.json({ ok: true, draft: existing });
     return;
   }
-  const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now };
+  const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, data: compactApplicationPayload(parsed.data.data), createdAt: now };
   applicationDrafts.push(draft);
   if (!await persistMutation(res)) return;
   res.status(201).json({ ok: true, draft });
@@ -2429,7 +2449,7 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const input = parsed.data;
+  const input = { ...parsed.data, ...compactApplicationPayload(parsed.data) };
   const dbBorrowing = await dbHasUnresolvedBorrowing(req.user!.id);
   const memBorrowing = hasUnresolvedBorrowing(req.user!.id);
   if (dbBorrowing !== null && dbBorrowing !== memBorrowing) {
