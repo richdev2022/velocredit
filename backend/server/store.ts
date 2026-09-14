@@ -1203,7 +1203,7 @@ export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "
     settings.investorWithdrawalFeeFlatMinor = Math.max(0, Number(updates.investorWithdrawalFeeFlatMinor));
   }
   if (updates.investorWithdrawalMinAmountNaira !== undefined) {
-    settings.investorWithdrawalMinAmountNaira = Math.max(0, Number(updates.investorWithdrawalMinAmountNaira));
+    settings.investorWithdrawalMinAmountNaira = Math.max(200, Number(updates.investorWithdrawalMinAmountNaira));
   }
   if (updates.investorEarningRateOverrides !== undefined) {
     settings.investorEarningRateOverrides = { ...updates.investorEarningRateOverrides };
