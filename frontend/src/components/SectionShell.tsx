@@ -19,8 +19,8 @@ interface SectionShellProps {
   skippable?: boolean;
   /** Disable Save & Continue until the form is valid */
   canContinue: boolean;
-  /** Override what Save & Continue does. Defaults to: mark completed, navigate next. */
-  onContinue?: () => void;
+  /** Commit section values. Return a section index to navigate there, or false to stay on the current section. */
+  onContinue?: () => void | number | false | Promise<void | number | false>;
   /** Override the Continue button label. Defaults to "Save & Continue". Use "Submit Application" for the final review step. */
   continueLabel?: string;
   /** If true, hide the secondary "Save & Exit" button row (used on final review screen). */
@@ -37,8 +37,8 @@ export default function SectionShell({
   continueLabel,
   hideSaveExit = false,
 }: SectionShellProps) {
-  const navigate = useNavigate();
-  const { sections, currentIndex, saveState, lastSavedAt, markSectionStatus, saveNow, next, prev } = useApplication();
+  const routerNavigate = useNavigate();
+  const { sections, currentIndex, saveState, lastSavedAt, markSectionStatus, saveNow, navigate: navigateSection, next, prev } = useApplication();
   const [continueBusy, setContinueBusy] = useState(false);
   const [saveError, setSaveError] = useState("");
 
@@ -47,16 +47,18 @@ export default function SectionShell({
     setContinueBusy(true);
     setSaveError("");
     try {
+      const destination = onContinue ? await onContinue() : undefined;
       const result = await saveNow();
       if (!result?.ok) {
         setSaveError(result?.error || "Your progress could not be saved. Please try again.");
         return;
       }
-      if (onContinue) {
-        onContinue();
-      } else {
-        next();
+      if (destination === false) return;
+      if (typeof destination === "number") {
+        navigateSection(destination);
+        return;
       }
+      next();
     } finally {
       setContinueBusy(false);
     }
@@ -69,7 +71,7 @@ export default function SectionShell({
       setSaveError(result?.error || "Your progress could not be saved. Please try again.");
       return;
     }
-    navigate("/apply/dashboard");
+    routerNavigate("/apply/dashboard");
   }
 
   function handleSkip() {
@@ -89,7 +91,7 @@ export default function SectionShell({
       setSaveError(result?.error || "Your progress could not be saved. Please try again.");
       return;
     }
-    navigate("/apply/dashboard");
+    routerNavigate("/apply/dashboard");
   }
 
   return (

@@ -147,6 +147,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [sectionStatusOverrides, setSectionStatusOverrides] = useState<Partial<Record<SectionKey, SectionStatus>>>({});
 
+  const applicationRef = useRef<ApplicationData | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextAutoSave = useRef(false);
   const currentIndexRef = useRef(0);
@@ -196,6 +197,10 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     })();
     return () => { cancelled = true; };
   }, [user]);
+
+  useEffect(() => {
+    applicationRef.current = application;
+  }, [application]);
 
   // ----- derived: calculation -----
   const calculation = useMemo<LoanCalculation | null>(() => {
@@ -282,6 +287,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       submittedAt: null,
     };
     fresh.calculation = calculateLoan(fresh.loanRequest.amount, fresh.loanRequest.tenure, { loanType: type });
+    applicationRef.current = fresh;
     setApplication(fresh);
     saveApplication(fresh);
     setCurrentIndex(0);
@@ -306,6 +312,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       return { ok: true, found: false, message: "Draft was not found in local storage." };
     }
     const resumed = normalizeApplicationData(app);
+    applicationRef.current = resumed;
     setApplication(resumed);
     const resumeIndex = getSavedSectionIndex(resumed);
     setCurrentIndex(resumeIndex);
@@ -320,6 +327,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     const app = supplied || loadApplication(id);
     if (app) {
       const resumed = normalizeApplicationData(app);
+      applicationRef.current = resumed;
       setApplication(resumed);
       const backendIdx = suppliedSectionIndex != null ? Number(suppliedSectionIndex) : Number(resumed.lastSectionIndex);
       const resumeIndex =
@@ -340,6 +348,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       deleteApplication(application.applicationId);
       if (getAccessToken()) void deleteApplicationDraft(application.applicationId).catch(() => {});
     }
+    applicationRef.current = null;
     setApplication(null);
     setCurrentIndex(0);
     setSaveState("idle");
@@ -351,7 +360,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const setSectionIndex = useCallback((index: number) => {
     currentIndexRef.current = index;
     setCurrentIndex(index);
-    setApplication((prev) => (prev ? touch({ ...prev, lastSectionIndex: index }) : prev));
+    replaceApplication((current) => touch({ ...current, lastSectionIndex: index }));
   }, []);
 
   const navigate = useCallback((index: number) => {
@@ -377,53 +386,60 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     return { ...prev, updatedAt: new Date().toISOString() };
   }
 
+  function replaceApplication(transform: (current: ApplicationData) => ApplicationData): void {
+    const current = applicationRef.current;
+    if (!current) return;
+    const next = transform(current);
+    applicationRef.current = next;
+    setApplication(next);
+  }
+
   const update = useCallback<ApplicationContextValue["update"]>((key, value) => {
-    setApplication((prev) => (prev ? touch({ ...prev, [key]: value }) : prev));
+    replaceApplication((current) => touch({ ...current, [key]: value }));
   }, []);
 
   const patchPersonalInfo: ApplicationContextValue["patchPersonalInfo"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, personalInfo: { ...prev.personalInfo, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, personalInfo: { ...current.personalInfo, ...patch } }));
   }, []);
 
   const patchDisbursementAccount: ApplicationContextValue["patchDisbursementAccount"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, disbursementAccount: { ...prev.disbursementAccount, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, disbursementAccount: { ...current.disbursementAccount, ...patch } }));
   }, []);
 
   const patchPersonalFinancial: ApplicationContextValue["patchPersonalFinancial"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, personalFinancial: { ...prev.personalFinancial, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, personalFinancial: { ...current.personalFinancial, ...patch } }));
   }, []);
 
   const patchBusinessInfo: ApplicationContextValue["patchBusinessInfo"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, businessInfo: { ...prev.businessInfo, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, businessInfo: { ...current.businessInfo, ...patch } }));
   }, []);
 
   const patchBusinessRep: ApplicationContextValue["patchBusinessRep"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, businessRep: { ...prev.businessRep, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, businessRep: { ...current.businessRep, ...patch } }));
   }, []);
 
   const patchBusinessFinancial: ApplicationContextValue["patchBusinessFinancial"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, businessFinancial: { ...prev.businessFinancial, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, businessFinancial: { ...current.businessFinancial, ...patch } }));
   }, []);
 
   const patchKyc: ApplicationContextValue["patchKyc"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, kyc: { ...prev.kyc, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, kyc: { ...current.kyc, ...patch } }));
   }, []);
 
   const patchLoanRequest: ApplicationContextValue["patchLoanRequest"] = useCallback((patch) => {
-    setApplication((prev) => {
-      if (!prev) return prev;
-      const nextLoan = { ...prev.loanRequest, ...patch };
-      const nextCalc = calculateLoan(nextLoan.amount, nextLoan.tenure, { loanType: prev.applicantType || "PERSONAL" });
-      return touch({ ...prev, loanRequest: nextLoan, calculation: nextCalc });
+    replaceApplication((current) => {
+      const nextLoan = { ...current.loanRequest, ...patch };
+      const nextCalc = calculateLoan(nextLoan.amount, nextLoan.tenure, { loanType: current.applicantType || "PERSONAL" });
+      return touch({ ...current, loanRequest: nextLoan, calculation: nextCalc });
     });
   }, []);
 
   const patchAgreement: ApplicationContextValue["patchAgreement"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, agreement: { ...prev.agreement, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, agreement: { ...current.agreement, ...patch } }));
   }, []);
 
   const patchDocuments: ApplicationContextValue["patchDocuments"] = useCallback((patch) => {
-    setApplication((prev) => prev ? touch({ ...prev, documents: { ...prev.documents, ...patch } }) : prev);
+    replaceApplication((current) => touch({ ...current, documents: { ...current.documents, ...patch } }));
   }, []);
 
   const markSectionStatus = useCallback((key: SectionKey, status: SectionStatus) => {
@@ -432,13 +448,15 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
 
   // ----- save now (explicit) -----
   const saveNow = useCallback(async (): Promise<SaveDraftResponse | null> => {
-    if (!application) return null;
+    const current = applicationRef.current ?? application;
+    if (!current) return null;
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
-    const draft = { ...application, lastSectionIndex: currentIndexRef.current, updatedAt: new Date().toISOString() };
-    setApplication((current) => current?.applicationId === draft.applicationId ? draft : current);
+    const draft = { ...current, lastSectionIndex: currentIndexRef.current, updatedAt: new Date().toISOString() };
+    applicationRef.current = draft;
+    setApplication((existing) => existing?.applicationId === draft.applicationId ? draft : existing);
     if (!getAccessToken()) {
       saveApplication(draft, currentIndexRef.current);
       setSaveState("error");
