@@ -33,7 +33,7 @@ import {
   findDraftsByEmailOrPhone,
   getSavedSectionIndex,
 } from "../utils/storage";
-import { deleteApplicationDraft, getAccessToken, getApplicationDraft, saveApplicationDraft, submitBorrowerApplication } from "../services/apiClient";
+import { deleteApplicationDraft, getAccessToken, submitBorrowerApplication } from "../services/apiClient";
 import { useAuth } from "./AuthContext";
 import type {
   LookupDraftResponse,
@@ -45,13 +45,11 @@ import type {
 // Constants
 // ---------------------------------------------------------------------------
 
-const AUTOSAVE_DEBOUNCE_MS = 1500;
-
 function compactApplicationData(application: ApplicationData): Record<string, unknown> {
   const documents = Object.fromEntries(
     Object.entries(application.documents ?? {}).map(([slot, document]) => {
       if (!document) return [slot, document];
-      const { data: _data, ...metadata } = document as unknown as Record<string, unknown>;
+      const { data: _data, previewUrl: _previewUrl, ...metadata } = document as unknown as Record<string, unknown>;
       return [slot, metadata];
     }),
   );
@@ -185,18 +183,6 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       let savedIndex = 0;
       const match = findDraftsByEmailOrPhone(user.email || "", user.phone || "").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       const local = match ? loadApplication(match.applicationId) : null;
-      try {
-        const remote = await getApplicationDraft();
-        if (remote.draft) {
-          const remoteData = normalizeApplicationData(remote.draft.data as unknown as ApplicationData);
-          if (!local || new Date(remote.draft.updatedAt).getTime() >= new Date(local.updatedAt).getTime()) {
-            resumed = remoteData;
-            savedIndex = Number(remote.draft.lastSectionIndex) || 0;
-          }
-        }
-      } catch (_error) {
-        // Fall back to a draft previously saved in this browser.
-      }
       if (!resumed && local) {
         resumed = normalizeApplicationData(local);
         savedIndex = getSavedSectionIndex(resumed);
@@ -247,36 +233,12 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     if (!application) return;
     saveApplication(application, currentIndexRef.current);
 
-    // Debounced autosave to backend
-    if (skipNextAutoSave.current) {
-      skipNextAutoSave.current = false;
-      return;
-    }
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      void triggerBackendSave();
-    }, AUTOSAVE_DEBOUNCE_MS);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    skipNextAutoSave.current = false;
   }, [application]);
 
   useEffect(() => {
     if (application) saveApplication(application, currentIndex);
   }, [application, currentIndex]);
-
-  async function triggerBackendSave(draft = application): Promise<void> {
-    if (!draft || draft.status === "SUBMITTED") return;
-    setSaveState("saving");
-    try {
-      saveApplication(draft, currentIndexRef.current);
-      if (getAccessToken() && draft.applicantType) {
-        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: compactApplicationData(draft), lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
-      }
-      setSaveState("saved");
-      setLastSavedAt(new Date().toISOString());
-    } catch {
-      setSaveState("error");
-    }
-  }
 
   // ----- lifecycle: start new -----
   const startNewApplication = useCallback((type: "PERSONAL" | "BUSINESS"): ApplicationData => {
@@ -474,24 +436,10 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     const draft = { ...current, lastSectionIndex: currentIndexRef.current, updatedAt: new Date().toISOString() };
     applicationRef.current = draft;
     setApplication((existing) => existing?.applicationId === draft.applicationId ? draft : existing);
-    if (!getAccessToken()) {
-      saveApplication(draft, currentIndexRef.current);
-      setSaveState("error");
-      return { ok: false, applicationId: draft.applicationId, status: draft.status, error: "Please sign in before saving your application." };
-    }
-    setSaveState("saving");
-    try {
-      saveApplication(draft, currentIndexRef.current);
-      if (draft.applicantType) {
-        await saveApplicationDraft({ applicationId: draft.applicationId, applicantType: draft.applicantType, data: compactApplicationData(draft), lastSectionIndex: currentIndexRef.current, updatedAt: draft.updatedAt });
-      }
-      setSaveState("saved");
-      setLastSavedAt(new Date().toISOString());
-      return { ok: true, applicationId: draft.applicationId, status: draft.status };
-    } catch (e: any) {
-      setSaveState("error");
-      return { ok: false, applicationId: draft.applicationId, status: draft.status, error: e?.message || "Save failed" };
-    }
+    saveApplication(draft, currentIndexRef.current);
+    setSaveState("saved");
+    setLastSavedAt(new Date().toISOString());
+    return { ok: true, applicationId: draft.applicationId, status: draft.status };
   }, [application]);
 
   // ----- submit -----
