@@ -131,6 +131,47 @@ export class OtpRateLimitError extends Error {
   }
 }
 
+async function deliverOtp(input: {
+  userId: string;
+  action: OtpAction;
+  phone?: string;
+  email?: string;
+  channel: "SMS" | "WHATSAPP" | "EMAIL";
+  code: string;
+  smsText: string;
+  ttlMinutes: number;
+  createdAt: Date;
+}): Promise<void> {
+  const { userId, action, phone, email, channel, code, smsText, ttlMinutes, createdAt } = input;
+  if (phone && channel === "SMS") {
+    try {
+      const result = await sendOtpSms({ recipients: phone, message: smsText, otpLength: code.length, otpDurationMinutes: ttlMinutes, otpAttempts: Math.max(1, Math.min(6, Math.round(env.OTP_MAX_ATTEMPTS))), channel: "sms" });
+      notifications.push({ id: randomUUID(), userId, channel: "SMS", kind: "OTP", recipientMasked: maskPhone(phone), status: result.sent ? "SENT" : result.error ? "FAILED" : "NOT_CONFIGURED", providerMessageId: result.providerMessageId, error: result.error, retryCount: 0, createdAt: createdAt.toISOString(), sentAt: result.sent ? createdAt.toISOString() : undefined, failedAt: result.error ? createdAt.toISOString() : undefined });
+      if (!result.sent && env.NODE_ENV !== "production") console.warn(`[createOtpChallenge] SMS send failed for action=${action} user=${userId}: ${result.error || "unknown"}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notifications.push({ id: randomUUID(), userId, channel: "SMS", kind: "OTP", recipientMasked: maskPhone(phone), status: "FAILED", error: message, retryCount: 0, createdAt: createdAt.toISOString(), failedAt: createdAt.toISOString() });
+    }
+  }
+  if (phone && channel === "WHATSAPP") {
+    try {
+      const result = await sendWhatsAppText({ to: phone, text: smsText });
+      notifications.push({ id: randomUUID(), userId, channel: "WHATSAPP", kind: "OTP", recipientMasked: maskPhoneForWa(phone), status: result.sent ? "SENT" : result.error ? "FAILED" : "NOT_CONFIGURED", providerMessageId: result.providerMessageId, error: result.error, retryCount: 0, createdAt: createdAt.toISOString(), sentAt: result.sent ? createdAt.toISOString() : undefined, failedAt: result.error ? createdAt.toISOString() : undefined });
+    } catch {
+      // The challenge remains usable when the delivery provider is unavailable.
+    }
+  }
+  if (email && channel === "EMAIL") {
+    try {
+      const result = await sendEmail({ to: email, name: users.find((user) => user.id === userId)?.fullName ?? "User", subject: `Velo OTP — ${action.replace(/_/g, " ")}`, html: `<div style="font-family:Arial,sans-serif"><h2>Velo One-Time Code</h2><p>Code: <strong style="font-size:28px">${code}</strong></p><p>Use to ${action.replace(/_/g, " ").toLowerCase()}. Expires in ${ttlMinutes} minutes.</p><p>Never share this code with anyone.</p></div>` });
+      notifications.push({ id: randomUUID(), userId, channel: "EMAIL", kind: "OTP", subject: `Velo OTP — ${action.replace(/_/g, " ")}`, recipientMasked: email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"), status: result.sent ? "SENT" : "NOT_CONFIGURED", providerMessageId: result.providerReference, retryCount: 0, createdAt: createdAt.toISOString(), sentAt: result.sent ? createdAt.toISOString() : undefined });
+    } catch {
+      // The challenge remains usable when the delivery provider is unavailable.
+    }
+  }
+  if (env.NODE_ENV !== "production") console.log(`[DEV OTP] user=${userId} action=${action} code=${code}`);
+}
+
 export async function createOtpChallenge(
   userId: string,
   action: OtpAction,
@@ -166,101 +207,7 @@ export async function createOtpChallenge(
   otpChallenges.push(challenge);
   const ttlMinutes = Math.max(1, Math.round(env.OTP_TTL_SECONDS / 60));
   const smsText = formatOtpMessage(code, action, ttlMinutes);
-  if (phone && channel === "SMS") {
-    try {
-      const result = await sendOtpSms({
-        recipients: phone,
-        message: smsText,
-        otpLength: code.length,
-        otpDurationMinutes: ttlMinutes,
-        otpAttempts: Math.max(1, Math.min(6, Math.round(env.OTP_MAX_ATTEMPTS))),
-        channel: "sms",
-      });
-      notifications.push({
-        id: randomUUID(),
-        userId,
-        channel: "SMS",
-        kind: "OTP",
-        recipientMasked: maskPhone(phone),
-        status: result.sent ? "SENT" : result.error ? "FAILED" : "NOT_CONFIGURED",
-        providerMessageId: result.providerMessageId,
-        error: result.error,
-        retryCount: 0,
-        createdAt: now.toISOString(),
-        sentAt: result.sent ? now.toISOString() : undefined,
-        failedAt: result.error ? now.toISOString() : undefined,
-      });
-      if (!result.sent && env.NODE_ENV !== "production") {
-        console.warn(`[createOtpChallenge] SMS send failed for action=${action} user=${userId}: ${result.error || "unknown"}`);
-      }
-    } catch (_e) {
-      const msg = _e instanceof Error ? _e.message : String(_e);
-      if (env.NODE_ENV !== "production") {
-        console.warn(`[createOtpChallenge] SMS send threw for action=${action} user=${userId}: ${msg}`);
-      }
-      notifications.push({
-        id: randomUUID(),
-        userId,
-        channel: "SMS",
-        kind: "OTP",
-        recipientMasked: maskPhone(phone),
-        status: "FAILED",
-        error: msg,
-        retryCount: 0,
-        createdAt: now.toISOString(),
-        failedAt: now.toISOString(),
-      });
-    }
-  }
-  if (phone && channel === "WHATSAPP") {
-    try {
-      const result = await sendWhatsAppText({ to: phone, text: smsText });
-      notifications.push({
-        id: randomUUID(),
-        userId,
-        channel: "WHATSAPP",
-        kind: "OTP",
-        recipientMasked: maskPhoneForWa(phone),
-        status: result.sent ? "SENT" : result.error ? "FAILED" : "NOT_CONFIGURED",
-        providerMessageId: result.providerMessageId,
-        error: result.error,
-        retryCount: 0,
-        createdAt: now.toISOString(),
-        sentAt: result.sent ? now.toISOString() : undefined,
-        failedAt: result.error ? now.toISOString() : undefined,
-      });
-    } catch {
-      // Still return the challenge ID so local development can use the logged OTP.
-    }
-  }
-  if (email && channel === "EMAIL") {
-    try {
-      const result = await sendEmail({
-        to: email,
-        name: users.find((u) => u.id === userId)?.fullName ?? "User",
-        subject: `Velo OTP — ${action.replace(/_/g, " ")}`,
-        html: `<div style="font-family:Arial,sans-serif"><h2>Velo One-Time Code</h2><p>Code: <strong style="font-size:28px">${code}</strong></p><p>Use to ${action.replace(/_/g, " ").toLowerCase()}. Expires in ${ttlMinutes} minutes.</p><p>Never share this code with anyone.</p></div>`,
-      });
-      notifications.push({
-        id: randomUUID(),
-        userId,
-        channel: "EMAIL",
-        kind: "OTP",
-        subject: `Velo OTP — ${action.replace(/_/g, " ")}`,
-        recipientMasked: email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
-        status: result.sent ? "SENT" : "NOT_CONFIGURED",
-        providerMessageId: result.providerReference,
-        retryCount: 0,
-        createdAt: now.toISOString(),
-        sentAt: result.sent ? now.toISOString() : undefined,
-      });
-    } catch {
-      // ignore
-    }
-  }
-  if (env.NODE_ENV !== "production") {
-    console.log(`[DEV OTP] user=${userId} action=${action} code=${code}`);
-  }
+  void deliverOtp({ userId, action, phone, email, channel, code, smsText, ttlMinutes, createdAt: now });
   const resendAvailableAt = new Date(now.getTime() + env.OTP_RESEND_COOLDOWN_SECONDS * 1000).toISOString();
   return {
     id: challenge.id,

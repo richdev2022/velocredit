@@ -643,7 +643,6 @@ router.post("/auth/admin/login", async (req, res) => {
   try {
     const challenge = await createOtpChallenge(admin.id, "LOGIN_STEP_UP", "", admin.email, parsed.data.channel);
     auditLogs.push({ id: randomUUID(), userId: admin.id, action: "ADMIN_LOGIN_INITIATED", resourceType: "AUTH", resourceId: admin.email, metadata: { channel: parsed.data.channel }, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
-    if (!(await persistMutation(res))) return;
     res.json({
       ok: true,
       requiresOtp: true,
@@ -2408,20 +2407,17 @@ router.put("/borrower/application-draft", requireAuth, requireRole("BORROWER"), 
     existing.data = parsed.data.data;
     existing.lastSectionIndex = parsed.data.lastSectionIndex;
     existing.updatedAt = parsed.data.updatedAt;
-    if (!(await persistMutation(res))) return;
     res.json({ ok: true, draft: existing });
     return;
   }
   const draft = { id: randomUUID(), userId: req.user!.id, ...parsed.data, createdAt: now };
   applicationDrafts.push(draft);
-  if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, draft });
 });
 
 router.delete("/borrower/application-draft/:applicationId", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const index = applicationDrafts.findIndex((draft) => draft.userId === req.user!.id && draft.applicationId === req.params.applicationId);
   if (index >= 0) applicationDrafts.splice(index, 1);
-  if (!(await persistMutation(res))) return;
   res.json({ ok: true });
 });
 
