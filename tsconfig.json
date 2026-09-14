@@ -28,6 +28,10 @@
     "frontend/src",
     "backend/**/*.ts"
   ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ],
   "references": [
     {
       "path": "./tsconfig.node.json"

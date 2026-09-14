@@ -18,6 +18,7 @@ import {
   type OtpAction,
   type User,
   type AdminPermission,
+  type KycStatus,
   documents,
   identityVerificationEvents,
   indexes,
@@ -358,9 +359,9 @@ export function markKycChecklistComplete(userId: string): void {
       if (!kyc.submittedAt) kyc.submittedAt = now;
     }
   } else if (anyDone) {
-    if (!submittedStatuses.includes(kyc.status)) kyc.status = "IN_PROGRESS";
+    if (!(submittedStatuses as readonly KycStatus[]).includes(kyc.status)) kyc.status = "IN_PROGRESS";
   } else {
-    if (!submittedStatuses.includes(kyc.status) && kyc.status !== "NOT_STARTED") kyc.status = "IN_PROGRESS";
+    if (!(submittedStatuses as readonly KycStatus[]).includes(kyc.status) && kyc.status !== "NOT_STARTED") kyc.status = "IN_PROGRESS";
   }
   kyc.updatedAt = now;
   const user = users.find((u) => u.id === userId);

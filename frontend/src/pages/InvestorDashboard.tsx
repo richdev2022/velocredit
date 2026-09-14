@@ -838,6 +838,7 @@ export default function InvestorDashboard() {
               verifyIdentityWithChannel={verifyIdentityWithChannel}
               otpPickerState={otpPickerState}
               setOtpPickerState={setOtpPickerState}
+              uploadSelfieFallback={uploadSelfieFallback}
             />
           )}
 
@@ -1409,7 +1410,7 @@ function FileIcon() {
 }
 
 function InvestorKyc(props: any) {
-  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, uploadSignature, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState } = props;
+  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, uploadSignature, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState, uploadSelfieFallback } = props;
   const [error, setError] = useState("");
   useEffect(() => { setError(kycError); }, [kycError]);
 

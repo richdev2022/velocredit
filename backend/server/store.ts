@@ -8,7 +8,7 @@ import { rebuildFromDatabase } from "./rebuildFromDatabase.js";
 export type Role = "INVESTOR" | "BORROWER" | "ADMIN" | "LOAN_MANAGER";
 export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loans", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
 export type AdminPermission = typeof ADMIN_PERMISSIONS[number];
-export type KycStatus = "NOT_STARTED" | "IN_PROGRESS" | "PENDING_VERIFICATION" | "ACTION_REQUIRED" | "VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED" | "EXPIRED" | "SUSPENDED";
+export type KycStatus = "NOT_STARTED" | "IN_PROGRESS" | "PENDING_VERIFICATION" | "ACTION_REQUIRED" | "VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED" | "EXPIRED" | "SUSPENDED" | "REVIEWING";
 export type LoanStatus = "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "KYC_PENDING" | "UNDER_REVIEW" | "MORE_INFORMATION_REQUIRED" | "APPROVED" | "REJECTED" | "DISBURSEMENT_PENDING" | "DISBURSED" | "ACTIVE" | "PAST_DUE" | "DEFAULTED" | "REPAID" | "CANCELLED" | "WRITTEN_OFF";
 export type InvestmentStatus = "PENDING" | "ACTIVE" | "LIQUIDITY_REQUESTED" | "LIQUIDITY_APPROVED" | "MATURITY_PENDING" | "MATURED" | "PAYOUT_PENDING" | "PAID_OUT" | "CANCELLED" | "REJECTED" | "PAYOUT_FAILED" | "PAYOUT_ACCOUNT_REQUIRED";
 export type PaymentStatus = "PENDING_PROVIDER_CONFIRMATION" | "SUCCESSFUL" | "FAILED" | "PROVIDER_NOT_CONFIGURED" | "CANCELLED" | "DISPUTED" | "REVERSED";
@@ -99,7 +99,7 @@ export interface WalletTransaction {
 }
 
 export type KycCategory = "BVN" | "NIN" | "LIVENESS" | "ADDRESS" | "PASSPORT" | "SIGNATURE";
-export type KycCategoryStatus = "NOT_STARTED" | "PENDING" | "VERIFIED" | "REJECTED";
+export type KycCategoryStatus = "NOT_STARTED" | "PENDING" | "VERIFIED" | "REJECTED" | "PENDING_REVIEW";
 export interface KycCategoryResult {
   status: KycCategoryStatus;
   reason?: string;
@@ -158,7 +158,7 @@ export interface Document {
   applicationId?: string;
   documentSlot?: string;
   note?: string;
-  documentType: "PASSPORT_PHOTO" | "PROOF_OF_ADDRESS" | "SIGNATURE" | "BVN_SLIP" | "NIN_SLIP" | "BUSINESS_REGISTRATION" | "ID_CARD_FRONT" | "ID_CARD_BACK";
+  documentType: "PASSPORT_PHOTO" | "PROOF_OF_ADDRESS" | "SIGNATURE" | "BVN_SLIP" | "NIN_SLIP" | "BUSINESS_REGISTRATION" | "ID_CARD_FRONT" | "ID_CARD_BACK" | "SELFIE_PHOTO";
   provider: "google_drive" | "s3" | "cloudinary" | "manual";
   providerFileId: string;
   fileName?: string;

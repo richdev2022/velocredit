@@ -238,6 +238,7 @@ export interface KycResponse {
   verifiedAt?: string;
   rejectedReason?: string;
   rejectionReason?: string;
+  message?: string;
   documents: unknown[];
   verificationEvents: unknown[];
 }
