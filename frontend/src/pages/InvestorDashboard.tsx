@@ -91,6 +91,13 @@ export default function InvestorDashboard() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [toast, setToast] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  function showToast(text: string, type: "success" | "error" | "info" = "success") {
+    setToast({ text, type });
+    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 5000);
+  }
   const [switchingBusy, setSwitchingBusy] = useState(false);
   const [switchMsg, setSwitchMsg] = useState("");
   const [kyc, setKyc] = useState(null as KycData | null);
@@ -289,7 +296,8 @@ export default function InvestorDashboard() {
           identityPhoto: normalizedPhoto || current?.identityPhoto,
         }));
         await refreshUser();
-        setMessage(`${type} verification completed successfully.`);
+        const msg = `${type} verification completed successfully.`;
+        setMessage(msg); showToast(msg, "success");
         window.setTimeout(() => {
           setOtpMethodPickerFor(null);
           setOtpPickerState({ phase: "idle" });
@@ -298,12 +306,14 @@ export default function InvestorDashboard() {
       } else {
         const status = (response as any).error || "Verification failed";
         setKycError(status);
+        showToast(status, "error");
         setOtpPickerState({ phase: "error", channel, message: status });
         setKycBusy("");
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : `Unable to verify ${type}`;
       setKycError(msg);
+      showToast(msg, "error");
       setOtpPickerState({ phase: "error", channel, message: msg });
       setKycBusy("");
     }
@@ -316,13 +326,15 @@ export default function InvestorDashboard() {
       const confirmed = await confirmKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, code: activeOtpChallenge.otpCode });
       setKyc((current) => ({ ...current, status: confirmed.status ?? current?.status, checklist: confirmed.checklist as unknown as KycData["checklist"] }));
       await refreshUser();
-      setMessage(`${activeOtpChallenge.idType} ownership verified. Thank you.`);
+      const msg = `${activeOtpChallenge.idType} ownership verified. Thank you.`;
+      setMessage(msg); showToast(msg, "success");
       setKycError("");
       setActiveOtpChallenge(null);
     } catch (err) {
         const reason = err instanceof Error ? err.message : "Unable to verify code";
         setActiveOtpChallenge((current) => current ? { ...current, busy: false, error: reason, otpCode: "" } : current);
         setKycError(reason);
+        showToast(reason, "error");
     }
   }
 
@@ -348,7 +360,8 @@ export default function InvestorDashboard() {
     try {
       const response = await uploadKycDocument("PROOF_OF_ADDRESS", file);
       setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"], documents: [...(current?.documents || []).filter((doc) => doc.documentType !== "PROOF_OF_ADDRESS"), response.document] }));
-      setMessage("Proof of address uploaded. Submit it for review when BVN and NIN are verified.");
+      setMessage("Proof of address uploaded. Awaiting admin approval. Submit KYC when BVN and NIN are verified.");
+      showToast("Proof of address uploaded. Awaiting admin approval.", "info");
     } catch (err) {
       setKycError(err instanceof Error ? err.message : "Unable to upload proof of address");
     } finally {
@@ -362,7 +375,8 @@ export default function InvestorDashboard() {
     try {
       const response = await uploadKycDocument("SIGNATURE", file);
       setKyc((current) => ({ ...current, checklist: response.checklist as unknown as KycData["checklist"], documents: [...(current?.documents || []).filter((doc) => doc.documentType !== "SIGNATURE"), response.document] }));
-      setMessage("Signature uploaded successfully.");
+      setMessage("Signature uploaded. Awaiting admin approval.");
+      showToast("Signature uploaded successfully. Awaiting admin approval.", "info");
     } catch (err) {
       setKycError(err instanceof Error ? err.message : "Unable to upload signature");
     } finally {
@@ -371,18 +385,52 @@ export default function InvestorDashboard() {
   }
 
   async function submitAddressReview() {
-    if (!kyc?.checklist?.bvn || !kyc.checklist.nin || !kyc.checklist.proofOfAddress) return;
+    if (!kyc?.checklist?.bvn || !kyc.checklist.nin) return;
+    if (!(kyc as any)?.proofOfAddressDocumentUrl || !(kyc as any)?.signatureDocumentUrl) {
+      const msg = "Please upload your proof of address and signature before submitting.";
+      setKycError(msg);
+      showToast(msg, "error");
+      return;
+    }
     setBusy(true);
     setKycError("");
     try {
       const response = await import("../services/apiClient").then(({ submitKyc }) => submitKyc());
       setKyc((current) => ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"] }));
       await refreshUser();
-      setMessage("Proof of address submitted for manual review.");
+      const msg = response.message || "KYC documents submitted for verification and admin review.";
+      setMessage(msg);
+      showToast(msg, "success");
     } catch (err) {
-      setKycError(err instanceof Error ? err.message : "Unable to submit proof of address");
+      const errMsg = err instanceof Error ? err.message : "Unable to submit KYC documents";
+      setKycError(errMsg);
+      showToast(errMsg, "error");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function uploadSelfieFallback(file: File) {
+    setKycBusy("LIVENESS_SELFIE");
+    setKycError("");
+    try {
+      const idNumber = bvn || nin || "";
+      const idType = bvn && /^\d{11}$/.test(bvn) ? "BVN" : nin && /^\d{11}$/.test(nin) ? "NIN" : undefined;
+      if (!idType || !/^\d{11}$/.test(idNumber || "")) {
+        throw new Error("Verify your BVN or NIN first before uploading a selfie.");
+      }
+      const response = await verifyMyLiveness(file, { idType, idNumber });
+      setKyc((current: any) => current ? ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"], selfieImageData: (response as any).selfieImageData || current?.selfieImageData, livenessStatus: (response as any).verificationStatus || current?.livenessStatus }) : current);
+      await refreshUser();
+      const msg = (response as any).message || "Selfie uploaded successfully. An admin will review your liveness check shortly.";
+      setMessage(msg);
+      showToast(msg, "info");
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "Liveness selfie upload failed.";
+      setKycError(errMsg);
+      showToast(errMsg, "error");
+    } finally {
+      setKycBusy("");
     }
   }
 
@@ -408,6 +456,7 @@ export default function InvestorDashboard() {
   async function onPremblyLivenessResult(result: any) {
     if (result.success) {
       setMessage("Liveness scan submitted. Syncing with the provider — your KYC status will update within 60 seconds.");
+      showToast("Liveness scan completed. Status is syncing with the provider and will update shortly.", "success");
       if (typeof result?.selfieImageData === "string" && result.selfieImageData.length > 20) {
         setKyc((current: any) => current ? ({ ...current, selfieImageData: result.selfieImageData }) : current);
       }
@@ -424,13 +473,16 @@ export default function InvestorDashboard() {
           if (checklist.liveness || checklist.selfieUploaded || attempts >= maxAttempts) {
             window.clearInterval(poll);
             livenessPollRef.current = null;
-            setMessage(checklist.liveness ? "Liveness verified. Thank you." : "Liveness processing complete. If status hasn't updated yet, refresh in a minute.");
+            const msg = checklist.liveness ? "Liveness verified. Thank you." : "Liveness processing complete. If status hasn't updated yet, refresh in a minute.";
+            setMessage(msg);
+            if (checklist.liveness) showToast(msg, "success");
           }
         } catch (_e) { /* ignore */ }
       }, 5000);
       livenessPollRef.current = poll;
     } else {
       setKycError(result.message);
+      showToast(result.message || "Liveness verification was not completed.", "error");
     }
   }
 
@@ -521,7 +573,7 @@ export default function InvestorDashboard() {
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const checklist = kyc?.checklist ?? {};
-  const canSubmitAddressReview = Boolean(checklist.bvn && checklist.nin && checklist.proofOfAddress && checklist.signature);
+  const canSubmitAddressReview = Boolean(checklist.bvn && checklist.nin && (kyc as any)?.proofOfAddressDocumentUrl && (kyc as any)?.signatureDocumentUrl);
   const onboardingRequirements = [
     ["Identity info", "Legal name, DOB, contact", Boolean(checklist.bvn || checklist.nin)],
     ["BVN verification", "11-digit bank verification", Boolean(checklist.bvn)],
@@ -548,6 +600,38 @@ export default function InvestorDashboard() {
 
   return (
     <Layout>
+      {toast && (
+        <div className="fixed top-4 right-4 z-[100] min-w-[280px] max-w-md animate-fade-in">
+          <div className={`rounded-2xl shadow-2xl border px-4 py-3 flex items-start gap-3 ${
+            toast.type === "success"
+              ? "bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-900/80 dark:text-emerald-100 dark:border-emerald-700"
+              : toast.type === "error"
+              ? "bg-red-50 text-red-900 border-red-200 dark:bg-red-900/80 dark:text-red-100 dark:border-red-700"
+              : "bg-sky-50 text-sky-900 border-sky-200 dark:bg-sky-900/80 dark:text-sky-100 dark:border-sky-700"
+          }`}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="shrink-0 mt-0.5">
+              {toast.type === "success" ? (
+                <path d="M22 11.08V12a10 10 0 11-5.93-9.14M22 4L12 14.01l-3-3" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+              ) : toast.type === "error" ? (
+                <><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.2" /><path d="M15 9l-6 6M9 9l6 6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" /></>
+              ) : (
+                <><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.2" /><path d="M12 8v4M12 16h.01" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" /></>
+              )}
+            </svg>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-bold leading-5">{toast.text}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="shrink-0 opacity-70 hover:opacity-100 transition"
+              aria-label="Dismiss notification"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+          </div>
+        </div>
+      )}
       {sidebarOpen && (
         <button
           type="button"
@@ -1647,9 +1731,27 @@ function InvestorKyc(props: any) {
                     Liveness check completed · cannot retrigger
                   </div>
                 ) : (
-                  <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} verifiedDetails={kyc?.verifiedDetails ?? null} onResult={onPremblyLivenessResult} />
+                  <>
+                    <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} verifiedDetails={kyc?.verifiedDetails ?? null} onResult={onPremblyLivenessResult} />
+                    <label className={`relative inline-flex min-h-[44px] items-center justify-center gap-2 px-5 py-3 text-sm font-bold rounded-xl border transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${kycBusy === "LIVENESS_SELFIE" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : "border-slate-300 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/60"}`}>
+                      <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed" type="file" accept="image/jpeg,image/png,image/webp" disabled={kycBusy === "LIVENESS_SELFIE" || !(bvn && /^\d{11}$/.test(bvn) || nin && /^\d{11}$/.test(nin))} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSelfieFallback(file); }} />
+                      {kycBusy === "LIVENESS_SELFIE" ? (
+                        <>
+                          <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-6.219-8.56" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                          Uploading…
+                        </>
+                      ) : (
+                        <>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                          Upload Selfie (Fallback)
+                        </>
+                      )}
+                    </label>
+                  </>
                 )}
-                {!livenessLocked && (checklist.selfieUploaded || checklist.liveness) && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400"><Icon name="check" size={13} />Liveness verified</span>}
+                {!livenessLocked && (checklist.selfieUploaded || checklist.liveness || kyc?.livenessManualUploaded) && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400"><Icon name="check" size={13} />{checklist.liveness ? "Liveness verified" : "Selfie uploaded · pending admin review"}</span>}
               </div>
             </div>
             <div className="space-y-2">

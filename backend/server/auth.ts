@@ -351,15 +351,16 @@ export function markKycChecklistComplete(userId: string): void {
   const allDone = requiredChecks.every((key) => kyc.checklist[key]);
   const anyDone = requiredChecks.some((key) => kyc.checklist[key]);
   const now = new Date().toISOString();
+  const submittedStatuses = ["PENDING_VERIFICATION", "REVIEWING", "VERIFIED", "REJECTED"] as const;
   if (allDone) {
     if (kyc.status === "NOT_STARTED" || kyc.status === "IN_PROGRESS" || kyc.status === "ACTION_REQUIRED") {
       kyc.status = "PENDING_VERIFICATION";
       if (!kyc.submittedAt) kyc.submittedAt = now;
     }
   } else if (anyDone) {
-    if (kyc.status !== "IN_PROGRESS") kyc.status = "IN_PROGRESS";
+    if (!submittedStatuses.includes(kyc.status)) kyc.status = "IN_PROGRESS";
   } else {
-    if (kyc.status !== "NOT_STARTED") kyc.status = "IN_PROGRESS";
+    if (!submittedStatuses.includes(kyc.status) && kyc.status !== "NOT_STARTED") kyc.status = "IN_PROGRESS";
   }
   kyc.updatedAt = now;
   const user = users.find((u) => u.id === userId);

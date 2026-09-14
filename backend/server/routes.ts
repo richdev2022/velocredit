@@ -438,9 +438,15 @@ router.post("/auth/register", async (req, res) => {
   }
   const now = new Date().toISOString();
   const userRoles: Role[] = ["INVESTOR", "BORROWER"];
+  const normalizedEmail = input.email.toLowerCase();
+  const rawDuplicate = users.some((u) => u.email.toLowerCase() === normalizedEmail);
+  if (rawDuplicate) {
+    res.status(409).json({ ok: false, error: "An account with this email already exists" });
+    return;
+  }
   const user = {
     id: randomUUID(),
-    email: input.email.toLowerCase(),
+    email: normalizedEmail,
     phone: input.phone,
     fullName: input.fullName,
     passwordHash: await bcrypt.hash(input.password, 12),
@@ -457,6 +463,7 @@ router.post("/auth/register", async (req, res) => {
     sourceOfFunds: input.sourceOfFunds,
   };
   users.push(user);
+  indexes.usersByEmail.set(normalizedEmail, user);
   createWallet(user.id);
   findOrCreateKycCase(user.id);
   if (input.consents.terms) recordConsent(user.id, "TERMS");
@@ -1300,13 +1307,15 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     documents: userDocs,
     verificationEvents: identityVerificationEvents.filter((e) => e.kycCaseId === kyc.id),
     identityPhoto,
-    selfieImageData: typeof (kyc as any).selfieImageData === "string" ? (kyc as any).selfieImageData : undefined,
+    selfieImageData: typeof kyc.selfieImageData === "string" ? kyc.selfieImageData : undefined,
+    livenessStatus: kyc.livenessStatus,
+    livenessManualUploaded: kyc.livenessManualUploaded ?? false,
     verifiedDetails: Object.keys(source).length ? source : undefined,
     normalizedFields: Object.keys(normalizedFields).length ? normalizedFields : undefined,
     profilePrefill: Object.keys(profilePrefill).length ? profilePrefill : undefined,
     proofOfAddressUrl,
-    bvn: typeof (kyc as any).bvn === "string" ? (kyc as any).bvn : undefined,
-    nin: typeof (kyc as any).nin === "string" ? (kyc as any).nin : undefined,
+    bvn: typeof kyc.bvn === "string" ? kyc.bvn : undefined,
+    nin: typeof kyc.nin === "string" ? kyc.nin : undefined,
   });
 });
 
@@ -1338,14 +1347,30 @@ router.post("/me/kyc", requireAuth, async (req: AuthRequest, res) => {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  if (parsed.data.checklist) Object.assign(kyc.checklist, parsed.data.checklist);
+  if (parsed.data.checklist) {
+    const safeChecklist: Record<string, boolean> = {};
+    const allowedClientKeys = ["bvn", "nin"] as const;
+    for (const key of allowedClientKeys) {
+      if (typeof parsed.data.checklist[key] === "boolean") {
+        safeChecklist[key] = parsed.data.checklist[key] as boolean;
+      }
+    }
+    Object.assign(kyc.checklist, safeChecklist);
+  }
   if (parsed.data.bvn) kyc.bvn = parsed.data.bvn;
   if (parsed.data.nin) kyc.nin = parsed.data.nin;
   if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
-  const requiredChecklistComplete = kyc.checklist.bvn && kyc.checklist.nin && kyc.checklist.proofOfAddress;
-  if (requiredChecklistComplete) {
+  const hasDocumentsForSubmit = (kyc.checklist.bvn && kyc.checklist.nin);
+  const submittedViaOverride = parsed.data.statusOverride === "PENDING_VERIFICATION";
+  if (submittedViaOverride && hasDocumentsForSubmit) {
     kyc.status = "PENDING_VERIFICATION";
     kyc.submittedAt = kyc.submittedAt ?? new Date().toISOString();
+  } else {
+    const requiredChecklistComplete = kyc.checklist.bvn && kyc.checklist.nin && kyc.checklist.proofOfAddress;
+    if (requiredChecklistComplete) {
+      kyc.status = "PENDING_VERIFICATION";
+      kyc.submittedAt = kyc.submittedAt ?? new Date().toISOString();
+    }
   }
   user.kycStatus = kyc.status;
   kyc.updatedAt = new Date().toISOString();
@@ -1484,28 +1509,21 @@ router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image
   }
   const result = await verifyIdentityWithFace({ type, number, image: req.file.buffer.toString("base64"), dateOfBirth: typeof req.body.dateOfBirth === "string" ? req.body.dateOfBirth : undefined });
   identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "prembly", verificationType: "LIVENESS", providerReference: result.providerReference, status: result.status, matchScore: result.matchScore, rawResponse: result.rawResponse, createdAt: new Date().toISOString() });
-  setKycCategoryResult(kyc, "LIVENESS", result.status === "SUCCESS" ? "VERIFIED" : "REJECTED", result.errorMessage);
-  if (result.status !== "SUCCESS") {
-    kyc.status = "REJECTED";
-    kyc.rejectionReason = providerReason(result.errorMessage);
-    const user = users.find((item) => item.id === req.user?.id);
-    if (user) { user.kycStatus = kyc.status; await notifyKyc(user, "REJECTED", "LIVENESS", kyc.rejectionReason); }
-  }
-  let selfieImageData: string | undefined;
-  if (result.status === "SUCCESS") {
-    kyc.checklist.liveness = true;
-    kyc.selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
-    kyc.updatedAt = new Date().toISOString();
-    markKycChecklistComplete(req.user!.id);
-    selfieImageData = kyc.selfieImageData;
-  }
+  setKycCategoryResult(kyc, "LIVENESS", result.status === "SUCCESS" ? "PENDING_REVIEW" : "PENDING_REVIEW", result.errorMessage ?? "Manual selfie upload pending admin review");
+  const selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+  kyc.selfieImageData = selfieImageData;
+  kyc.livenessStatus = result.status;
+  kyc.livenessManualUploaded = true;
+  if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
+  kyc.updatedAt = new Date().toISOString();
+  markKycChecklistComplete(req.user!.id);
   if (!(await persistMutation(res))) return;
-  res.json({ ok: true, verificationStatus: result.status, providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist, selfieImageData });
+  res.json({ ok: true, verificationStatus: "PENDING_ADMIN_REVIEW", providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist, selfieImageData, message: "Selfie uploaded. An admin will review your liveness check shortly." });
 });
 
 router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequest, res) => {
   const parsed = z.object({
-    status: z.enum(["SUCCESS", "FAILED"]),
+    status: z.union([z.enum(["SUCCESS", "FAILED"]), z.string()]),
     providerReference: z.string().optional(),
     rawResponse: z.record(z.unknown()).optional(),
     selfieImageData: z.string().optional(),
@@ -1514,6 +1532,9 @@ router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequ
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
+  const statusRaw = String(parsed.data.status).trim().toUpperCase();
+  const successTokens = ["SUCCESS", "SUCCESSFUL", "VERIFIED", "PASS", "PASSED", "00", "OK", "APPROVE", "APPROVED", "VALID", "MATCH", "MATCHED", "COMPLETE", "COMPLETED", "TRUE"];
+  const normalizedStatus = successTokens.some((token) => statusRaw.includes(token)) ? "SUCCESS" : "FAILED";
   const kyc = findOrCreateKycCase(req.user!.id);
   identityVerificationEvents.push({
     id: randomUUID(),
@@ -1521,7 +1542,7 @@ router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequ
     provider: "prembly",
     verificationType: "LIVENESS",
     providerReference: parsed.data.providerReference,
-    status: parsed.data.status,
+    status: normalizedStatus,
     rawResponse: parsed.data.rawResponse ?? {},
     createdAt: new Date().toISOString(),
   });
@@ -1539,9 +1560,22 @@ router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequ
       r.base64Image,
       r.base64_image,
       r.imageBase64,
+      r.selfieData,
+      r.selfie_data,
+      r.livenessSelfie,
+      r.liveness_selfie,
+      r.capturedImage,
+      r.captured_image,
       (r.data as any)?.selfie,
       (r.data as any)?.image,
       (r.data as any)?.photo,
+      (r.data as any)?.selfieImage,
+      (r.data as any)?.imageBase64,
+      (r.data as any)?.base64Image,
+      (r.data as any)?.data?.selfie,
+      (r.data as any)?.data?.image,
+      (r.result as any)?.selfie,
+      (r.result as any)?.image,
     ];
     for (const raw of candidates) {
       if (typeof raw !== "string" || raw.length < 20) continue;
@@ -1555,16 +1589,21 @@ router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequ
       }
     }
   }
-  if (parsed.data.status === "SUCCESS") {
+  if (normalizedStatus === "SUCCESS") {
     kyc.checklist.liveness = true;
+    kyc.livenessStatus = "SUCCESS";
+    kyc.livenessVerifiedAt = new Date().toISOString();
+    setKycCategoryResult(kyc, "LIVENESS", "VERIFIED");
     kyc.updatedAt = new Date().toISOString();
     if (selfieImageData) {
       kyc.selfieImageData = selfieImageData;
     }
+    const user = users.find((u) => u.id === req.user?.id);
+    if (user) user.kycStatus = kyc.status;
     markKycChecklistComplete(req.user!.id);
   }
   if (!(await persistMutation(res))) return;
-  res.json({ ok: true, verificationStatus: parsed.data.status, providerConfigured: true, checklist: kyc.checklist, selfieImageData });
+  res.json({ ok: true, verificationStatus: normalizedStatus, providerConfigured: true, checklist: kyc.checklist, selfieImageData });
 });
 
 router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => {
@@ -1755,6 +1794,7 @@ router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"),
     "BUSINESS_REGISTRATION",
     "ID_CARD_FRONT",
     "ID_CARD_BACK",
+    "SELFIE_PHOTO",
   ]);
   const documentType = documentTypeSchema.safeParse(req.body.documentType);
   if (!documentType.success) {
@@ -1784,12 +1824,20 @@ router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"),
     };
     documents.push(record);
     const kyc = findOrCreateKycCase(req.user!.id);
-    if (documentType.data === "PROOF_OF_ADDRESS") kyc.checklist.proofOfAddress = true;
-    if (documentType.data === "PASSPORT_PHOTO") kyc.checklist.passport = true;
-    if (documentType.data === "SIGNATURE") kyc.checklist.signature = true;
+    if (documentType.data === "SELFIE_PHOTO") {
+      const isImage = req.file.mimetype.startsWith("image/");
+      if (isImage) {
+        kyc.selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+      }
+      kyc.livenessStatus = "PENDING_REVIEW";
+      kyc.livenessManualUploaded = true;
+      identityVerificationEvents.push({ id: randomUUID(), kycCaseId: kyc.id, provider: "manual", verificationType: "LIVENESS", status: "PENDING_REVIEW", createdAt: new Date().toISOString() });
+    }
+    if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
+    kyc.updatedAt = new Date().toISOString();
     markKycChecklistComplete(req.user!.id);
     if (!(await persistMutation(res))) return;
-    res.status(201).json({ ok: true, document: record, checklist: kyc.checklist });
+    res.status(201).json({ ok: true, document: record, checklist: kyc.checklist, message: "Document uploaded for admin review." });
   } catch (error) {
     res.status(503).json({
       ok: false,
@@ -2646,22 +2694,12 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
         kyc.checklist.nin = true;
       }
     }
-    if (typeof anyKyc.liveness === "boolean" && anyKyc.liveness) kyc.checklist.liveness = true;
-    if (typeof anyKyc.liveness === "string" && anyKyc.liveness !== "") kyc.checklist.liveness = true;
-    const addressKeys = ["residentialAddress", "proofOfAddress", "address", "homeAddress"];
-    for (const key of addressKeys) {
-      const v = (anyKyc as any)[key];
-      if (typeof v === "string" && v.trim().length >= 6) kyc.checklist.proofOfAddress = true;
-    }
     markKycChecklistComplete(req.user!.id);
   }
   if (parsed.data.witness) Object.assign(snapshot, { witness: parsed.data.witness });
   if (parsed.data.calculation !== undefined) Object.assign(snapshot, { calculation: parsed.data.calculation });
   if (parsed.data.documents) {
-    const docs = parsed.data.documents as Record<string, unknown>;
-    const kyc = findOrCreateKycCase(req.user!.id);
-    if (docs.proofOfAddressUrl || docs.proofOfAddress || docs.proofOfAddressFile) kyc.checklist.proofOfAddress = true;
-    markKycChecklistComplete(req.user!.id);
+    Object.assign(snapshot, { documents: parsed.data.documents });
   }
   application.customerSnapshot = snapshot;
   application.updatedAt = new Date().toISOString();
@@ -3335,6 +3373,10 @@ router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"
   if (!kyc) { res.status(404).json({ ok: false, error: "KYC case not found" }); return; }
   kyc.checklist[parsed.data.requirement] = parsed.data.approved;
   kyc.updatedAt = new Date().toISOString();
+  if (parsed.data.requirement === "liveness" && parsed.data.approved) {
+    kyc.livenessVerifiedAt = kyc.livenessVerifiedAt ?? new Date().toISOString();
+    if (!kyc.livenessStatus) kyc.livenessStatus = "SUCCESS";
+  }
   const category = parsed.data.requirement === "proofOfAddress" ? "ADDRESS" : parsed.data.requirement.toUpperCase() as KycCategory;
   setKycCategoryResult(kyc, category, parsed.data.approved ? "VERIFIED" : "REJECTED", parsed.data.note);
   if (!parsed.data.approved) kyc.rejectionReason = providerReason(parsed.data.note || `${parsed.data.requirement} requires attention`);

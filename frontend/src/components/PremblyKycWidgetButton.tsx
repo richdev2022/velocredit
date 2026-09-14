@@ -15,21 +15,30 @@ interface Props {
   onResult: (result: { success: boolean; message: string; selfieImageData?: string }) => void;
 }
 
-function isSuccessResponse(response: { status?: string | boolean; code?: string; verification_status?: string; data?: Record<string, unknown> }): boolean {
+function isSuccessResponse(response: { status?: string | boolean; code?: string; verification_status?: string; data?: Record<string, unknown>; success?: string | boolean; verified?: string | boolean; result?: string | boolean }): boolean {
   const candidates: unknown[] = [
     response.status,
     response.code,
     response.verification_status,
+    response.success,
+    response.verified,
+    response.result,
     (response.data as any)?.status,
     (response.data as any)?.code,
     (response.data as any)?.verification_status,
     (response.data as any)?.verificationStatus,
+    (response.data as any)?.success,
+    (response.data as any)?.verified,
+    (response.data as any)?.result,
+    (response.data as any)?.data?.status,
+    (response.data as any)?.data?.success,
   ];
   for (const raw of candidates) {
     if (raw === true) return true;
+    if (typeof raw === "number" && (raw === 0 || raw === 200)) return true;
     if (typeof raw === "string") {
       const s = raw.trim().toLowerCase();
-      if (s === "success" || s === "successful" || s === "verified" || s === "pass" || s === "passed" || s === "00" || s === "ok") return true;
+      if (s === "success" || s === "successful" || s === "verified" || s === "pass" || s === "passed" || s === "00" || s === "ok" || s === "approve" || s === "approved" || s === "valid" || s === "match" || s === "matched" || s === "complete" || s === "completed" || s === "true") return true;
     }
   }
   return false;
@@ -51,6 +60,12 @@ function extractSelfieImage(response: { data?: Record<string, unknown> }): strin
     (d as any).data?.selfie,
     (d as any).data?.image,
     (d as any).data?.photo,
+    (d as any).data?.selfieImage,
+    (d as any).data?.imageBase64,
+    (d as any).data?.base64Image,
+    (response as any).selfie,
+    (response as any).image,
+    (response as any).photo,
   ];
   for (const raw of candidates) {
     if (typeof raw !== "string" || raw.length < 20) continue;

@@ -116,6 +116,8 @@ export interface KycCase {
   bvnVerifiedAt?: string;
   ninVerifiedAt?: string;
   livenessVerifiedAt?: string;
+  livenessStatus?: string;
+  livenessManualUploaded?: boolean;
   providerRequestId?: string;
   providerRaw?: Record<string, unknown>;
   submittedAt?: string;
@@ -144,7 +146,7 @@ export interface IdentityVerificationEvent {
   provider: "prembly" | "manual";
   verificationType: "BVN" | "NIN" | "LIVENESS" | "PASSPORT" | "ADDRESS" | "SIGNATURE";
   providerReference?: string;
-  status: "PENDING" | "SUCCESS" | "FAILED" | "MANUAL_REVIEW";
+  status: "PENDING" | "SUCCESS" | "FAILED" | "MANUAL_REVIEW" | "PENDING_REVIEW";
   matchScore?: number;
   rawResponse?: Record<string, unknown>;
   createdAt: string;
@@ -704,14 +706,51 @@ export function rebuildIndexes(): void {
   for (const map of Object.values(indexes) as Array<Map<unknown, unknown> | Map<unknown, unknown[]>>) {
     map.clear();
   }
-  for (const u of users) indexes.usersByEmail.set(u.email.toLowerCase(), u);
-  for (const w of wallets) indexes.walletsByUserId.set(w.userId, w);
+  const seenEmails = new Set<string>();
+  const dedupedUsers: typeof users = [];
+  for (const u of users) {
+    const key = u.email.toLowerCase();
+    if (!seenEmails.has(key)) {
+      seenEmails.add(key);
+      dedupedUsers.push(u);
+      indexes.usersByEmail.set(key, u);
+    }
+  }
+  if (dedupedUsers.length !== users.length) {
+    users.length = 0;
+    users.push(...dedupedUsers);
+  }
+  const seenWallets = new Set<string>();
+  const dedupedWallets: typeof wallets = [];
+  for (const w of wallets) {
+    if (!seenWallets.has(w.userId)) {
+      seenWallets.add(w.userId);
+      dedupedWallets.push(w);
+      indexes.walletsByUserId.set(w.userId, w);
+    }
+  }
+  if (dedupedWallets.length !== wallets.length) {
+    wallets.length = 0;
+    wallets.push(...dedupedWallets);
+  }
+  const seenKyc = new Set<string>();
+  const dedupedKyc: typeof kycCases = [];
+  for (const k of kycCases) {
+    if (!seenKyc.has(k.userId)) {
+      seenKyc.add(k.userId);
+      dedupedKyc.push(k);
+      indexes.kycCasesByUserId.set(k.userId, k);
+    }
+  }
+  if (dedupedKyc.length !== kycCases.length) {
+    kycCases.length = 0;
+    kycCases.push(...dedupedKyc);
+  }
   for (const e of ledgerEntries) appendToMultiIndex(indexes.ledgerEntriesByWalletId, e.walletId, e);
   for (const t of walletTransactions) {
     appendToMultiIndex(indexes.walletTransactionsByUserId, t.userId, t);
     if (t.txRef) indexes.walletTransactionsByTxRef.set(t.txRef, t);
   }
-  for (const k of kycCases) indexes.kycCasesByUserId.set(k.userId, k);
   for (const ev of identityVerificationEvents) appendToMultiIndex(indexes.identityVerificationEventsByKycCaseId, ev.kycCaseId, ev);
   for (const d of documents) appendToMultiIndex(indexes.documentsByUserId, d.userId, d);
   for (const pa of payoutAccounts) appendToMultiIndex(indexes.payoutAccountsByUserId, pa.userId, pa);
