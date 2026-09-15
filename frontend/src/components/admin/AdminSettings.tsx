@@ -1493,7 +1493,7 @@ function FeeField({
         </div>
       </div>
       <div className="space-y-2.5">
-        <div className="grid grid-cols-1 gap-2 lg:grid-cols-[minmax(0,8rem)_minmax(0,1fr)_auto] lg:items-center">
+        <div className="grid grid-cols-[minmax(7.5rem,0.9fr)_minmax(7rem,1fr)_auto] items-center gap-2">
           <select
             value={value.type}
             onChange={(e) => onChange({ ...value, type: e.target.value as "flat" | "percentage" })}
@@ -1503,11 +1503,18 @@ function FeeField({
             <option value="percentage">Percentage (%)</option>
           </select>
           <input
-            type="number"
-            min={0}
-            step={value.type === "percentage" ? 0.1 : 500}
+            type="text"
+            inputMode="decimal"
             value={value.value}
-            onChange={(e) => onChange({ ...value, value: Number(e.target.value) || 0 })}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") {
+                onChange({ ...value, value: 0 });
+                return;
+              }
+              const next = Number(raw);
+              if (Number.isFinite(next) && next >= 0) onChange({ ...value, value: next });
+            }}
             className={`velo-input !py-2 text-base font-bold w-full min-w-0 ${compact ? "!py-1.5 text-sm" : ""}`}
           />
           <span className={`text-xs font-bold text-slate-500 lg:w-6 ${compact ? "text-[10px]" : ""}`}>

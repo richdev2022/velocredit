@@ -2,14 +2,25 @@ import { env } from "../config.js";
 
 async function flutterwaveRequest<T>(path: string, body: Record<string, unknown>): Promise<T> {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
-  const response = await fetch(`${env.FLUTTERWAVE_BASE_URL}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  try {
+    response = await fetch(`${env.FLUTTERWAVE_BASE_URL}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("Flutterwave request timed out");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const text = await response.text();
   let data: (T & { status?: string; message?: string }) | null = null;
   try {
