@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, getInvestorPayoutAccounts, getNigerianBanks, requestOtp, resolveInvestorPayoutAccount, withdrawInvestorWallet, type OtpChannel } from "../services/apiClient";
 import Icon from "./Icon";
 
@@ -29,6 +29,7 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
   const [selectedAccountId, setSelectedAccountId] = useState("");
   const [bankQuery, setBankQuery] = useState("");
   const [bankMenuOpen, setBankMenuOpen] = useState(false);
+  const withdrawalKey = useRef(crypto.randomUUID());
 
   const selectedBank = banks.find((bank) => bank.code === bankCode);
   const filteredBanks = useMemo(() => banks.filter((bank) => bank.name.toLowerCase().includes(bankQuery.trim().toLowerCase())), [banks, bankQuery]);
@@ -112,15 +113,16 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
     if (!challengeId || otpCode.length !== 6 || !validDestination) return;
     setBusy("submit"); setError("");
     try {
-      const response = await withdrawInvestorWallet({ amountNaira: Number(amount), bankCode: bankCode.trim(), accountNumber, narration: narration || undefined, otpChallengeId: challengeId, otpCode });
+      const response = await withdrawInvestorWallet({ amountNaira: Number(amount), bankCode: bankCode.trim(), accountNumber, narration: narration || undefined, otpChallengeId: challengeId, otpCode, idempotencyKey: withdrawalKey.current });
       const successful = response.withdrawal.status === "SUCCESSFUL";
+      const processing = response.withdrawal.status === "PROCESSING";
       setResult({
-        ok: successful,
-        title: successful ? "Withdrawal successful" : "Withdrawal failed",
-        message: successful ? "Your withdrawal was submitted successfully." : (response.message || "The withdrawal failed and your wallet balance was restored."),
+        ok: successful || processing,
+        title: successful ? "Withdrawal successful" : processing ? "Withdrawal processing" : "Withdrawal failed",
+        message: response.message || (processing ? "Your withdrawal was submitted and is awaiting provider confirmation." : "The withdrawal failed and your wallet balance was restored."),
       });
-      onSuccess(successful ? `Withdrawal ${response.withdrawal.id} was submitted successfully.` : `Withdrawal ${response.withdrawal.id} failed and your wallet balance was restored.`);
-      setAmount(""); setNarration(""); setChallengeId(""); setOtpCode(""); setResendAvailableAt(""); setResendSecondsRemaining(0);
+      onSuccess(successful || processing ? `Withdrawal ${response.withdrawal.id} was submitted successfully.` : `Withdrawal ${response.withdrawal.id} failed and your wallet balance was restored.`);
+      setAmount(""); setNarration(""); setChallengeId(""); setOtpCode(""); setResendAvailableAt(""); setResendSecondsRemaining(0); withdrawalKey.current = crypto.randomUUID();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to submit withdrawal";
       setResult({ ok: false, title: "Withdrawal failed", message });

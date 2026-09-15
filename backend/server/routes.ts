@@ -3076,6 +3076,10 @@ router.post("/admin/payouts/:payoutId/retry", requireAuth, requireRole("ADMIN"),
     res.status(404).json({ ok: false, error: "Payout not found" });
     return;
   }
+  if (payout.status !== "FAILED") {
+    res.status(409).json({ ok: false, error: "Only definitively failed payouts can be retried." });
+    return;
+  }
   const account = payoutAccounts.find((item) => item.userId === payout.userId);
   if (!account) {
     res.status(400).json({ ok: false, error: "Investor payout account not found" });
@@ -3817,7 +3821,7 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     loan.providerTransfer = transfer;
     loan.updatedAt = now;
     const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
-    const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 3, 500, Number(loan.principalNaira));
+    const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 2, 500, Number(loan.principalNaira));
     if (verification.settled) {
       const settledAt = new Date().toISOString();
       loan.status = "DISBURSED";
@@ -3838,12 +3842,13 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     res.status(verification.settled ? 200 : 202).json({ ok: true, loan, transfer, disbursement });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
-    const last = loanDisbursements[loanDisbursements.length - 1];
-    if (last && last.loanId === loan.id && last.status === "PROCESSING") {
-      last.status = "FAILED";
-      last.error = errMsg;
-      last.updatedAt = new Date().toISOString();
+    const disbursement = loanDisbursements.find((item) => item.loanId === loan.id && item.status === "PROCESSING");
+    if (disbursement) {
+      disbursement.status = "FAILED";
+      disbursement.error = errMsg;
+      disbursement.updatedAt = new Date().toISOString();
     }
+    if (!await persistMutation(res)) return;
     res.status(503).json({
       ok: false,
       error: errMsg,
@@ -4092,6 +4097,7 @@ router.post("/admin/payouts/:payoutId/approve", requireAuth, requireRole("ADMIN"
     payout.retryCount = (payout.retryCount ?? 0) + 1;
     payout.lastAttemptAt = new Date().toISOString();
     payout.updatedAt = payout.lastAttemptAt;
+    if (!(await persistMutation(res))) return;
     res.status(202).json({ ok: true, payout, transfer });
   } catch (error) {
     res.status(503).json({
@@ -4174,7 +4180,7 @@ async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals
     const reference = rawRef !== undefined && rawRef !== null ? String(rawRef) : `WITHDRAWAL-${withdrawal.id}`;
     withdrawal.providerReference = reference || transferId;
     withdrawal.updatedAt = new Date().toISOString();
-    const verification = await verifyTransferWithRetry(transferId, reference, 3, 3000);
+    const verification = await verifyTransferWithRetry(transferId, reference, 2, 1000);
     withdrawal.providerTransfer = { ...(withdrawal.providerTransfer ?? {}), verification: verification as unknown as Record<string, unknown> } as unknown as Record<string, unknown>;
     const now = new Date().toISOString();
     if (verification.settled) {
@@ -4223,8 +4229,9 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     bankCode: z.string().min(2).max(10),
     accountNumber: z.string().regex(/^\d{10}$/),
     narration: z.string().max(100).optional(),
-    otpChallengeId: z.string().min(1).optional(),
-    otpCode: z.string().regex(/^\d{6}$/).optional(),
+    idempotencyKey: z.string().min(16).max(100),
+    otpChallengeId: z.string().min(1),
+    otpCode: z.string().regex(/^\d{6}$/),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -4232,11 +4239,22 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     return;
   }
   const userId = req.user!.id;
-  if (parsed.data.otpChallengeId || parsed.data.otpCode) {
-    if (!parsed.data.otpChallengeId || !parsed.data.otpCode) { res.status(400).json({ ok: false, error: "Invalid or expired OTP" }); return; }
-    const verification = await verifyOtpChallenge(parsed.data.otpChallengeId, parsed.data.otpCode);
-    if (!verification.ok || verification.action !== "WITHDRAWAL" || verification.userId !== userId) { res.status(400).json({ ok: false, error: "Invalid or expired OTP" }); return; }
+  const existingWithdrawal = investorWithdrawals.find((item) => item.investorId === userId && item.idempotencyKey === parsed.data.idempotencyKey);
+  if (existingWithdrawal) {
+    res.status(existingWithdrawal.status === "FAILED" ? 200 : 202).json({
+      ok: existingWithdrawal.status !== "FAILED",
+      withdrawal: existingWithdrawal,
+      message: existingWithdrawal.status === "SUCCESSFUL"
+        ? "Withdrawal already processed successfully."
+        : existingWithdrawal.status === "FAILED"
+          ? existingWithdrawal.error || "Withdrawal failed."
+          : "Withdrawal is already being processed.",
+      finalStatus: existingWithdrawal.status,
+    });
+    return;
   }
+  const verification = await verifyOtpChallenge(parsed.data.otpChallengeId, parsed.data.otpCode);
+  if (!verification.ok || verification.action !== "WITHDRAWAL" || verification.userId !== userId) { res.status(400).json({ ok: false, error: "Invalid or expired OTP" }); return; }
   const wallet = findWallet(userId);
   const investor = users.find((u) => u.id === userId);
   if (!wallet || !investor) {
@@ -4316,6 +4334,7 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     narration: parsed.data.narration,
     retryCount: 0,
     lastAttemptAt: new Date().toISOString(),
+    idempotencyKey: parsed.data.idempotencyKey,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -5091,8 +5110,13 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     res.status(404).json({ ok: false, error: "Disbursement record not found" });
     return;
   }
-  if (prev.status === "SUCCESSFUL") {
-    res.status(400).json({ ok: false, error: "Cannot retry a successful disbursement" });
+  if (prev.status !== "FAILED") {
+    res.status(409).json({ ok: false, error: "Only definitively failed disbursements can be retried. Reconcile the provider transfer before retrying." });
+    return;
+  }
+  const activeTransfer = loanDisbursements.find((item) => item.loanId === prev.loanId && ["PROCESSING", "PENDING", "SUCCESSFUL"].includes(item.status));
+  if (activeTransfer) {
+    res.status(409).json({ ok: false, error: "A disbursement is already in progress or completed for this loan" });
     return;
   }
   const loan = loans.find((l) => l.id === prev.loanId);

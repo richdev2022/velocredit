@@ -621,6 +621,7 @@ export async function decomposeAndUpsertAll(
         { snake: "processed_at", get: (row) => row.processedAt, asDate: true },
         { snake: "retry_count", get: (row) => row.retryCount ?? 0 },
         { snake: "last_attempt_at", get: (row) => row.lastAttemptAt, asDate: true },
+        { snake: "idempotency_key", get: (row) => row.idempotencyKey },
         { snake: "created_at", get: (row) => row.createdAt, asDate: true },
         { snake: "updated_at", get: (row) => row.updatedAt ?? row.createdAt, asDate: true },
       ],
