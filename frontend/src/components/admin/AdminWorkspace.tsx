@@ -528,12 +528,15 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   const size = 20;
   const loadDisbursements = () => adminListDisbursements({ limit: 500 }).then((r) => setDisbursements(r.disbursements)).catch(() => setDisbursements([]));
   useEffect(() => {
-    adminListLoans(size, page * size).then((response) => {
+    const load = () => adminListLoans(size, page * size).then((response) => {
       setRows(response.loans);
       setDisbursedLoans((response as any).disbursedLoans || []);
       setTotal(response.meta?.total || response.loans.length);
     }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load loans"));
+    void load();
     loadDisbursements();
+    const interval = window.setInterval(() => { void load(); loadDisbursements(); }, 3000);
+    return () => window.clearInterval(interval);
   }, [page]);
   async function retryDisbursement(disbursementId: string) {
     setBusy(disbursementId);

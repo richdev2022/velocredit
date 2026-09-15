@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getInvestorPayoutAccounts, getNigerianBanks, requestOtp, resolveInvestorPayoutAccount, withdrawInvestorWallet, type OtpChannel } from "../services/apiClient";
+import { ApiError, getInvestorPayoutAccounts, getNigerianBanks, requestOtp, resolveInvestorPayoutAccount, withdrawInvestorWallet, type OtpChannel } from "../services/apiClient";
 import Icon from "./Icon";
 
 type Bank = { id: number; name: string; code: string };
@@ -95,7 +95,15 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
     try {
       const result = await requestOtp("WITHDRAWAL", channel);
       setChallengeId(result.challengeId); setOtpCode(""); setResendAvailableAt(result.resendAvailableAt); setResendSecondsRemaining(result.resendSecondsRemaining);
-    } catch (err) { setError(err instanceof Error ? err.message : "Unable to send OTP"); }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429 && err.resendAvailableAt) {
+        setResendAvailableAt(err.resendAvailableAt);
+        setResendSecondsRemaining(err.resendSecondsRemaining ?? 0);
+        setError(`${err.message} Try again in ${err.resendSecondsRemaining ?? 0} seconds.`);
+      } else {
+        setError(err instanceof Error ? err.message : "Unable to send OTP");
+      }
+    }
     finally { setBusy(""); }
   }
 
@@ -138,7 +146,7 @@ export default function InvestorWithdrawalForm({ available, onSuccess }: Props) 
       <div className="sm:col-span-2"><span className="velo-label">Send OTP via</span><div className="mt-2 flex flex-wrap gap-2">{(["EMAIL", "SMS", "WHATSAPP"] as OtpChannel[]).map((option) => <button key={option} type="button" onClick={() => setChannel(option)} className={`rounded-lg border px-3 py-2 text-sm font-semibold ${channel === option ? "border-velo-500 bg-velo-50 text-velo-700" : "border-slate-200 text-slate-600"}`}>{option === "EMAIL" ? "Email" : option === "SMS" ? "SMS" : "WhatsApp"}</button>)}</div></div>
       {!challengeId ? <button type="button" className="btn-secondary sm:w-fit" disabled={busy !== "" || !validDestination} onClick={() => void sendOtp()}>{busy === "otp" ? "Sending…" : "Request OTP"}</button> : <><label className="block sm:col-span-2"><span className="velo-label">OTP code</span><input className="velo-input mt-1 max-w-xs text-center text-lg tracking-[0.35em]" inputMode="numeric" maxLength={6} value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, ""))} placeholder="000000" required /></label><div className="flex items-center gap-3"><button type="button" className="btn-secondary sm:w-fit" disabled={busy !== "" || !validDestination || resendSecondsRemaining > 0} onClick={() => void sendOtp()}>{busy === "otp" ? "Sending…" : resendSecondsRemaining > 0 ? `Resend OTP in ${resendSecondsRemaining}s` : "Resend OTP"}</button>{resendSecondsRemaining > 0 && <span className="text-xs text-slate-500" aria-live="polite">Resend available in {resendSecondsRemaining}s</span>}</div></>}
       <div className="sm:col-span-2 flex flex-wrap items-center gap-3"><button className="btn-primary" disabled={busy !== "" || !validDestination || !challengeId || otpCode.length !== 6}>{busy === "submit" ? "Submitting…" : "Confirm withdrawal"}</button><span className="text-xs text-slate-500">Available: ₦{available.toLocaleString("en-NG")}</span></div>
-      {error && <p className="sm:col-span-2 text-sm text-red-700 dark:text-red-400">{error}</p>}
+      {error && <p className="sm:col-span-2 text-sm text-red-700 dark:text-red-400" aria-live="polite">{error}{resendSecondsRemaining > 0 && <> Resend available in {resendSecondsRemaining}s.</>}</p>}
     </form>
     {result && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="withdrawal-result-title">
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">

@@ -761,7 +761,14 @@ router.post("/auth/otp/request", requireAuth, async (req: AuthRequest, res) => {
     return;
   }
   try {
-    const challenge = await createOtpChallenge(user.id, parsed.data.action, phone, user.email, parsed.data.channel);
+    const challenge = await createOtpChallenge(
+      user.id,
+      parsed.data.action,
+      phone,
+      user.email,
+      parsed.data.channel,
+      { skipRateLimit: user.roles.includes("ADMIN") || user.roles.includes("LOAN_MANAGER") }
+    );
     res.status(201).json({
       ok: true,
       challengeId: challenge.id,
@@ -2455,6 +2462,17 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     return;
   }
   const input = { ...parsed.data, ...compactApplicationPayload(parsed.data) };
+  if (input.applicationId) {
+    const existingApplication = loanApplications.find((item) => item.applicationId === input.applicationId);
+    if (existingApplication) {
+      if (existingApplication.borrowerId !== req.user!.id) {
+        res.status(409).json({ ok: false, error: "That application reference ID is already in use." });
+      } else {
+        res.status(200).json({ ok: true, application: existingApplication, duplicate: true });
+      }
+      return;
+    }
+  }
   const dbBorrowing = await dbHasUnresolvedBorrowing(req.user!.id);
   const memBorrowing = hasUnresolvedBorrowing(req.user!.id);
   if (dbBorrowing !== null && dbBorrowing !== memBorrowing) {
@@ -2537,6 +2555,9 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       return null;
     }
   })();
+
+  const currentExternalCredit = await creditBureauPromise;
+  if (currentExternalCredit) latestExternalCredit = currentExternalCredit;
 
   void creditBureauPromise.then((report) => {
     if (!report || report.status !== "RECEIVED" || report.score == null) return;
@@ -3422,6 +3443,49 @@ router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"
   res.json({ ok: true, case: kyc });
 });
 
+function ensureApprovedLoanRecord(application: (typeof loanApplications)[number], now = new Date().toISOString()) {
+  const existing = loans.find((loan) => loan.applicationId === application.id);
+  if (existing) return existing;
+  const product = loanProducts[0];
+  const principal = Number(application.amountNaira ?? 0);
+  const tenure = application.tenureDays ?? product?.defaultTenureDays ?? 90;
+  const rate = (product?.interestRatePercent ?? 18) / 100;
+  const processing = principal * ((product?.processingFeePercent ?? 2) / 100);
+  const interest = principal * rate * (tenure / 365);
+  const totalRepayment = principal + interest + processing;
+  const dueAt = new Date(Date.now() + tenure * 86400000).toISOString();
+  const loanRecord: (typeof loans)[number] = {
+    id: randomUUID(),
+    applicationId: application.id,
+    borrowerId: application.borrowerId,
+    principalNaira: principal,
+    totalInterestNaira: Math.round(interest * 100) / 100,
+    totalFeesNaira: Math.round(processing * 100) / 100,
+    totalRepaymentNaira: Math.round(totalRepayment * 100) / 100,
+    outstandingNaira: Math.round(totalRepayment * 100) / 100,
+    tenureDays: tenure,
+    status: "DISBURSEMENT_PENDING",
+    dueAt,
+    createdAt: now,
+    updatedAt: now,
+  };
+  loans.push(loanRecord);
+  const scheduleCount = Math.max(1, Math.round(tenure / 30));
+  for (let i = 1; i <= scheduleCount; i++) {
+    loanSchedules.push({
+      id: randomUUID(), loanId: loanRecord.id, installmentNumber: i,
+      dueDate: new Date(Date.now() + (tenure / scheduleCount) * i * 86400000).toISOString().slice(0, 10),
+      principalNaira: Math.round((principal / scheduleCount) * 100) / 100,
+      interestNaira: Math.round((interest / scheduleCount) * 100) / 100,
+      feesNaira: i === 1 ? Math.round(processing * 100) / 100 : 0,
+      totalDueNaira: Math.round((totalRepayment / scheduleCount) * 100) / 100,
+      totalPaidNaira: 0, status: "PENDING", createdAt: now,
+    });
+  }
+  creditHistory.push({ id: randomUUID(), userId: application.borrowerId, loanId: loanRecord.id, eventType: "LOAN_APPROVED", detail: `Application ${application.applicationId} approved`, occurredAt: now, createdAt: now });
+  return loanRecord;
+}
+
 router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const type = typeof req.query.type === "string" ? req.query.type : undefined;
@@ -3477,7 +3541,7 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
   application.manualDecision = parsed.data.decision;
   application.manualNote = parsed.data.note;
   application.updatedAt = new Date().toISOString();
-  if (parsed.data.decision === "APPROVED") {
+  if (parsed.data.decision === "APPROVED" && !loans.some((loan) => loan.applicationId === application.id)) {
     application.status = "APPROVED";
     application.approvedAt = new Date().toISOString();
     const product = loanProducts[0];
@@ -3536,8 +3600,8 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
     application.status = "MORE_INFORMATION_REQUIRED";
   }
   application.updatedAt = new Date().toISOString();
-  if (parsed.data.decision === "APPROVED" && previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
-  if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") await sendLoanEmails(application, "REJECTED");
+  if (parsed.data.decision === "APPROVED" && previousStatus !== "APPROVED") void sendLoanEmails(application, "APPROVED").catch(() => undefined);
+  if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") void sendLoanEmails(application, "REJECTED").catch(() => undefined);
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, application });
 });
@@ -3577,9 +3641,10 @@ router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("
     application.status = "APPROVED";
     application.approvedAt = application.approvedAt ?? now;
     application.manualDecision = "APPROVED";
+    ensureApprovedLoanRecord(application, now);
   }
-  if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") await sendLoanEmails(application, "REJECTED");
-  if (allApproved && previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
+  if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") void sendLoanEmails(application, "REJECTED").catch(() => undefined);
+  if (allApproved && previousStatus !== "APPROVED") void sendLoanEmails(application, "APPROVED").catch(() => undefined);
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, application, allStagesApproved: allApproved });
 });
@@ -3656,7 +3721,7 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
       createdAt: now,
     });
   }
-  if (previousStatus !== "APPROVED") await sendLoanEmails(application, "APPROVED");
+  if (previousStatus !== "APPROVED") void sendLoanEmails(application, "APPROVED").catch(() => undefined);
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, application });
 });

@@ -26,6 +26,20 @@ export function setAccessToken(token: string): void { sessionStorage.setItem(TOK
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
+export class ApiError extends Error {
+  status: number;
+  resendAvailableAt?: string;
+  resendSecondsRemaining?: number;
+
+  constructor(message: string, status: number, metadata: { resendAvailableAt?: string; resendSecondsRemaining?: number } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.resendAvailableAt = metadata.resendAvailableAt;
+    this.resendSecondsRemaining = metadata.resendSecondsRemaining;
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   const isFormData = options.body instanceof FormData;
@@ -58,7 +72,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       window.dispatchEvent(new Event("velo:unauthorized"));
     }
   }
-  if (!response.ok) throw new Error(body.error || body.message || `Request failed (${response.status})`);
+  if (!response.ok) {
+    throw new ApiError(body.error || body.message || `Request failed (${response.status})`, response.status, {
+      resendAvailableAt: typeof body.resendAvailableAt === "string" ? body.resendAvailableAt : undefined,
+      resendSecondsRemaining: typeof body.resendSecondsRemaining === "number" ? body.resendSecondsRemaining : undefined,
+    });
+  }
   return body as T;
 }
 

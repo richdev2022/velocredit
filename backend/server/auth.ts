@@ -177,7 +177,8 @@ export async function createOtpChallenge(
   action: OtpAction,
   phone?: string,
   email?: string,
-  channel: "SMS" | "WHATSAPP" | "EMAIL" = "SMS"
+  channel: "SMS" | "WHATSAPP" | "EMAIL" = "SMS",
+  options: { skipRateLimit?: boolean } = {}
 ): Promise<{ id: string; expiresAt: string; resendAvailableAt: string; resendSecondsRemaining: number; channel: "SMS"|"WHATSAPP"|"EMAIL"; phone?: string; email?: string; }> {
   const now = new Date();
   const latest = otpChallenges
@@ -186,7 +187,7 @@ export async function createOtpChallenge(
   if (latest) {
     const resendAvailableAt = new Date(new Date(latest.createdAt).getTime() + env.OTP_RESEND_COOLDOWN_SECONDS * 1000);
     const resendSecondsRemaining = Math.max(0, Math.ceil((resendAvailableAt.getTime() - now.getTime()) / 1000));
-    if (resendSecondsRemaining > 0) throw new OtpRateLimitError(resendAvailableAt.toISOString(), resendSecondsRemaining);
+    if (resendSecondsRemaining > 0 && !options.skipRateLimit) throw new OtpRateLimitError(resendAvailableAt.toISOString(), resendSecondsRemaining);
   }
   const expiresAt = new Date(now.getTime() + env.OTP_TTL_SECONDS * 1000).toISOString();
   const code = generateOtpCode();

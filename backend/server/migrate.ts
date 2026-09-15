@@ -16,6 +16,7 @@ const MIGRATION_FILES = [
   "002_add_missing_columns.sql",
   "003_harden_required_defaults.sql",
   "004_align_profiles_and_documents.sql",
+  "005_unique_loan_application_reference.sql",
 ];
 
 export async function ensureDatabaseSchema(): Promise<"created" | "skipped"> {
