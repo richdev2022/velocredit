@@ -12,6 +12,7 @@ import {
   type AdminApplicationDetail,
 } from "../../services/adminApi";
 import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
+import { documentDownloadUrl, documentPreviewUrl } from "../../utils/documentLinks";
 import AgreementPreview from "../AgreementPreview";
 import { generateLoanAgreement } from "../../services/agreementGenerator";
 import Icon from "../Icon";
@@ -48,6 +49,13 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         setLoading(false);
       });
     return () => { cancelled = true; };
+  }, [applicationId]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void adminGetApplication(applicationId).then(setApp).catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(interval);
   }, [applicationId]);
 
   async function handleUpdateStatus() {
@@ -466,7 +474,7 @@ function documentSource(document: any): string {
   if (!document) return "";
   if (typeof document === "string") return document;
   if (document.data) return `data:${document.type || document.mimeType || "image/jpeg"};base64,${document.data}`;
-  return document.previewUrl || document.url || document.downloadUrl || document.driveUrl || "";
+  return documentPreviewUrl(document) || documentDownloadUrl(document);
 }
 
 function DocLink({ label, url }: { label: string; url?: string }) {
