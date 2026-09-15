@@ -397,7 +397,7 @@ export async function getInvestorPayoutAccounts(): Promise<{ ok: true; accounts:
 export async function getNigerianBanks(): Promise<{ ok: true; banks: Array<{ id: number; name: string; code: string }> }> { return request("/api/v1/providers/flutterwave/banks"); }
 export async function resolveInvestorPayoutAccount(bankCode: string, accountNumber: string): Promise<{ ok: true; accountName?: string; resolved?: { accountName?: string } }> { return request("/api/v1/investor/payout-accounts/resolve", { method: "POST", body: JSON.stringify({ bankCode, accountNumber }) }); }
 
-export interface InvestorWithdrawalInput { amountNaira: number; bankCode: string; accountNumber: string; narration?: string; otpChallengeId: string; otpCode: string; }
+export interface InvestorWithdrawalInput { amountNaira: number; bankCode: string; accountNumber: string; narration?: string; otpChallengeId: string; otpCode: string; idempotencyKey: string; }
 export async function withdrawInvestorWallet(input: InvestorWithdrawalInput): Promise<{ ok: true; withdrawal: { id: string; status: string }; message?: string; providerResponse?: unknown }> {
   return request("/api/v1/investor/wallet/withdraw", { method: "POST", body: JSON.stringify(input) });
 }

@@ -121,6 +121,20 @@ app.post(
       const providerReference = String(data.id ?? data.flw_ref ?? txRef);
 
       if (success) {
+        const withdrawal = investorWithdrawals.find((item) => {
+          const transfer = item.providerTransfer as { initiate?: { data?: { reference?: string; id?: number | string } } } | undefined;
+          const reference = String(transfer?.initiate?.data?.reference ?? item.providerReference ?? `WITHDRAWAL-${item.id}`);
+          const providerId = String(transfer?.initiate?.data?.id ?? item.providerReference ?? "");
+          return item.status !== "SUCCESSFUL" && (reference === txRef || providerId === providerReference || txRef === `WITHDRAWAL-${item.id}`);
+        });
+        if (withdrawal) {
+          const now = new Date().toISOString();
+          withdrawal.status = "SUCCESSFUL";
+          withdrawal.providerReference = providerReference;
+          withdrawal.processedAt = now;
+          withdrawal.updatedAt = now;
+          withdrawal.error = undefined;
+        }
         const walletTx = walletTransactions.find((t) => t.txRef === txRef && t.type === "DEPOSIT");
         const transactionId = String(data.id ?? "");
         if (walletTx && walletTx.status !== "COMPLETED" && walletTx.status !== "SUCCESSFUL" && transactionId) {
@@ -283,8 +297,7 @@ app.post(
                   (d.providerTransfer as { data?: { id?: number | string } }).data?.id === transfer.id ||
                   (d.providerTransfer as { data?: { id?: number | string } }).data?.id === transfer.flw_ref)) ||
               d.providerReference === String(transfer.id ?? transfer.flw_ref ?? transferRef);
-            const isLatest = d.id === matchingDisbursements[matchingDisbursements.length - 1].id;
-            if (matchesReference || isLatest) {
+            if (matchesReference) {
               d.status = "SUCCESSFUL";
               d.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
               d.processedAt = now;

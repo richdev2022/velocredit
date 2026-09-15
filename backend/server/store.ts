@@ -448,6 +448,7 @@ export interface InvestorWithdrawal {
   processedAt?: string;
   retryCount?: number;
   lastAttemptAt?: string;
+  idempotencyKey?: string;
 }
 
 export interface CreditHistoryEvent {

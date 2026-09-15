@@ -466,6 +466,7 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
         error: strNull(row, "error"), createdAt: iso(row.created_at) ?? new Date().toISOString(),
         updatedAt: iso(row.updated_at) ?? new Date().toISOString(), processedAt: iso(row.processed_at),
         retryCount: nullableNumber(row, "retry_count"), lastAttemptAt: iso(row.last_attempt_at),
+        idempotencyKey: strNull(row, "idempotency_key") ?? undefined,
       };
       snapshot.investorWithdrawals.push(withdrawal);
     }
