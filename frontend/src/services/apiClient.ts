@@ -436,12 +436,7 @@ export async function submitBorrowerApplication(input: Record<string, unknown>):
   const payload: LoanApplicationInput = {
     applicationId: compact.applicationId, applicantType: compact.applicantType, personalInfo: compact.personalInfo ?? {}, businessInfo: compact.businessInfo ?? {}, businessRep: compact.businessRep ?? {}, personalFinancial: compact.personalFinancial ?? {}, businessFinancial: compact.businessFinancial ?? {}, kyc: compact.kyc ?? {}, disbursementAccount: compact.disbursementAccount ?? {}, loanRequest: compact.loanRequest, collateral: compact.collateral ?? {}, documents: compact.documents ?? {}, witness: compact.witness ?? {},
   };
-  let application: LoanApplicationResponse["application"];
-  try { application = (await patchLoanApplication(draft.applicationId, payload)).application; }
-  catch (error) {
-    if (!(error instanceof Error) || !/Application not found/.test(error.message)) throw error;
-    application = (await createLoanApplication(payload)).application;
-  }
+  const application = (await createLoanApplication(payload)).application;
   const submitted = await submitLoanApplication(application.id);
   return { ok: true, loan: { applicationId: submitted.application.applicationId, id: submitted.application.id, status: submitted.application.status } };
 }
