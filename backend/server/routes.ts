@@ -3716,14 +3716,15 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       error: null,
     };
     loanDisbursements.push(disbursement);
-    const transfer = await createLoanDisbursement({
+    const transferPayload = {
       txRef: `VELO-DISBURSE-${loan.id}`,
       amountNaira: Number(loan.principalNaira),
       accountNumber: account.accountNumber,
       accountBank: account.bankCode,
       beneficiaryName: account.accountName ?? snapshot.fullName ?? "Borrower",
       narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
-    });
+    };
+    const transfer = await createLoanDisbursement(transferPayload);
     if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
       throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the disbursement transfer");
     }
@@ -3737,7 +3738,7 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
       metadata: { provider: "flutterwave", applicationId: application?.applicationId, accountBank: account.bankCode },
     });
-    disbursement.providerTransfer = transfer as unknown as Record<string, unknown>;
+    disbursement.providerTransfer = { requestPayload: transferPayload, response: transfer as unknown as Record<string, unknown> };
     disbursement.providerReference = (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? disbursement.id);
     disbursement.status = "PENDING";
     disbursement.processedAt = now;
@@ -3746,7 +3747,7 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     loan.providerTransfer = transfer;
     loan.updatedAt = now;
     const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
-    const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 3, 500, Number(loan.principalNaira));
+    const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 1, 0, Number(loan.principalNaira));
     if (verification.settled) {
       const settledAt = new Date().toISOString();
       loan.status = "DISBURSED";
@@ -3764,7 +3765,7 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       }
     }
     if (!(await persistMutation(res))) return;
-    res.status(verification.settled ? 200 : 202).json({ ok: true, loan, transfer, disbursement });
+    res.status(verification.settled ? 200 : 202).json({ ok: true, loan, transfer, transferPayload, disbursement });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
     const last = loanDisbursements[loanDisbursements.length - 1];
@@ -4084,16 +4085,17 @@ async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals
   withdrawal.updatedAt = withdrawal.lastAttemptAt;
   let initialTransfer: Record<string, unknown> | null = null;
   try {
-    const transfer = await createInvestorPayout({
+    const transferPayload = {
       txRef: `WITHDRAWAL-${withdrawal.id}`,
       amountNaira: Number(withdrawal.netNaira),
       accountNumber: String(withdrawal.accountNumber),
       accountBank: String(withdrawal.bankCode),
       beneficiaryName: String(withdrawal.accountName),
       narration: withdrawal.narration || `Velo investor withdrawal ${withdrawal.id}`,
-    });
-    initialTransfer = transfer as unknown as Record<string, unknown>;
-    withdrawal.providerTransfer = { ...(withdrawal.providerTransfer ?? {}), initiate: transfer as unknown as Record<string, unknown> } as unknown as Record<string, unknown>;
+    };
+    const transfer = await createInvestorPayout(transferPayload);
+    initialTransfer = { requestPayload: transferPayload, response: transfer as unknown as Record<string, unknown> };
+    withdrawal.providerTransfer = { ...(withdrawal.providerTransfer ?? {}), requestPayload: transferPayload, initiate: transfer as unknown as Record<string, unknown> } as unknown as Record<string, unknown>;
     const providerStatus = String(transfer.status ?? "").toLowerCase();
     if (providerStatus !== "success") throw new Error(transfer.message || "Withdrawal provider rejected the transfer");
     const transferData = (transfer as unknown as { data?: { id?: number | string; reference?: string } }) ?? {};
@@ -4103,7 +4105,7 @@ async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals
     const reference = rawRef !== undefined && rawRef !== null ? String(rawRef) : `WITHDRAWAL-${withdrawal.id}`;
     withdrawal.providerReference = reference || transferId;
     withdrawal.updatedAt = new Date().toISOString();
-    const verification = await verifyTransferWithRetry(transferId, reference, 3, 3000);
+    const verification = await verifyTransferWithRetry(transferId, reference, 1, 0);
     withdrawal.providerTransfer = { ...(withdrawal.providerTransfer ?? {}), verification: verification as unknown as Record<string, unknown> } as unknown as Record<string, unknown>;
     const now = new Date().toISOString();
     if (verification.settled) {

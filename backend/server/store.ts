@@ -893,8 +893,13 @@ function snapshotStore(): Record<StoreKey, unknown[]> {
 
 export async function persistStore(): Promise<EntityCounts> {
   if (!sql) throw new Error("PostgreSQL is not configured.");
+  if (pendingPersist) {
+    clearTimeout(pendingPersist);
+    pendingPersist = undefined;
+  }
   const snap = snapshotStore();
-  const counts = await decomposeAndUpsertAll(sql, snap);
+  const changedKeys = nestedDirty || dirtyKeys.size === 0 ? [...storeKeys] : [...dirtyKeys];
+  const counts = await decomposeAndUpsertAll(sql, snap, changedKeys);
   await sql.query(
     "INSERT INTO runtime_state (id, state) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET state = EXCLUDED.state, updated_at = CURRENT_TIMESTAMP",
     ["default", JSON.stringify(snap)]
