@@ -310,6 +310,11 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
 
       {/* Credit Reports */}
       <Card title="Credit Report (Internal + External)">
+        <div className="mb-4 rounded-lg border border-velo-100 bg-velo-50/50 p-3 text-xs text-slate-600">
+          <h4 className="font-semibold text-velo-900">How to read these scores</h4>
+          <p className="mt-1">The internal score is Velo's 0–850 assessment from verified identity, repayment history, payment behaviour and outstanding balance. Higher scores indicate lower observed risk.</p>
+          <p className="mt-1">Use the band and factor explanations with the system decision: below the review minimum needs careful review, while the eligible minimum is the policy guide—not an automatic approval. The external bureau score is supplied by the provider and may remain pending while consented background checks complete.</p>
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="rounded-lg border border-slate-100 p-3">
             <div className="flex items-center justify-between mb-2">
@@ -361,8 +366,8 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
             </div>
             <div className="text-xs text-slate-500 mb-3">
               Provider: {app.creditReportSnapshot?.external?.provider || "Prembly"}
-              {app.creditReportSnapshot?.external?.pulledAt && (
-                <> · Pulled {formatDateLabel(app.creditReportSnapshot.external.pulledAt)}</>
+              {(app.creditReportSnapshot?.external?.pulledAt || app.creditReportSnapshot?.external?.requestedAt) && (
+                <> · {app.creditReportSnapshot.external.pulledAt ? "Pulled" : "Requested"} {formatDateLabel(app.creditReportSnapshot.external.pulledAt || app.creditReportSnapshot.external.requestedAt)}</>
               )}
             </div>
             {app.creditReportSnapshot?.external?.reportReference && (
@@ -385,16 +390,46 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         </div>
       </Card>
 
-      {/* Documents */}
-      <Card title="Documents">
-        {app.documents.driveFolderUrl ? (
-          <DocLink label="Google Drive Folder" url={app.documents.driveFolderUrl} />
-        ) : (
-          <div className="text-sm text-slate-500">No Drive folder created yet.</div>
-        )}
-        <DocLink label="Identification Document" url={app.documents.identificationDocumentUrl} />
-        <DocLink label="Proof of Address" url={app.documents.proofOfAddressUrl} />
-        <DocLink label="Signed Loan Agreement" url={app.documents.signedAgreementUrl} />
+      <Card title="Disbursement Account">
+        <Row label="Institution" value={app.disbursementAccount?.institution || app.loan.disbursementAccount?.institution} />
+        <Row label="Bank" value={app.disbursementAccount?.bankName || app.loan.disbursementAccount?.bankName} />
+        <Row label="Account Name" value={app.disbursementAccount?.accountName || app.loan.disbursementAccount?.accountName} />
+        <Row label="Account Number" value={app.disbursementAccount?.accountNumber || app.loan.disbursementAccount?.accountNumber} mono />
+        <Row label="Bank Code" value={app.disbursementAccount?.bankCode || app.loan.disbursementAccount?.bankCode} mono />
+      </Card>
+
+      <Card title="Collateral & Witness">
+        <Row label="Collateral Type" value={app.collateral?.type} />
+        <Row label="Location" value={app.collateral?.location} />
+        <Row label="Ownership" value={app.collateral?.ownership} />
+        <Row label="Estimated Value" value={app.collateral?.estimatedValue} />
+        <Row label="Description" value={app.collateral?.description} />
+        <Row label="Witness" value={app.witness?.fullName} />
+        <Row label="Witness Phone" value={app.witness?.phone} />
+      </Card>
+
+      <Card title="Documents & Attachments">
+        {app.documents.driveFolderUrl && <DocLink label="Google Drive Folder" url={app.documents.driveFolderUrl} />}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
+          {Object.entries(app.documents || {}).filter(([key]) => key !== "driveFolderUrl").map(([key, raw]) => {
+            const document = raw as any;
+            const source = documentSource(document);
+            const label = key.replace(/([A-Z])/g, " $1").replace(/^./, (value) => value.toUpperCase());
+            return <div key={key} className="rounded-lg border border-slate-100 p-2">
+              {source && /^data:image\//i.test(source) ? <img src={source} alt={label} className="h-28 w-full rounded object-cover" /> : source ? <a href={source} target="_blank" rel="noopener noreferrer" className="flex h-28 items-center justify-center rounded bg-slate-50 text-xs font-medium text-velo-700">Open file</a> : <div className="flex h-28 items-center justify-center rounded bg-slate-50 text-xs text-slate-400">No preview</div>}
+              <div className="mt-2 text-xs font-medium text-slate-700">{label}</div>
+              <div className="text-[10px] text-slate-500">{document?.name || document?.fileName || "Uploaded attachment"}</div>
+            </div>;
+          })}
+        </div>
+        {!Object.keys(app.documents || {}).length && <div className="text-sm text-slate-500">No documents uploaded.</div>}
+      </Card>
+
+      <Card title="Review Decision & Stage Status">
+        <Row label="System Decision" value={app.systemDecision?.decision} />
+        <Row label="Manual Decision" value={app.manualDecision} />
+        <Row label="Decision Reasons" value={Array.isArray(app.systemDecision?.reasons) ? app.systemDecision.reasons.join("; ") : ""} />
+        {Object.entries(app.stageStatuses || {}).map(([stage, status]) => <Row key={stage} label={stage.replace(/_/g, " ")} value={status} />)}
       </Card>
     </div>
   );
@@ -425,6 +460,13 @@ function Row({ label, value, bold, mono }: { label: string; value?: string; bold
       </dd>
     </div>
   );
+}
+
+function documentSource(document: any): string {
+  if (!document) return "";
+  if (typeof document === "string") return document;
+  if (document.data) return `data:${document.type || document.mimeType || "image/jpeg"};base64,${document.data}`;
+  return document.previewUrl || document.url || document.downloadUrl || document.driveUrl || "";
 }
 
 function DocLink({ label, url }: { label: string; url?: string }) {
