@@ -2538,30 +2538,22 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     }
   })();
 
-  const timeoutPromise: Promise<null> = new Promise((resolve) => setTimeout(() => resolve(null), 4500));
-  const freshlyPulled = await Promise.race([creditBureauPromise, timeoutPromise]);
-  if (freshlyPulled && freshlyPulled.status === "RECEIVED" && freshlyPulled.score != null) {
-    latestExternalCredit = freshlyPulled;
-  } else {
-    void creditBureauPromise.then((report) => {
-      if (report && !latestExternalCredit && report.status === "RECEIVED" && report.score != null) {
-        const idx = creditScores.findIndex((s) => s.userId === req.user!.id);
-        if (idx >= 0) {
-          const recomputed = calculateCreditScore({
-            completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
-            onTimePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true).length,
-            latePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false).length,
-            defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
-            outstandingMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100), 0),
-            totalBorrowedMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100), 0),
-            kycVerified: user?.kycStatus === "VERIFIED",
-            bureauScore: report.score ?? null,
-          });
-          creditScores[idx] = { ...creditScores[idx], score: recomputed.score, band: recomputed.band, factors: recomputed.factors, createdAt: recomputed.calculatedAt };
-        }
-      }
+  void creditBureauPromise.then((report) => {
+    if (!report || report.status !== "RECEIVED" || report.score == null) return;
+    const idx = creditScores.findIndex((s) => s.userId === req.user!.id);
+    if (idx < 0) return;
+    const recomputed = calculateCreditScore({
+      completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
+      onTimePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true).length,
+      latePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false).length,
+      defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
+      outstandingMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100), 0),
+      totalBorrowedMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100), 0),
+      kycVerified: user?.kycStatus === "VERIFIED",
+      bureauScore: report.score,
     });
-  }
+    creditScores[idx] = { ...creditScores[idx], score: recomputed.score, band: recomputed.band, factors: recomputed.factors, createdAt: recomputed.calculatedAt };
+  });
 
   const customerSnapshot = {
     userId: req.user!.id,
@@ -2770,8 +2762,8 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
   application.submittedAt = application.submittedAt ?? new Date().toISOString();
   application.updatedAt = new Date().toISOString();
   if (!(await persistMutation(res))) return;
-  if (!wasSubmitted) await sendLoanEmails(application, "SUBMITTED");
   res.json({ ok: true, application });
+  if (!wasSubmitted) void sendLoanEmails(application, "SUBMITTED");
 });
 
 router.get("/borrower/loans", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
