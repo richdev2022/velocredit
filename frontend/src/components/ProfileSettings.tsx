@@ -49,9 +49,9 @@ export default function ProfileSettings() {
 
   useEffect(() => {
     if (!user) return;
-    setFullName(user.fullName);
-    setNewPhone(user.phone);
-    setNewEmail(user.email);
+    setFullName(user.fullName ?? "");
+    setNewPhone(user.phone ?? "");
+    setNewEmail(user.email ?? "");
     setDateOfBirth((user as any)?.dateOfBirth ?? "");
     setOccupation((user as any)?.occupation ?? "");
     setSourceOfFunds((user as any)?.sourceOfFunds ?? "");

@@ -3672,9 +3672,23 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     res.status(409).json({ ok: false, error: "Loan manager approval is required before disbursement" });
     return;
   }
-  const snapshot = (application?.customerSnapshot ?? {}) as { fullName?: string };
-  const account = disbursementAccounts.find((item) => item.borrowerId === loan.borrowerId);
-  if (!account || account.status !== "ACTIVE") {
+  const snapshot = (application?.customerSnapshot ?? {}) as {
+    fullName?: string;
+    disbursementAccount?: { accountName?: string; accountNumber?: string; bankCode?: string; bankName?: string };
+  };
+  const savedAccount = disbursementAccounts.find((item) => item.borrowerId === loan.borrowerId);
+  const applicationAccount = snapshot.disbursementAccount;
+  const account = savedAccount?.status === "ACTIVE"
+    ? savedAccount
+    : applicationAccount?.accountNumber && applicationAccount.bankCode
+      ? {
+          accountName: applicationAccount.accountName || snapshot.fullName || "Borrower",
+          accountNumber: applicationAccount.accountNumber,
+          bankCode: applicationAccount.bankCode,
+          bankName: applicationAccount.bankName,
+        }
+      : null;
+  if (!account) {
     res.status(400).json({ ok: false, error: "An active, verified borrower disbursement account is required" });
     return;
   }
@@ -3696,7 +3710,7 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       bankCode: account.bankCode,
       accountNumber: account.accountNumber,
       accountName: account.accountName ?? snapshot.fullName,
-      bankName: account.bankCode,
+      bankName: account.bankName ?? account.bankCode,
       status: "PROCESSING",
       narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
       retryCount: 0,

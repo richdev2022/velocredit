@@ -6,7 +6,7 @@ const ADMIN_ROLE_KEY = "velo:admin-role";
 const API_URL = config.apiUrl;
 const REQUEST_TIMEOUT_MS = 120_000;
 export interface AdminApplicationSummary { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: string; applicantName: string; email: string; phone: string; loanAmount: number; totalRepayment: number; tenure: string; repaymentDate: string; dateCreated: string; dateSubmitted: string; dateUpdated: string; driveFolderUrl: string; }
-export interface AdminApplicationDetail { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: string; createdAt: string; updatedAt: string; submittedAt: string; personalInfo: any; businessInfo: any; businessRep: any; kyc: any; financial: any; loan: any; documents: any; customerSnapshot?: any; creditReportSnapshot?: any; }
+export interface AdminApplicationDetail { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: string; createdAt: string; updatedAt: string; submittedAt: string; personalInfo: any; businessInfo: any; businessRep: any; kyc: any; financial: any; loan: any; documents: any; customerSnapshot?: any; creditReportSnapshot?: any; stageStatuses?: Record<string, string>; stageRejectionNotes?: Record<string, string>; systemDecision?: any; manualDecision?: string; manualNote?: string; borrowerId?: string; disbursementAccount?: any; witness?: any; collateral?: any; }
 export interface AdminStats { counts: Record<string, number>; total: number; totalLoanAmount: number; totalRepayment: number; totalLoanDisbursed: number; realizedRevenue: number; awaitingRevenue: number; }
 
 function token() { return sessionStorage.getItem(ADMIN_TOKEN_KEY); }
@@ -59,8 +59,8 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
   const calculation = snapshot.calculation || {};
   const normalizedLoan = {
     ...loan,
-    amount: loan.amount ?? loan.amountNaira ?? loan.principalNaira ?? 0,
-    tenure: loan.tenure ?? loan.tenureDays ?? 0,
+    amount: loan.amount ?? loan.amountNaira ?? loan.principalNaira ?? source.amountNaira ?? snapshot.loanRequest?.amount ?? 0,
+    tenure: loan.tenure ?? loan.tenureDays ?? source.tenureDays ?? snapshot.loanRequest?.tenure ?? 0,
     purpose: loan.purpose ?? snapshot.loanRequest?.purpose ?? "",
     interest: loan.interest ?? loan.totalInterestNaira ?? calculation.interest ?? 0,
     serviceFee: loan.serviceFee ?? calculation.serviceFee ?? 0,
@@ -70,6 +70,7 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
     totalRepayment: loan.totalRepayment ?? loan.totalRepaymentNaira ?? calculation.totalRepayment ?? 0,
     disbursementDate: loan.disbursementDate ?? loan.disbursedAt,
     repaymentDate: loan.repaymentDate ?? loan.dueAt ?? calculation.repaymentDate,
+    disbursementAccount: loan.disbursementAccount ?? source.disbursementAccount ?? snapshot.disbursementAccount,
   };
   const applicantType = (source.applicantType || (snapshot.businessInfo?.businessName ? "BUSINESS" : "PERSONAL")) as "PERSONAL" | "BUSINESS";
   return {
@@ -83,11 +84,20 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
     businessInfo: snapshot.businessInfo || {},
     businessRep: snapshot.businessRep || {},
     kyc: snapshot.kyc || {},
-    financial: snapshot.personalFinancial || snapshot.businessFinancial || {},
+    financial: applicantType === "BUSINESS" ? (snapshot.businessFinancial || {}) : (snapshot.personalFinancial || {}),
     loan: normalizedLoan,
     documents: source.documents || snapshot.documents || loan.documents || {},
     customerSnapshot: snapshot,
-    creditReportSnapshot: source.creditReportSnapshot || loan.creditReportSnapshot,
+    creditReportSnapshot: source.creditReportSnapshot || loan.creditReportSnapshot || {},
+    stageStatuses: source.stageStatuses || {},
+    stageRejectionNotes: source.stageRejectionNotes || {},
+    systemDecision: source.systemDecision || {},
+    manualDecision: source.manualDecision,
+    manualNote: source.manualNote,
+    borrowerId: source.borrowerId,
+    disbursementAccount: source.disbursementAccount || snapshot.disbursementAccount,
+    witness: snapshot.witness || {},
+    collateral: snapshot.collateral || {},
   };
 }
 export async function adminUpdateStatus(id: string, decision: "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED") { const response = await request<{ application: { status: string } }>(`/api/v1/admin/loans/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }); return { ok: true, status: response.application.status }; }
