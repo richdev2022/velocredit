@@ -1,8 +1,15 @@
+import { useEffect, useState } from "react";
 import type { FeeKey } from "../../types/loan";
 
 type FeeValue = { type: "flat" | "percentage"; value: number; includeUpfront: boolean };
 
 export default function FeeField({ label, value, onChange }: { feeKey: FeeKey; label: string; baseFee: FeeValue; value: FeeValue; onChange: (value: FeeValue) => void }) {
+  const [draftValue, setDraftValue] = useState(String(value.value));
+
+  useEffect(() => {
+    if (Number(draftValue) !== value.value) setDraftValue(String(value.value));
+  }, [value.value]);
+
   return (
     <div className="rounded-xl border border-slate-200 p-3">
       <div className="font-extrabold text-velo-900 text-xs mb-2">{label}</div>
@@ -15,15 +22,20 @@ export default function FeeField({ label, value, onChange }: { feeKey: FeeKey; l
           type="text"
           inputMode="decimal"
           min={0}
-          value={value.value}
+          value={draftValue}
           onChange={(e) => {
             const raw = e.target.value;
-            if (raw === "") {
+            if (!/^\d*(\.\d*)?$/.test(raw)) return;
+            setDraftValue(raw);
+            if (raw === "" || raw === ".") {
               onChange({ ...value, value: 0 });
               return;
             }
             const next = Number(raw);
             if (Number.isFinite(next) && next >= 0) onChange({ ...value, value: next });
+          }}
+          onBlur={() => {
+            if (draftValue === "" || draftValue === ".") setDraftValue("0");
           }}
           className="velo-input !py-2 text-sm font-bold w-full min-w-0"
         />

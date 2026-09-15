@@ -1000,6 +1000,23 @@ function BorrowerOverview(props: any) {
         </p>
       </div>
 
+      <section className="rounded-2xl border border-velo-100 bg-gradient-to-r from-velo-50 to-white p-4 sm:p-5 dark:border-velo-900/50 dark:from-velo-950/40 dark:to-slate-900">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-velo-600 shadow-sm dark:bg-slate-800 dark:text-velo-400">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 8v4m0 4h.01M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-velo-900 dark:text-white">See what you need before applying</h2>
+              <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">Review all requirements for personal and business loans before you start.</p>
+            </div>
+          </div>
+          <Link to="/borrower/requirements" className="btn-primary shrink-0 px-4 py-2.5 text-sm">View requirements</Link>
+        </div>
+      </section>
+
       {active && (
         <div className="rounded-2xl border border-amber-200/70 dark:border-amber-700/40 bg-gradient-to-br from-amber-50 via-white to-white dark:from-amber-950/40 dark:via-slate-900 dark:to-slate-900 p-5 sm:p-6 shadow-sm relative overflow-hidden">
           <div className="absolute -top-24 -right-24 w-64 h-64 rounded-full bg-amber-400/10 blur-3xl pointer-events-none" />
