@@ -635,6 +635,7 @@ const rawState = {} as Record<StoreKey, unknown[]>;
 const nestedProxyCache = new WeakMap<object, object>();
 let hydrating = false;
 let pendingPersist: ReturnType<typeof setTimeout> | undefined;
+let persistInFlight: Promise<EntityCounts> | undefined;
 const dirtyKeys = new Set<StoreKey>();
 let nestedDirty = false;
 
@@ -892,7 +893,7 @@ function snapshotStore(): Record<StoreKey, unknown[]> {
   return Object.fromEntries(storeKeys.map((key) => [key, rawState[key]])) as Record<StoreKey, unknown[]>;
 }
 
-export async function persistStore(): Promise<EntityCounts> {
+async function persistStoreNow(): Promise<EntityCounts> {
   if (!sql) throw new Error("PostgreSQL is not configured.");
   if (pendingPersist) {
     clearTimeout(pendingPersist);
@@ -908,6 +909,17 @@ export async function persistStore(): Promise<EntityCounts> {
   dirtyKeys.clear();
   nestedDirty = false;
   return counts;
+}
+
+export async function persistStore(): Promise<EntityCounts> {
+  const previous = persistInFlight ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(() => persistStoreNow());
+  persistInFlight = current;
+  try {
+    return await current;
+  } finally {
+    if (persistInFlight === current) persistInFlight = undefined;
+  }
 }
 
 function applySnapshotToCollections(snap: Record<StoreKey, unknown[]>): void {
