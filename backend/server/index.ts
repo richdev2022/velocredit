@@ -40,7 +40,7 @@ import {
 import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
 import type { IdentityVerificationEvent } from "./store.js";
 import { markKycChecklistComplete } from "./auth.js";
-import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail, loanDisbursedEmail } from "./email.js";
+import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail, loanDisbursedEmail, loanRepaymentEmail, loanRepaymentAdminEmail } from "./email.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { bootstrapEnvironmentAdministrator } from "./bootstrap.js";
@@ -248,6 +248,11 @@ app.post(
             if (Number(loan.outstandingNaira) <= 0.01) {
               loan.status = "REPAID";
               loan.paidAt = new Date().toISOString();
+              const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+              if (application) {
+                application.status = "REPAID";
+                application.updatedAt = loan.paidAt;
+              }
               creditHistory.push({
                 id: crypto.randomUUID(),
                 userId: loan.borrowerId,
@@ -272,6 +277,18 @@ app.post(
               createdAt: new Date().toISOString(),
             });
             loan.updatedAt = new Date().toISOString();
+            const borrower = users.find((user) => user.id === loan.borrowerId);
+            const fullyRepaid = loan.status === "REPAID";
+            if (borrower) {
+              const borrowerEmail = loanRepaymentEmail({ name: borrower.fullName, loanId: loan.id, amountNaira: Number(repayment.amountNaira), outstandingNaira: Number(loan.outstandingNaira), fullyRepaid });
+              void sendEmail({ to: borrower.email, name: borrower.fullName, ...borrowerEmail }).catch(() => undefined);
+              notifications.push({ id: randomUUID(), userId: borrower.id, channel: "EMAIL", kind: fullyRepaid ? "LOAN_REPAID" : "LOAN_REPAYMENT_CONFIRMED", recipientMasked: borrower.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"), status: "SENT", relatedEntityType: "REPAYMENT", relatedEntityId: repayment.id, retryCount: 0, createdAt: repayment.verifiedAt, sentAt: repayment.verifiedAt });
+            }
+            const adminRecipients = users.filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || (user.roles.includes("LOAN_MANAGER") && user.adminPermissions?.includes("loan_notifications"))));
+            for (const admin of adminRecipients) {
+              const adminEmail = loanRepaymentAdminEmail({ name: admin.fullName, borrowerName: borrower?.fullName ?? "Borrower", loanId: loan.id, amountNaira: Number(repayment.amountNaira), outstandingNaira: Number(loan.outstandingNaira), fullyRepaid });
+              void sendEmail({ to: admin.email, name: admin.fullName, ...adminEmail }).catch(() => undefined);
+            }
           }
         }
 
@@ -285,6 +302,11 @@ app.post(
         if (disbursementLoan) {
           const wasDisbursed = disbursementLoan.status === "DISBURSED";
           disbursementLoan.status = "DISBURSED";
+          const application = loanApplications.find((item) => item.id === disbursementLoan.applicationId || item.applicationId === disbursementLoan.applicationId);
+          if (application) {
+            application.status = "DISBURSED";
+            application.updatedAt = new Date().toISOString();
+          }
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
           disbursementLoan.disbursedAt = new Date().toISOString();
           disbursementLoan.updatedAt = disbursementLoan.disbursedAt;

@@ -12,6 +12,7 @@ import {
   verifyOtpChallenge,
   OtpRateLimitError,
   findOtpChallenge,
+  findLatestOtpChallenge,
   requestPasswordReset,
   confirmPasswordReset,
   markKycChecklistComplete,
@@ -1496,8 +1497,21 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
           resendSecondsRemaining: challenge.resendSecondsRemaining,
           requiresPhoneVerification: true,
         };
-      } catch (_otpError) {
-        // Ignore rate-limit on first attempt; user can resend
+      } catch (otpError) {
+        if (otpError instanceof OtpRateLimitError) {
+          const active = findLatestOtpChallenge(req.user!.id, "KYC_VERIFICATION");
+          if (active) {
+            otpChallengeForPhone = {
+              challengeId: active.id,
+              expiresAt: active.expiresAt,
+              channel: active.deliveryChannel,
+              phoneLastFour: String(active.phone ?? normalizedPhone).slice(-4),
+              resendAvailableAt: otpError.resendAvailableAt,
+              resendSecondsRemaining: otpError.resendSecondsRemaining,
+              requiresPhoneVerification: true,
+            };
+          }
+        }
       }
     } else {
       // Phone matches (or no identity phone) — ownership already considered proven
@@ -1713,8 +1727,21 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
           resendSecondsRemaining: challenge.resendSecondsRemaining,
           requiresPhoneVerification: true,
         };
-      } catch (_otpError) {
-        // Ignore rate-limit on first attempt
+      } catch (otpError) {
+        if (otpError instanceof OtpRateLimitError) {
+          const active = findLatestOtpChallenge(req.user!.id, "KYC_VERIFICATION");
+          if (active) {
+            ninOtpChallenge = {
+              challengeId: active.id,
+              expiresAt: active.expiresAt,
+              channel: active.deliveryChannel,
+              phoneLastFour: String(active.phone ?? normalizedPhone).slice(-4),
+              resendAvailableAt: otpError.resendAvailableAt,
+              resendSecondsRemaining: otpError.resendSecondsRemaining,
+              requiresPhoneVerification: true,
+            };
+          }
+        }
       }
     } else {
       kyc.checklist.nin = true;
@@ -3578,6 +3605,11 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
     res.status(404).json({ ok: false, error: "Loan application not found" });
     return;
   }
+  const existingLoan = loans.find((loan) => loan.applicationId === application.id);
+  if (existingLoan && ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF", "CANCELLED"].includes(existingLoan.status)) {
+    res.status(409).json({ ok: false, error: "A disbursed loan cannot be changed. Its status changes automatically with repayment." });
+    return;
+  }
   const previousStatus = application.status;
   application.manualDecision = parsed.data.decision;
   application.manualNote = parsed.data.note;
@@ -3864,6 +3896,10 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       loan.status = "DISBURSED";
       loan.disbursedAt = settledAt;
       loan.updatedAt = settledAt;
+      if (application) {
+        application.status = "DISBURSED";
+        application.updatedAt = settledAt;
+      }
       loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);
       disbursement.status = "SUCCESSFUL";
       disbursement.processedAt = settledAt;
@@ -5232,16 +5268,20 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     const verification = await verifyTransferWithRetry(transferId, retry.providerReference, 3, 500, Number(loan.principalNaira));
     if (verification.settled) {
       const settledAt = new Date().toISOString();
+      const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
       loan.status = "DISBURSED";
       loan.disbursedAt = settledAt;
       loan.updatedAt = settledAt;
+      if (application) {
+        application.status = "DISBURSED";
+        application.updatedAt = settledAt;
+      }
       loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? retry.providerReference);
       retry.status = "SUCCESSFUL";
       retry.processedAt = settledAt;
       retry.updatedAt = settledAt;
       creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
       const borrower = users.find((user) => user.id === loan.borrowerId);
-      const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
       if (borrower) {
         const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.applicationId, amountNaira: Number(loan.principalNaira) });
         void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);

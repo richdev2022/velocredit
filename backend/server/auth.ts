@@ -114,7 +114,9 @@ function adminPermissionForPath(path: string): AdminPermission | undefined {
   if (path.includes("/investors")) return "investors";
   if (path.includes("/kyc")) return "kyc";
   if (path.includes("/payouts")) return "payouts";
-  if (path.includes("/loans") || path.includes("/loan-products")) return "loans";
+  if (path.includes("/loans/") && path.includes("/decision")) return "loan_decisions";
+  if (path.includes("/loans/") && (path.includes("/disburse") || path.includes("/retry-disbursement"))) return "loan_disbursements";
+  if (path.includes("/loans") || path.includes("/loan-products")) return "loan_applications";
   if (path.includes("/reconciliation")) return "reconciliation";
   if (path.includes("/audit")) return "audit";
   if (path.includes("/administrators") || path.includes("/loan-managers")) return "staff";
@@ -223,6 +225,12 @@ export async function createOtpChallenge(
 
 export function findOtpChallenge(challengeId: string): (undefined | { id: string; userId: string; action: OtpAction; expiresAt: string; attempts: number; maxAttempts: number; createdAt: string; deliveryChannel: "SMS"|"WHATSAPP"|"EMAIL"; phone?: string; email?: string; consumedAt?: string }) {
   return otpChallenges.find((c) => c.id === challengeId) as any;
+}
+
+export function findLatestOtpChallenge(userId: string, action: OtpAction) {
+  return otpChallenges
+    .filter((challenge) => challenge.userId === userId && challenge.action === action && !challenge.consumedAt)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] as any;
 }
 
 export async function verifyOtpChallenge(challengeId: string, inputCode: string): Promise<{ ok: boolean; userId?: string; action?: OtpAction; error?: string }> {

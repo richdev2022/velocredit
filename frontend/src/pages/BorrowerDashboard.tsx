@@ -15,6 +15,22 @@ import OtpLoginSettings from "../components/OtpLoginSettings";
 import ProfileSettings from "../components/ProfileSettings";
 import Icon from "../components/Icon";
 
+function formatLoanStatus(status?: string): string {
+  const labels: Record<string, string> = {
+    SUBMITTED: "Under review",
+    KYC_PENDING: "Verification required",
+    UNDER_REVIEW: "Under review",
+    MORE_INFORMATION_REQUIRED: "More information required",
+    APPROVED: "Approved — awaiting disbursement",
+    DISBURSEMENT_PENDING: "Disbursement processing",
+    DISBURSED: "Disbursed",
+    ACTIVE: "Active",
+    PAST_DUE: "Past due",
+    REPAID: "Repaid",
+  };
+  return labels[String(status ?? "").toUpperCase()] ?? String(status ?? "—").replace(/_/g, " ");
+}
+
 type DashboardData = {
   applications?: Array<{
     id?: string;
@@ -1028,7 +1044,7 @@ function BorrowerOverview(props: any) {
                 </span>
                 {active.status && (
                   <span className={`badge ${["PAST_DUE"].includes(active.status) ? "badge-rejected" : "badge-pending"}`}>
-                    {active.status.replace(/_/g, " ")}
+                    {formatLoanStatus(active.status)}
                   </span>
                 )}
               </div>
@@ -1203,9 +1219,15 @@ function BorrowerOverview(props: any) {
             <div className="mt-5 rounded-xl border border-slate-100 p-4 dark:border-slate-700">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm font-semibold text-velo-900 dark:text-white">Latest application</span>
-                <span className="badge badge-pending">
-                  {String(data.applications[0].status).replace(/_/g, " ")}
-                </span>
+                <span className="badge badge-pending">{formatLoanStatus(data.applications[0].status)}</span>
+              </div>
+              <div className="mt-4 space-y-2 border-t border-slate-100 pt-3 dark:border-slate-700">
+                {(data.applications ?? []).slice(0, 4).map((application: NonNullable<DashboardData["applications"]>[number], index: number) => (
+                  <div key={application.id ?? index} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="text-slate-500">{application.id ? `Application ${application.id.slice(0, 8).toUpperCase()}` : "Loan application"}</span>
+                    <span className="font-semibold text-velo-700 dark:text-velo-300">{formatLoanStatus(application.status)}</span>
+                  </div>
+                ))}
               </div>
               <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
                 Requested amount: ₦

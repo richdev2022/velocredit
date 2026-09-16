@@ -120,6 +120,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
 
   const isPersonal = app.applicantType === "PERSONAL";
   const loan = app.loan || {};
+  const terminalLoan = ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF", "CANCELLED"].includes(String(app.status).toUpperCase());
   const personalInfo = app.personalInfo || {};
   const businessInfo = app.businessInfo || {};
   const businessRep = app.businessRep || {};
@@ -207,7 +208,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         </div>
 
         <div className="mt-5 pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-end gap-3">
-          {app.status !== "APPROVED" && app.status !== "REJECTED" && (
+          {!terminalLoan && app.status !== "APPROVED" && app.status !== "REJECTED" && (
             <>
               <div className="flex-1">
                 <label className="velo-label" htmlFor="status-change">Application decision</label>
@@ -223,7 +224,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
               </button>
             </>
           )}
-          {app.status === "APPROVED" && (
+          {app.status === "APPROVED" && !terminalLoan && (
             <button type="button" onClick={handleDisburse} disabled={saving} className="btn-primary">
               {saving ? "Submitting…" : "Disburse via Flutterwave"}
             </button>
