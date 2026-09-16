@@ -99,19 +99,28 @@ import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeE
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
+const PERSIST_TIMEOUT_MS = 15_000;
 
 async function persistMutation(res: any): Promise<boolean> {
   if (!sql) {
     res.status(503).json({ ok: false, error: "PostgreSQL is not configured. Your information was not saved." });
     return false;
   }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await persistStore();
+    await Promise.race([
+      persistStore(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Persistence timed out")), PERSIST_TIMEOUT_MS);
+      }),
+    ]);
     return true;
   } catch (error) {
     console.error("[routes] PostgreSQL persistence failed:", error);
-    res.status(503).json({ ok: false, error: "Unable to save your information. Please try again." });
+    res.status(503).json({ ok: false, error: "Unable to save your information right now. Please try again." });
     return false;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
