@@ -89,6 +89,16 @@ function getBool(key: string, fallback = false): boolean {
   return String(v).toLowerCase() === "true";
 }
 
+const PRODUCTION_API_URL = "https://velocredit.onrender.com";
+
+export function resolveApiUrl(configuredUrl: string, hostname = typeof window === "undefined" ? "" : window.location.hostname): string {
+  const normalized = configuredUrl.trim().replace(/\/$/, "");
+  const isLocalHost = /^(localhost|127\.0\.0\.1)$/.test(hostname);
+  const pointsToLocalApi = /^(https?:\/\/)(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalized);
+  if (pointsToLocalApi && hostname && !isLocalHost) return PRODUCTION_API_URL;
+  return normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Public configuration
 // ---------------------------------------------------------------------------
@@ -175,7 +185,7 @@ const baseConfig: AppConfig = {
   lenderSignatoryName: getStr("VITE_LENDER_SIGNATORY_NAME"),
   lenderSignatoryPosition: getStr("VITE_LENDER_SIGNATORY_POSITION"),
   lenderSignatorySignatureUrl: getStr("VITE_LENDER_SIGNATORY_SIGNATURE_URL"),
-  apiUrl: getStr("VITE_API_URL", "http://localhost:4000").replace(/\/$/, ""),
+  apiUrl: resolveApiUrl(getStr("VITE_API_URL", "http://localhost:4000")),
   loanManagerEmails: getStr("VITE_LOAN_MANAGER_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
   adminEmails: getStr("VITE_ADMIN_EMAILS", "").split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
   premblyWidgetId: getStr("VITE_PREMBLY_WIDGET_ID"),
