@@ -803,22 +803,22 @@ function syncAfterMutation<T>(key: StoreKey, _values: T[]): void {
   requestPersist(key);
 }
 
-function wrapNested<T>(value: T): T {
+function wrapNested<T>(value: T, key: StoreKey): T {
   if (typeof value !== "object" || value === null) return value;
   const existing = nestedProxyCache.get(value);
   if (existing) return existing as T;
   const proxy = new Proxy(value as object, {
     get(target, property, receiver) {
-      return wrapNested(Reflect.get(target, property, receiver));
+      return wrapNested(Reflect.get(target, property, receiver), key);
     },
     set(target, property, nextValue, receiver) {
-      const result = Reflect.set(target, property, wrapNested(nextValue), receiver);
-      requestPersist();
+      const result = Reflect.set(target, property, wrapNested(nextValue, key), receiver);
+      requestPersist(key);
       return result;
     },
     deleteProperty(target, property) {
       const result = Reflect.deleteProperty(target, property);
-      requestPersist();
+      requestPersist(key);
       return result;
     },
   });
@@ -831,10 +831,10 @@ function createPersistentArray<T>(key: StoreKey): T[] {
   rawState[key] = target;
   return new Proxy(target, {
     get(array, property, receiver) {
-      return wrapNested(Reflect.get(array, property, receiver));
+      return wrapNested(Reflect.get(array, property, receiver), key);
     },
     set(array, property, value, receiver) {
-      const result = Reflect.set(array, property, wrapNested(value), receiver);
+      const result = Reflect.set(array, property, wrapNested(value, key), receiver);
       syncAfterMutation(key, array);
       return result;
     },
