@@ -25,6 +25,7 @@ import {
   initializeLoanRepayment,
   createInvestment,
   getAccessToken,
+  refreshInvestorWithdrawalStatuses,
 } from "../services/apiClient";
 import { config } from "../utils/config";
 import { documentDownloadUrl, documentPreviewUrl } from "../utils/documentLinks";
@@ -209,6 +210,21 @@ export default function InvestorDashboard() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
+    const refreshWithdrawalState = async () => {
+      try {
+        const response = await refreshInvestorWithdrawalStatuses();
+        if (cancelled || !response.withdrawals?.length) return;
+        const [dashboard, history] = await Promise.all([getInvestorDashboard(), getInvestorTransactions()]);
+        if (!cancelled) {
+          setData(dashboard as DashboardData);
+          setTransactions(history as unknown as TransactionData);
+        }
+      } catch (_error) {
+        // Background provider verification must not interrupt the dashboard.
+      }
+    };
+    void refreshWithdrawalState();
+    const withdrawalInterval = window.setInterval(() => void refreshWithdrawalState(), 15000);
     const refreshKycState = async () => {
       try {
         const response = await getMyKyc();
@@ -230,6 +246,7 @@ export default function InvestorDashboard() {
       cancelled = true;
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.clearInterval(interval);
+      window.clearInterval(withdrawalInterval);
     };
   }, [user]);
 

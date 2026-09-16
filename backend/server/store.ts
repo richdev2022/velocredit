@@ -68,7 +68,7 @@ export interface LedgerEntry {
   id: string;
   walletId: string;
   userId: string;
-  entryType: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RELEASE" | "INVESTMENT_RETURN" | "PAYOUT" | "FEE" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "WITHDRAWAL_INITIATED" | "WITHDRAWAL_REVERSAL";
+  entryType: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RELEASE" | "INVESTMENT_RETURN" | "PAYOUT" | "FEE" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "WITHDRAWAL_INITIATED" | "WITHDRAWAL_REVERSAL" | "WITHDRAWAL_SETTLEMENT";
   referenceId?: string;
   amountMinor: number;
   direction: "DEBIT" | "CREDIT";
@@ -1010,10 +1010,10 @@ export function appendLedger(wallet: Wallet, entry: Omit<LedgerEntry, "id" | "wa
   const newBalance = entry.direction === "CREDIT"
     ? wallet.availableMinor + entry.amountMinor
     : wallet.availableMinor - entry.amountMinor;
-  const newHeld = entry.entryType === "INVESTMENT_LOCK"
+  const newHeld = entry.entryType === "INVESTMENT_LOCK" || entry.entryType === "WITHDRAWAL_INITIATED"
     ? wallet.heldMinor + entry.amountMinor
-    : entry.entryType === "INVESTMENT_RELEASE" || entry.entryType === "INVESTMENT_RETURN"
-    ? wallet.heldMinor - entry.amountMinor
+    : entry.entryType === "INVESTMENT_RELEASE" || entry.entryType === "INVESTMENT_RETURN" || entry.entryType === "WITHDRAWAL_REVERSAL" || entry.entryType === "WITHDRAWAL_SETTLEMENT"
+    ? wallet.heldMinor - (entry.entryType === "WITHDRAWAL_SETTLEMENT" ? Number(entry.metadata?.releasedAmountMinor ?? 0) : entry.amountMinor)
     : wallet.heldMinor;
   wallet.availableMinor = Math.max(0, newBalance);
   wallet.heldMinor = Math.max(0, newHeld);

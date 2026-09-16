@@ -342,8 +342,12 @@ export interface AdminAuditLogEntry {
   userId?: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
+  ipAddress?: string;
+  userAgent?: string;
+  actor?: { id: string; fullName: string; email: string; roles: string[] } | null;
+  targetUser?: { id: string; fullName: string; email: string; phone: string } | null;
 }
-export async function adminListAuditLogs(opts: { limit?: number; offset?: number } = {}): Promise<{ ok: true; logs: AdminAuditLogEntry[] }> {
+export async function adminListAuditLogs(opts: { limit?: number; offset?: number } = {}): Promise<{ ok: true; logs: AdminAuditLogEntry[]; meta?: { total: number; limit: number; offset: number; hasMore: boolean } }> {
   const params = new URLSearchParams();
   if (opts.limit) params.set("limit", String(opts.limit));
   if (opts.offset) params.set("offset", String(opts.offset));
