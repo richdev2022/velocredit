@@ -248,6 +248,11 @@ app.post(
             if (Number(loan.outstandingNaira) <= 0.01) {
               loan.status = "REPAID";
               loan.paidAt = new Date().toISOString();
+              const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+              if (application) {
+                application.status = "REPAID";
+                application.updatedAt = loan.paidAt;
+              }
               creditHistory.push({
                 id: crypto.randomUUID(),
                 userId: loan.borrowerId,
@@ -285,6 +290,11 @@ app.post(
         if (disbursementLoan) {
           const wasDisbursed = disbursementLoan.status === "DISBURSED";
           disbursementLoan.status = "DISBURSED";
+          const application = loanApplications.find((item) => item.id === disbursementLoan.applicationId || item.applicationId === disbursementLoan.applicationId);
+          if (application) {
+            application.status = "DISBURSED";
+            application.updatedAt = new Date().toISOString();
+          }
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
           disbursementLoan.disbursedAt = new Date().toISOString();
           disbursementLoan.updatedAt = disbursementLoan.disbursedAt;

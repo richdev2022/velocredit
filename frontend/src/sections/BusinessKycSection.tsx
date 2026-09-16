@@ -13,7 +13,7 @@ import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
 import { kycSchema, type KycForm } from "../utils/validation";
 import type { UploadedDocument, DocumentSlot } from "../types/documents";
-import { verifyMyBvn, verifyMyNin, confirmKycOwnershipOtp, resendKycOwnershipOtp, type KycOtpChallenge } from "../services/apiClient";
+import { verifyMyBvn, verifyMyNin, confirmKycOwnershipOtp, resendKycOwnershipOtp, updateMyKyc, type KycOtpChallenge } from "../services/apiClient";
 import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
 import Icon from "../components/Icon";
 
@@ -176,11 +176,14 @@ export default function BusinessKycSection() {
     try {
       const confirmed = await confirmKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, code: activeOtpChallenge.otpCode });
       const typeLower = activeOtpChallenge.idType.toLowerCase() as "bvn" | "nin";
+      const value = typeLower === "bvn" ? currentApplication.kyc?.bvn : currentApplication.kyc?.nin;
       setVerification((current) => ({ ...current, [typeLower]: "Verified" }));
-      patchKyc({ [typeLower === "bvn" ? "bvnVerified" : "ninVerified"]: true });
+      patchKyc({ [typeLower === "bvn" ? "bvnVerified" : "ninVerified"]: true, checklist: confirmed.checklist as any });
+      if (value) {
+        void updateMyKyc({ [typeLower]: value, checklist: { [typeLower]: true } }).catch(() => {});
+      }
       setVerificationError("");
       setActiveOtpChallenge(null);
-      void confirmed;
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Unable to verify code";
       setActiveOtpChallenge((current) => current ? { ...current, busy: false, error: reason, otpCode: "" } : current);

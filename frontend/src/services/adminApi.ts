@@ -76,7 +76,7 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
   return {
     applicationId: source.applicationId || loan.applicationId || loan.id,
     applicantType,
-    status: source.status || loan.status,
+    status: loan.status || source.status,
     createdAt: source.createdAt || loan.createdAt,
     updatedAt: source.updatedAt || loan.updatedAt || loan.createdAt,
     submittedAt: source.submittedAt || loan.createdAt,

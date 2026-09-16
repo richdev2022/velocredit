@@ -225,6 +225,12 @@ export function findOtpChallenge(challengeId: string): (undefined | { id: string
   return otpChallenges.find((c) => c.id === challengeId) as any;
 }
 
+export function findLatestOtpChallenge(userId: string, action: OtpAction) {
+  return otpChallenges
+    .filter((challenge) => challenge.userId === userId && challenge.action === action && !challenge.consumedAt)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] as any;
+}
+
 export async function verifyOtpChallenge(challengeId: string, inputCode: string): Promise<{ ok: boolean; userId?: string; action?: OtpAction; error?: string }> {
   const challenge = otpChallenges.find((c) => c.id === challengeId);
   if (!challenge) return { ok: false, error: "Challenge not found" };
