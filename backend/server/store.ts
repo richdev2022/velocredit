@@ -6,7 +6,7 @@ import { decomposeAndUpsertAll, type EntityCounts, type Snapshot } from "./decom
 import { rebuildFromDatabase } from "./rebuildFromDatabase.js";
 
 export type Role = "INVESTOR" | "BORROWER" | "ADMIN" | "LOAN_MANAGER";
-export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loans", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
+export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loan_applications", "loan_decisions", "loan_disbursements", "loan_repayments", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
 export type AdminPermission = typeof ADMIN_PERMISSIONS[number];
 export type KycStatus = "NOT_STARTED" | "IN_PROGRESS" | "PENDING_VERIFICATION" | "ACTION_REQUIRED" | "VERIFIED" | "PARTIALLY_VERIFIED" | "REJECTED" | "EXPIRED" | "SUSPENDED" | "REVIEWING";
 export type LoanStatus = "DRAFT" | "IN_PROGRESS" | "SUBMITTED" | "KYC_PENDING" | "UNDER_REVIEW" | "MORE_INFORMATION_REQUIRED" | "APPROVED" | "REJECTED" | "DISBURSEMENT_PENDING" | "DISBURSED" | "ACTIVE" | "PAST_DUE" | "DEFAULTED" | "REPAID" | "CANCELLED" | "WRITTEN_OFF";

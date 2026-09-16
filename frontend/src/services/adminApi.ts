@@ -105,7 +105,7 @@ export async function adminDisburseLoan(id: string): Promise<{ ok: true; loan: a
 export async function adminListStats(): Promise<AdminStats> { const response = await request<{ totals: Record<string, number> }>("/api/v1/admin/summary"); return { counts: {}, total: response.totals.users || 0, totalLoanAmount: 0, totalRepayment: 0, totalLoanDisbursed: 0, realizedRevenue: 0, awaitingRevenue: response.totals.pendingPayments || 0 }; }
 export async function adminSaveConfig(overrides: AdminConfigOverride) { return overrides; }
 export async function adminResetConfig() { return { ok: true }; }
-export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loans", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
+export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loan_applications", "loan_decisions", "loan_disbursements", "loan_repayments", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
 export type AdminPermission = typeof ADMIN_PERMISSIONS[number];
 export interface LoanManager { id: string; email: string; fullName: string; phone: string; role: "LOAN_MANAGER"; adminPermissions?: AdminPermission[]; isActive?: boolean; createdAt: string; }
 export async function adminListLoanManagers(): Promise<{ ok: true; managers: LoanManager[] }> { return request("/api/v1/admin/loan-managers"); }

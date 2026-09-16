@@ -114,7 +114,9 @@ function adminPermissionForPath(path: string): AdminPermission | undefined {
   if (path.includes("/investors")) return "investors";
   if (path.includes("/kyc")) return "kyc";
   if (path.includes("/payouts")) return "payouts";
-  if (path.includes("/loans") || path.includes("/loan-products")) return "loans";
+  if (path.includes("/loans/") && path.includes("/decision")) return "loan_decisions";
+  if (path.includes("/loans/") && (path.includes("/disburse") || path.includes("/retry-disbursement"))) return "loan_disbursements";
+  if (path.includes("/loans") || path.includes("/loan-products")) return "loan_applications";
   if (path.includes("/reconciliation")) return "reconciliation";
   if (path.includes("/audit")) return "audit";
   if (path.includes("/administrators") || path.includes("/loan-managers")) return "staff";
