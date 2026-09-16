@@ -406,6 +406,10 @@ export async function getInvestorTransactions(limit = 100, offset = 0): Promise<
   return request(`/api/v1/investor/transactions?limit=${limit}&offset=${offset}`);
 }
 
+export async function refreshInvestorWithdrawalStatuses(): Promise<{ ok: true; withdrawals: Array<{ id: string; status: string }>; wallet: InvestorDashboardResponse["wallet"] }> {
+  return request("/api/v1/investor/withdrawals/status");
+}
+
 export interface BorrowerDashboardResponse { ok: true; applications: unknown[]; loans: unknown[]; repayments: unknown[]; disbursementAccount: { id: string; bankCode: string; bankName?: string; accountNumber: string; accountName?: string; status: string; } | null; }
 export async function getBorrowerDashboard(): Promise<BorrowerDashboardResponse> { return request("/api/v1/borrower/dashboard"); }
 
@@ -605,7 +609,7 @@ export async function adminApprovePayout(payoutId: string): Promise<{ ok: true; 
   return request(`/api/v1/admin/payouts/${encodeURIComponent(payoutId)}/approve`, { method: "POST" });
 }
 
-export interface AdminReconciliationResponse { ok: true; providerEvents: unknown[]; unverifiedDeposits: unknown[]; unverifiedRepayments: unknown[]; pendingPayouts: unknown[]; lastSyncAt?: string; }
+export interface AdminReconciliationResponse { ok: true; guide?: Record<string, string>; providerEvents: unknown[]; unverifiedDeposits: unknown[]; unverifiedRepayments: unknown[]; pendingPayouts: unknown[]; pendingWithdrawals?: unknown[]; totals?: Record<string, number>; lastSyncAt?: string; }
 export async function adminGetReconciliation(limit = 100): Promise<AdminReconciliationResponse> {
   return request(`/api/v1/admin/reconciliation?limit=${limit}`);
 }

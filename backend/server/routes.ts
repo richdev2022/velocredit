@@ -2358,6 +2358,36 @@ router.post("/investor/investments/:id/liquidity", requireAuth, requireRole("INV
   });
 });
 
+router.get("/investor/withdrawals/status", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
+  const pending = investorWithdrawals.filter((item) => item.investorId === req.user!.id && ["PENDING", "PROCESSING"].includes(item.status));
+  const refreshed = [];
+  for (const withdrawal of pending) {
+    const transfer = (withdrawal.providerTransfer ?? {}) as { initiate?: { data?: { id?: number | string; reference?: string } }; verification?: Record<string, unknown> };
+    const transferId = String(transfer.initiate?.data?.id ?? "");
+    const reference = withdrawal.providerReference ?? String(transfer.initiate?.data?.reference ?? `WITHDRAWAL-${withdrawal.id}`);
+    if (!transferId && !reference) continue;
+    const verification = await verifyTransferWithRetry(transferId, reference, 1, 250);
+    const now = new Date().toISOString();
+    withdrawal.providerTransfer = { ...withdrawal.providerTransfer, verification } as unknown as Record<string, unknown>;
+    if (verification.settled && withdrawal.status !== "SUCCESSFUL") {
+      withdrawal.status = "SUCCESSFUL";
+      withdrawal.error = undefined;
+      withdrawal.processedAt = now;
+      withdrawal.updatedAt = now;
+      appendLedger(findWallet(withdrawal.investorId), { entryType: "WITHDRAWAL_SETTLEMENT", referenceId: withdrawal.id, amountMinor: 0, direction: "CREDIT", description: "Release funds held for successful withdrawal", metadata: { releasedAmountMinor: Math.round(Number(withdrawal.amountNaira) * 100) } });
+    } else if (verification.status === "failed" && withdrawal.status !== "FAILED") {
+      const reason = typeof (verification.data as Record<string, unknown> | undefined)?.complete_message === "string" ? String((verification.data as Record<string, unknown>).complete_message) : "Transfer verification returned failed status";
+      withdrawal.status = "FAILED";
+      withdrawal.error = reason;
+      withdrawal.updatedAt = now;
+      reverseInvestorWithdrawal(withdrawal, reason);
+    }
+    refreshed.push(withdrawal);
+  }
+  if (refreshed.length > 0) await persistStore();
+  res.json({ ok: true, withdrawals: refreshed, wallet: findWallet(req.user!.id) });
+});
+
 router.get("/investor/transactions", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
   const wallet = findWallet(req.user!.id);
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
@@ -3340,8 +3370,15 @@ router.delete("/admin/administrators/:id", requireAuth, requireRole("ADMIN"), as
   res.json({ ok: true, deleted: true });
 });
 
-router.get("/admin/audit-logs", requireAuth, requireRole("ADMIN"), (_req, res) => {
-  res.json({ ok: true, logs: [...auditLogs].sort((first, second) => second.createdAt.localeCompare(first.createdAt)) });
+router.get("/admin/audit-logs", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const ordered = [...auditLogs].sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+  const page = paginate(ordered, req.query as Record<string, unknown>);
+  const logs = page.items.map((entry) => {
+    const actor = entry.userId ? users.find((user) => user.id === entry.userId) : undefined;
+    const target = entry.resourceType === "USER" && entry.resourceId ? users.find((user) => user.id === entry.resourceId) : undefined;
+    return { ...entry, actor: actor ? { id: actor.id, fullName: actor.fullName, email: actor.email, roles: actor.roles } : null, targetUser: target ? { id: target.id, fullName: target.fullName, email: target.email, phone: target.phone } : null };
+  });
+  res.json({ ok: true, logs, meta: page.meta });
 });
 
 router.get("/admin/kyc-cases", requireAuth, requireRole("ADMIN"), (_req, res) => {
@@ -3925,13 +3962,12 @@ router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), a
 });
 
 router.get("/admin/reconciliation", requireAuth, requireRole("ADMIN"), (_req, res) => {
-  res.json({
-    ok: true,
-    providerEvents: providerEvents.map((e) => ({ ...e, event: undefined })),
-    unverifiedDeposits: walletTransactions.filter((t) => t.type === "DEPOSIT" && t.status === "PENDING_PROVIDER_CONFIRMATION"),
-    unverifiedRepayments: repayments.filter((r) => r.status === "PENDING_PROVIDER_CONFIRMATION"),
-    pendingPayouts: payouts.filter((p) => ["PENDING_PROVIDER_CONFIRMATION", "FAILED"].includes(p.status)),
-  });
+  const providerEventsPending = providerEvents.filter((e) => !(e as { processed?: boolean }).processed);
+  const unverifiedDeposits = walletTransactions.filter((t) => t.type === "DEPOSIT" && ["PENDING", "PENDING_PROVIDER_CONFIRMATION"].includes(String(t.status)));
+  const unverifiedRepayments = repayments.filter((r) => r.status === "PENDING_PROVIDER_CONFIRMATION");
+  const pendingPayouts = payouts.filter((p) => ["PENDING_PROVIDER_CONFIRMATION", "FAILED"].includes(p.status));
+  const pendingWithdrawals = investorWithdrawals.filter((w) => ["PENDING", "PROCESSING", "FAILED"].includes(w.status));
+  res.json({ ok: true, guide: { providerEvents: "Webhook/provider callbacks not marked processed; match by provider event ID and provider reference.", unverifiedDeposits: "Wallet deposit requests awaiting provider confirmation; match txRef, amount, currency and provider transaction ID.", unverifiedRepayments: "Loan repayment requests awaiting provider confirmation; match loan ID, borrower, amount and provider reference.", pendingPayouts: "Investment payouts awaiting provider settlement or needing retry; match payout ID, investor, amount and provider reference.", pendingWithdrawals: "Investor withdrawals whose wallet funds remain held until the provider confirms success or failure; match withdrawal ID, investor, net amount and provider reference." }, providerEvents: providerEventsPending, unverifiedDeposits, unverifiedRepayments, pendingPayouts, pendingWithdrawals, totals: { providerEvents: providerEventsPending.length, unverifiedDeposits: unverifiedDeposits.length, unverifiedRepayments: unverifiedRepayments.length, pendingPayouts: pendingPayouts.length, pendingWithdrawals: pendingWithdrawals.length } });
 });
 
 router.get("/admin/reports", requireAuth, requireRole("ADMIN"), (req, res) => {
@@ -4188,6 +4224,14 @@ async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals
       withdrawal.error = undefined;
       withdrawal.processedAt = now;
       withdrawal.updatedAt = now;
+      appendLedger(findWallet(withdrawal.investorId), {
+        entryType: "WITHDRAWAL_SETTLEMENT",
+        referenceId: withdrawal.id,
+        amountMinor: 0,
+        direction: "CREDIT",
+        description: "Release funds held for successful withdrawal",
+        metadata: { releasedAmountMinor: Math.round(Number(withdrawal.amountNaira) * 100) },
+      });
       return { transfer: initialTransfer ?? undefined, verification: verification as unknown as Record<string, unknown>, finalStatus: "SUCCESSFUL" };
     } else if (verification.status === "failed") {
       const failReason =

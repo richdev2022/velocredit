@@ -497,7 +497,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   }
 
   return (
-    <div className="space-y-6 animate-fade-in text-slate-800 dark:text-slate-200">
+    <div className="space-y-6 animate-fade-in rounded-2xl text-slate-800 dark:text-slate-200 [&_.bg-white]:bg-slate-900 [&_.bg-slate-50]:bg-slate-950 [&_.border-slate-100]:border-slate-800 [&_.border-slate-200]:border-slate-700 [&_.text-slate-700]:text-slate-200 [&_.text-slate-600]:text-slate-300">
       {showConfig && (
       <>
       {/* Header */}
