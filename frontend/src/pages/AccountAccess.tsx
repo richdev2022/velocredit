@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PasswordInput from "../components/PasswordInput";
 import { useAuth } from "../context/AuthContext";
+import { isValidEmail } from "../utils/validation";
 import { loginStepUpResendOtp, resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired, type LoginStepUpRequired } from "../services/apiClient";
 import Icon from "../components/Icon";
 
@@ -81,6 +82,12 @@ export default function AccountAccess() {
     event.preventDefault();
     setError("");
     setSuccess("");
+    const normalizedEmail = email.trim().toLowerCase();
+    const emailRequired = mode === "login" || mode === "register" || (mode === "forgot" && !(resetId && resetToken));
+    if (emailRequired && !isValidEmail(normalizedEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
     setBusy(true);
 
     try {
@@ -95,7 +102,7 @@ export default function AccountAccess() {
           navigate(verifiedUser.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
           return;
         }
-        const result = await login(email, password);
+        const result = await login(normalizedEmail, password);
         if ("requiresOtp" in result && result.requiresOtp) {
           if (result.ok) {
             setLoginStepUp(result);
@@ -122,7 +129,7 @@ export default function AccountAccess() {
         if (!passwordStrong) {
           throw new Error("Password must be 8+ chars with uppercase and a number");
         }
-        const registration = await register({ email, phone, fullName, password, role, preferredOtpChannel });
+        const registration = await register({ email: normalizedEmail, phone, fullName, password, role, preferredOtpChannel });
         setSignupVerification(registration.verification);
         setOtpRemaining(registration.verification.resendSecondsRemaining);
         setSuccess(registration.message);
@@ -132,7 +139,7 @@ export default function AccountAccess() {
           setSuccess("Password reset successful! You can now log in.");
           setTimeout(() => switchMode("login"), 1500);
         } else {
-          const result = await requestPasswordReset(email);
+          const result = await requestPasswordReset(normalizedEmail);
           setSuccess(result.message);
           if (result.resetId) {
             setResetId(result.resetId);
