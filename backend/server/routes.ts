@@ -1346,6 +1346,8 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     status: kyc.status,
     checklist: kyc.checklist,
     categoryResults: kyc.categoryResults ?? {},
+    bvn: kyc.bvn,
+    nin: kyc.nin,
     bvnLastFour: kyc.bvn ? kyc.bvn.slice(-4) : undefined,
     ninLastFour: kyc.nin ? kyc.nin.slice(-4) : undefined,
     submittedAt: kyc.submittedAt,
@@ -1464,11 +1466,12 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     kyc.rejectionReason = providerReason(result.errorMessage);
     if (user) { user.kycStatus = kyc.status; await notifyKyc(user, "REJECTED", "BVN", kyc.rejectionReason); }
   }
-  kyc.bvn = parsed.data.bvn;
   let otpChallengeForPhone: undefined | {
     challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; phoneLastFour: string; resendAvailableAt: string; resendSecondsRemaining: number; requiresPhoneVerification: true;
   } = undefined;
   if (result.status === "SUCCESS") {
+    kyc.bvn = parsed.data.bvn;
+    if (kyc.status === "REJECTED") kyc.status = "IN_PROGRESS";
     kyc.providerRequestId = result.providerReference;
     kyc.providerRaw = result.rawResponse;
     let identityPhone: string | undefined;
@@ -1694,11 +1697,12 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     kyc.rejectionReason = providerReason(result.errorMessage);
     if (user) { user.kycStatus = kyc.status; await notifyKyc(user, "REJECTED", "NIN", kyc.rejectionReason); }
   }
-  kyc.nin = parsed.data.nin;
   let ninOtpChallenge: undefined | {
     challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; phoneLastFour: string; resendAvailableAt: string; resendSecondsRemaining: number; requiresPhoneVerification: true;
   } = undefined;
   if (result.status === "SUCCESS") {
+    kyc.nin = parsed.data.nin;
+    if (kyc.status === "REJECTED") kyc.status = "IN_PROGRESS";
     kyc.providerRequestId = result.providerReference;
     kyc.providerRaw = result.rawResponse;
     let identityPhone: string | undefined;

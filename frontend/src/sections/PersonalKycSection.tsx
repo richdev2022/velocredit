@@ -160,12 +160,12 @@ export default function PersonalKycSection() {
       if (checklist.bvn && profileBvn && !existingKyc.bvnVerified) {
         kycPatch.bvn = profileBvn;
         kycPatch.bvnVerified = true;
-        setValue("bvn", maskIdNumber(profileBvn), { shouldValidate: true });
+        setValue("bvn", profileBvn, { shouldValidate: true });
       }
       if (checklist.nin && profileNin && !existingKyc.ninVerified) {
         kycPatch.nin = profileNin;
         kycPatch.ninVerified = true;
-        setValue("nin", maskIdNumber(profileNin), { shouldValidate: true });
+        setValue("nin", profileNin, { shouldValidate: true });
       }
       if (checklist.liveness && !existingKyc.livenessVerified) {
         kycPatch.livenessVerified = true;
@@ -256,10 +256,10 @@ export default function PersonalKycSection() {
         const autofill = Object.fromEntries(Object.entries({ fullName: pick(["full_name", "fullName", "name"]), phone: pick(["phone_number", "phone", "mobile"]), dateOfBirth: pick(["date_of_birth", "dateOfBirth", "dob"]) }).filter(([, item]) => item));
         if (Object.keys(autofill).length) patchPersonalInfo(autofill);
         if (lowerType === "bvn") {
-          setValue("bvn", maskIdNumber(value), { shouldValidate: true });
+          setValue("bvn", value, { shouldValidate: true });
           void updateMyKyc({ bvn: value, checklist: { bvn: true } }).catch(() => {});
         } else {
-          setValue("nin", maskIdNumber(value), { shouldValidate: true });
+          setValue("nin", value, { shouldValidate: true });
           void updateMyKyc({ nin: value, checklist: { nin: true } }).catch(() => {});
         }
         window.setTimeout(() => {
@@ -290,10 +290,10 @@ export default function PersonalKycSection() {
       setActiveOtpChallenge(null);
       if (value) {
         if (lowerType === "bvn") {
-          setValue("bvn", maskIdNumber(value), { shouldValidate: true });
+          setValue("bvn", value, { shouldValidate: true });
           void updateMyKyc({ bvn: value, checklist: { bvn: true } }).catch(() => {});
         } else {
-          setValue("nin", maskIdNumber(value), { shouldValidate: true });
+          setValue("nin", value, { shouldValidate: true });
           void updateMyKyc({ nin: value, checklist: { nin: true } }).catch(() => {});
         }
       }
@@ -370,85 +370,45 @@ export default function PersonalKycSection() {
         </div>
 
         <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2">
-          {bvnLocked ? (
-            <div>
-              <label className="velo-label">BVN <span className="text-red-500">*</span></label>
-              <div className="velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 text-slate-700">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold tracking-wider font-mono text-slate-900">{bvnDisplay}</span>
-                  <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded">Verified</span>
-                </div>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
-                  <rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
-                  <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                </svg>
-              </div>
-              <p className="velo-helper mt-1 text-slate-500">BVN verified and locked for your security.</p>
-            </div>
-          ) : (
-            <FormInput
-              label="BVN"
-              required
-              inputMode="numeric"
-              placeholder="11-digit BVN"
-              helper="Dial *565*0# on your registered line to retrieve your BVN."
-              error={errors.bvn?.message}
-              {...bvnField}
-              onChange={(e) => { onBvnChange(e); sync("bvn", e.target.value); }}
-            />
-          )}
-          {ninLocked ? (
-            <div>
-              <label className="velo-label">NIN <span className="text-red-500">*</span></label>
-              <div className="velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 text-slate-700">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold tracking-wider font-mono text-slate-900">{ninDisplay}</span>
-                  <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded">Verified</span>
-                </div>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
-                  <rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
-                  <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-                </svg>
-              </div>
-              <p className="velo-helper mt-1 text-slate-500">NIN verified and locked for your security.</p>
-            </div>
-          ) : (
-            <FormInput
-              label="NIN"
-              required
-              inputMode="numeric"
-              placeholder="11-digit NIN"
-              helper="Found on your National Identity Card or via the NIMC app."
-              error={errors.nin?.message}
-              {...ninField}
-              onChange={(e) => { onNinChange(e); sync("nin", e.target.value); }}
-            />
-          )}
-          <div className="sm:col-start-1">
+          <div className="min-w-0">
             {bvnLocked ? (
-              <span className="text-xs inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-lg font-semibold shadow-sm">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                BVN Verified
-              </span>
-            ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <button type="button" className="btn-secondary text-xs min-h-[38px]" onClick={() => void verifyIdentity("bvn", application.kyc?.bvn || "")}>Verify BVN instantly</button>
-                {verification.bvn && <span className={`text-xs ${verification.bvn === "Verified" ? "text-emerald-600 font-semibold" : "text-slate-500"}`}>{verification.bvn}</span>}
+              <div>
+                <label className="velo-label">BVN <span className="text-red-500">*</span></label>
+                <div className="velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 text-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold tracking-wider font-mono text-slate-900">{bvnDisplay}</span>
+                    <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded">Verified</span>
+                  </div>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400"><rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/><path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                </div>
+                <p className="velo-helper mt-1 text-slate-500">BVN verified and locked for your security.</p>
               </div>
+            ) : (
+              <FormInput label="BVN" required inputMode="numeric" placeholder="11-digit BVN" helper="Dial *565*0# on your registered line to retrieve your BVN." error={errors.bvn?.message} {...bvnField} onChange={(e) => { onBvnChange(e); sync("bvn", e.target.value); }} />
             )}
+            <div className="mt-2">
+              {bvnLocked ? <span className="text-xs inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-lg font-semibold shadow-sm">BVN Verified</span> : <div className="flex flex-wrap items-center gap-2"><button type="button" className="btn-secondary text-xs min-h-[38px]" onClick={() => void verifyIdentity("bvn", application.kyc?.bvn || "")}>Verify BVN instantly</button>{verification.bvn && <span className={`text-xs ${verification.bvn === "Verified" ? "text-emerald-600 font-semibold" : "text-slate-500"}`}>{verification.bvn}</span>}</div>}
+            </div>
           </div>
-          <div className="sm:col-start-2">
+          <div className="min-w-0">
             {ninLocked ? (
-              <span className="text-xs inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-lg font-semibold shadow-sm">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                NIN Verified
-              </span>
-            ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <button type="button" className="btn-secondary text-xs min-h-[38px]" onClick={() => void verifyIdentity("nin", application.kyc?.nin || "")}>Verify NIN instantly</button>
-                {verification.nin && <span className={`text-xs ${verification.nin === "Verified" ? "text-emerald-600 font-semibold" : "text-slate-500"}`}>{verification.nin}</span>}
+              <div>
+                <label className="velo-label">NIN <span className="text-red-500">*</span></label>
+                <div className="velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 text-slate-700">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold tracking-wider font-mono text-slate-900">{ninDisplay}</span>
+                    <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded">Verified</span>
+                  </div>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400"><rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/><path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+                </div>
+                <p className="velo-helper mt-1 text-slate-500">NIN verified and locked for your security.</p>
               </div>
+            ) : (
+              <FormInput label="NIN" required inputMode="numeric" placeholder="11-digit NIN" helper="Found on your National Identity Card or via the NIMC app." error={errors.nin?.message} {...ninField} onChange={(e) => { onNinChange(e); sync("nin", e.target.value); }} />
             )}
+            <div className="mt-2">
+              {ninLocked ? <span className="text-xs inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-lg font-semibold shadow-sm">NIN Verified</span> : <div className="flex flex-wrap items-center gap-2"><button type="button" className="btn-secondary text-xs min-h-[38px]" onClick={() => void verifyIdentity("nin", application.kyc?.nin || "")}>Verify NIN instantly</button>{verification.nin && <span className={`text-xs ${verification.nin === "Verified" ? "text-emerald-600 font-semibold" : "text-slate-500"}`}>{verification.nin}</span>}</div>}
+            </div>
           </div>
         </div>
         <FileUpload
