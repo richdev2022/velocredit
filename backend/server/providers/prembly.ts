@@ -95,14 +95,14 @@ function providerStatus(statusLike: unknown): VerificationStatus {
 
 function successFromResponse(response: Record<string, unknown>): boolean {
   const topStatus = typeof response.status === "boolean" ? response.status : undefined;
-  const topCode = String((response as { response_code?: unknown }).response_code ?? "");
-  const vStatus = String((response as { verification_status?: unknown }).verification_status ?? "");
+  const topCode = String((response as { response_code?: unknown }).response_code ?? "").toLowerCase();
+  const vStatus = String((response as { verification_status?: unknown }).verification_status ?? "").toLowerCase();
   const nestedVerif = (response as { verification?: Record<string, unknown> }).verification;
-  const nestedStatus = nestedVerif && typeof nestedVerif === "object" ? String((nestedVerif as { status?: unknown }).status ?? "") : "";
+  const nestedStatus = nestedVerif && typeof nestedVerif === "object" ? String((nestedVerif as { status?: unknown }).status ?? "").toLowerCase() : "";
   if (topStatus === false) return false;
   const ok =
     (topStatus === true || topCode === "00" || topCode === "0" || topCode === "200") &&
-    (vStatus === "verified" || nestedStatus === "VERIFIED" || nestedStatus === "verified" || !vStatus && !nestedStatus);
+    (vStatus === "verified" || nestedStatus === "verified" || !vStatus && !nestedStatus);
   return ok;
 }
 

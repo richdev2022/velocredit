@@ -99,7 +99,7 @@ import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeE
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
-const PERSIST_TIMEOUT_MS = 15_000;
+const PERSIST_TIMEOUT_MS = 45_000;
 
 async function persistMutation(res: any): Promise<boolean> {
   if (!sql) {
