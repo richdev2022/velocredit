@@ -71,6 +71,11 @@ export default function PersonalKycSection() {
   }>(null);
   const countdownRef = useRef<number | null>(null);
   const kycProfileLoadedRef = useRef(false);
+  const fieldsTouchedRef = useRef<{ bvn: boolean; nin: boolean; identificationNumber: boolean }>({
+    bvn: false,
+    nin: false,
+    identificationNumber: false,
+  });
   const applicationRef = useRef(application);
   applicationRef.current = application;
   if (!application) return null;
@@ -120,6 +125,7 @@ export default function PersonalKycSection() {
     register,
     handleSubmit,
     setValue,
+    getValues,
     formState: { errors, isValid },
   } = useForm<KycForm>({
     resolver: zodResolver(kycSchema),
@@ -157,12 +163,17 @@ export default function PersonalKycSection() {
       const kycPatch: Record<string, any> = {};
       const profileBvn = typeof anyKyc.bvn === "string" ? anyKyc.bvn : undefined;
       const profileNin = typeof anyKyc.nin === "string" ? anyKyc.nin : undefined;
-      if (checklist.bvn && profileBvn && !existingKyc.bvnVerified) {
+      const currentRhfValues = getValues();
+      const rhfBvn = typeof currentRhfValues.bvn === "string" ? currentRhfValues.bvn.trim() : "";
+      const rhfNin = typeof currentRhfValues.nin === "string" ? currentRhfValues.nin.trim() : "";
+      const userTypedBvn = fieldsTouchedRef.current.bvn || rhfBvn !== "";
+      const userTypedNin = fieldsTouchedRef.current.nin || rhfNin !== "";
+      if (checklist.bvn && profileBvn && !existingKyc.bvnVerified && !userTypedBvn) {
         kycPatch.bvn = profileBvn;
         kycPatch.bvnVerified = true;
         setValue("bvn", profileBvn, { shouldValidate: true });
       }
-      if (checklist.nin && profileNin && !existingKyc.ninVerified) {
+      if (checklist.nin && profileNin && !existingKyc.ninVerified && !userTypedNin) {
         kycPatch.nin = profileNin;
         kycPatch.ninVerified = true;
         setValue("nin", profileNin, { shouldValidate: true });
@@ -202,8 +213,24 @@ export default function PersonalKycSection() {
 
   const { onChange: onBvnChange, ...bvnField } = register("bvn");
   const { onChange: onNinChange, ...ninField } = register("nin");
+  const { onChange: onIdNumChange, ...idNumField } = register("identificationNumber");
+
+  function guardedOnChange<K extends keyof KycForm>(
+    key: K,
+    rhfOnChange: (...args: any[]) => any
+  ) {
+    return (...args: any[]) => {
+      if (key === "bvn" || key === "nin" || key === "identificationNumber") {
+        (fieldsTouchedRef.current as any)[key] = true;
+      }
+      return rhfOnChange(...args);
+    };
+  }
 
   function sync<K extends keyof KycForm>(key: K, value: KycForm[K]) {
+    if (key === "bvn" || key === "nin" || key === "identificationNumber") {
+      (fieldsTouchedRef.current as any)[key] = true;
+    }
     patchKyc({ [key]: value } as any);
   }
 
@@ -605,8 +632,8 @@ export default function PersonalKycSection() {
             required
             placeholder="ID number"
             error={errors.identificationNumber?.message}
-            {...register("identificationNumber")}
-            onChange={(e) => { register("identificationNumber").onChange(e); sync("identificationNumber", e.target.value); }}
+            {...idNumField}
+            onChange={(e) => { onIdNumChange(e); sync("identificationNumber", e.target.value); }}
           />
         </div>
 

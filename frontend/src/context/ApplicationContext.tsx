@@ -184,7 +184,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       const match = findDraftsByEmailOrPhone(user.email || "", user.phone || "").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       const local = match ? loadApplication(match.applicationId) : null;
       if (!resumed && local) {
-        resumed = normalizeApplicationData(local);
+        resumed = normalizeApplicationData(local, applicationRef.current);
         savedIndex = getSavedSectionIndex(resumed);
       }
       if (!cancelled && resumed) {
@@ -290,7 +290,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     if (!app) {
       return { ok: true, found: false, message: "Draft was not found in local storage." };
     }
-    const resumed = normalizeApplicationData(app);
+    const resumed = normalizeApplicationData(app, applicationRef.current);
     applicationRef.current = resumed;
     setApplication(resumed);
     const resumeIndex = getSavedSectionIndex(resumed);
@@ -305,7 +305,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const loadExisting = useCallback((id: string, supplied?: ApplicationData, suppliedSectionIndex?: number | null) => {
     const app = supplied || loadApplication(id);
     if (app) {
-      const resumed = normalizeApplicationData(app);
+      const resumed = normalizeApplicationData(app, applicationRef.current);
       applicationRef.current = resumed;
       setApplication(resumed);
       const backendIdx = suppliedSectionIndex != null ? Number(suppliedSectionIndex) : Number(resumed.lastSectionIndex);
@@ -531,83 +531,160 @@ export function useApplication(): ApplicationContextValue {
 // Section status derivation
 // ---------------------------------------------------------------------------
 
-function normalizeApplicationData(data: ApplicationData): ApplicationData {
+function nonEmptyStr(v: unknown): v is string {
+  return typeof v === "string" && v.trim() !== "";
+}
+
+function pickString(prior: unknown, data: unknown, fallback: string): string {
+  if (nonEmptyStr(prior)) return prior;
+  if (nonEmptyStr(data)) return data;
+  return fallback;
+}
+
+function pickOptionalString(prior: unknown, data: unknown, fallback: string | null): string | null {
+  if (nonEmptyStr(prior)) return prior;
+  if (nonEmptyStr(data)) return data;
+  return fallback;
+}
+
+function normalizeApplicationData(
+  data: ApplicationData,
+  priorState?: ApplicationData | null | undefined
+): ApplicationData {
   const now = new Date().toISOString();
   const program = getLoanProgram(data.applicantType || "PERSONAL");
-  const loanRequest = Object.assign({
-    amount: program.loanLimits.defaultAmount,
-    tenure: program.tenures[0]?.value || 30,
-    purpose: "",
-  }, data.loanRequest || {});
+  const rawLoanRequest = Object.assign(
+    {
+      amount: program.loanLimits.defaultAmount,
+      tenure: program.tenures[0]?.value || 30,
+      purpose: "",
+    },
+    data.loanRequest || {}
+  );
+  const prevInfo = priorState?.personalInfo ?? (null as null);
+  const prevKyc = priorState?.kyc ?? (null as null);
+  const prevDisb = priorState?.disbursementAccount ?? (null as null);
+  const prevPF = priorState?.personalFinancial ?? (null as null);
+  const prevBI = priorState?.businessInfo ?? (null as null);
+  const prevBR = priorState?.businessRep ?? (null as null);
+  const prevBF = priorState?.businessFinancial ?? (null as null);
+  const prevWitness = priorState?.witness ?? (null as null);
+  const prevCollateral = priorState?.collateral ?? (null as null);
+  const prevLR = priorState?.loanRequest ?? (null as null);
+  const dataInfo = data.personalInfo || {};
+  const dataKyc = data.kyc || {};
+  const dataDisb = data.disbursementAccount || {};
+  const dataPF = data.personalFinancial || {};
+  const dataBI = data.businessInfo || {};
+  const dataBR = data.businessRep || {};
+  const dataBF = data.businessFinancial || {};
+  const dataWitness = data.witness || {};
+  const dataCollateral = data.collateral || {};
+  const dataLR = data.loanRequest || {};
+  const loanRequest = {
+    amount: typeof prevLR?.amount === "number" && Number.isFinite(prevLR.amount)
+      ? prevLR.amount
+      : typeof dataLR.amount === "number" && Number.isFinite(dataLR.amount)
+        ? dataLR.amount
+        : rawLoanRequest.amount,
+    tenure: typeof prevLR?.tenure === "number" && Number.isFinite(prevLR.tenure)
+      ? prevLR.tenure
+      : typeof dataLR.tenure === "number" && Number.isFinite(dataLR.tenure)
+        ? dataLR.tenure
+        : rawLoanRequest.tenure,
+    purpose: pickString(prevLR?.purpose, dataLR.purpose, rawLoanRequest.purpose),
+  };
 
   return {
     ...data,
-    applicationId: data.applicationId || generateDraftId(),
-    applicantType: data.applicantType || null,
-    status: data.status || "DRAFT",
-    personalInfo: Object.assign({
-      fullName: "",
-      phone: "",
-      email: "",
-      dateOfBirth: "",
-      residentialAddress: "",
-      state: "",
-      lga: "",
-    }, data.personalInfo || {}),
-    disbursementAccount: Object.assign({
-      accountName: "",
-      bankName: "",
-      accountNumber: "",
-    }, data.disbursementAccount || {}),
-    personalFinancial: Object.assign({
-      employmentStatus: "",
-      employerBusinessName: "",
-      monthlyIncome: "",
-      monthlyExpenses: "",
-      existingLoanObligations: "",
-      expectedRepaymentSource: "",
-    }, data.personalFinancial || {}),
-    businessInfo: Object.assign({
-      businessName: "",
-      businessRegistrationNumber: "",
-      businessType: "",
-      businessAddress: "",
-      businessIndustry: "",
-      yearsInBusiness: "",
-    }, data.businessInfo || {}),
-    businessRep: Object.assign({
-      fullName: "",
-      dateOfBirth: "",
-      position: "",
-      phone: "",
-      email: "",
-      residentialAddress: "",
-    }, data.businessRep || {}),
-    businessFinancial: Object.assign({
-      averageMonthlyRevenue: "",
-      averageMonthlyExpenses: "",
-      existingLoanObligations: "",
-      expectedRepaymentSource: "",
-    }, data.businessFinancial || {}),
-    kyc: Object.assign({
-      bvn: "",
-      nin: "",
-      identificationType: "",
-      identificationNumber: "",
-    }, data.kyc || {}),
+    applicationId: data.applicationId || priorState?.applicationId || generateDraftId(),
+    applicantType: data.applicantType || priorState?.applicantType || null,
+    status: data.status || priorState?.status || "DRAFT",
+    personalInfo: {
+      fullName: pickString(prevInfo?.fullName, dataInfo.fullName, ""),
+      phone: pickString(prevInfo?.phone, dataInfo.phone, ""),
+      email: pickString(prevInfo?.email, dataInfo.email, ""),
+      dateOfBirth: pickString(prevInfo?.dateOfBirth, dataInfo.dateOfBirth, ""),
+      residentialAddress: pickString(prevInfo?.residentialAddress, dataInfo.residentialAddress, ""),
+      state: pickString(prevInfo?.state, dataInfo.state, ""),
+      lga: pickString(prevInfo?.lga, dataInfo.lga, ""),
+    },
+    disbursementAccount: {
+      accountName: pickString(prevDisb?.accountName, dataDisb.accountName, ""),
+      bankName: pickString(prevDisb?.bankName, dataDisb.bankName, ""),
+      accountNumber: pickString(prevDisb?.accountNumber, dataDisb.accountNumber, ""),
+    },
+    personalFinancial: {
+      employmentStatus: pickString(prevPF?.employmentStatus, dataPF.employmentStatus, ""),
+      employerBusinessName: pickString(prevPF?.employerBusinessName, dataPF.employerBusinessName, ""),
+      monthlyIncome: pickString(prevPF?.monthlyIncome, dataPF.monthlyIncome, ""),
+      monthlyExpenses: pickString(prevPF?.monthlyExpenses, dataPF.monthlyExpenses, ""),
+      existingLoanObligations: pickString(prevPF?.existingLoanObligations, dataPF.existingLoanObligations, ""),
+      expectedRepaymentSource: pickString(prevPF?.expectedRepaymentSource, dataPF.expectedRepaymentSource, ""),
+    },
+    businessInfo: {
+      businessName: pickString(prevBI?.businessName, dataBI.businessName, ""),
+      businessRegistrationNumber: pickString(prevBI?.businessRegistrationNumber, dataBI.businessRegistrationNumber, ""),
+      businessType: pickString(prevBI?.businessType, dataBI.businessType, ""),
+      businessAddress: pickString(prevBI?.businessAddress, dataBI.businessAddress, ""),
+      businessIndustry: pickString(prevBI?.businessIndustry, dataBI.businessIndustry, ""),
+      yearsInBusiness: pickString(prevBI?.yearsInBusiness, dataBI.yearsInBusiness, ""),
+    },
+    businessRep: {
+      fullName: pickString(prevBR?.fullName, dataBR.fullName, ""),
+      dateOfBirth: pickString(prevBR?.dateOfBirth, dataBR.dateOfBirth, ""),
+      position: pickString(prevBR?.position, dataBR.position, "") as BusinessRepresentative["position"],
+      phone: pickString(prevBR?.phone, dataBR.phone, ""),
+      email: pickString(prevBR?.email, dataBR.email, ""),
+      residentialAddress: pickString(prevBR?.residentialAddress, dataBR.residentialAddress, ""),
+    },
+    businessFinancial: {
+      averageMonthlyRevenue: pickString(prevBF?.averageMonthlyRevenue, dataBF.averageMonthlyRevenue, ""),
+      averageMonthlyExpenses: pickString(prevBF?.averageMonthlyExpenses, dataBF.averageMonthlyExpenses, ""),
+      existingLoanObligations: pickString(prevBF?.existingLoanObligations, dataBF.existingLoanObligations, ""),
+      expectedRepaymentSource: pickString(prevBF?.expectedRepaymentSource, dataBF.expectedRepaymentSource, ""),
+    },
+    kyc: {
+      bvn: pickString(prevKyc?.bvn, dataKyc.bvn, ""),
+      nin: pickString(prevKyc?.nin, dataKyc.nin, ""),
+      identificationType: pickString(prevKyc?.identificationType, dataKyc.identificationType, "") as any,
+      identificationNumber: pickString(prevKyc?.identificationNumber, dataKyc.identificationNumber, ""),
+      bvnVerified: prevKyc?.bvnVerified ?? dataKyc.bvnVerified,
+      ninVerified: prevKyc?.ninVerified ?? dataKyc.ninVerified,
+      livenessVerified: prevKyc?.livenessVerified ?? dataKyc.livenessVerified,
+      verifiedDetails: prevKyc?.verifiedDetails ?? dataKyc.verifiedDetails,
+      livenessStatus: prevKyc?.livenessStatus ?? dataKyc.livenessStatus,
+      identityPhotoUrl: prevKyc?.identityPhotoUrl ?? dataKyc.identityPhotoUrl,
+      selfieImageData: prevKyc?.selfieImageData ?? dataKyc.selfieImageData,
+    },
     loanRequest,
-    collateral: Object.assign({ provided: false, type: "", description: "", estimatedValue: "", ownership: "", location: "", documentReference: "" }, data.collateral || {}),
-    calculation: data.calculation || calculateLoan(loanRequest.amount, loanRequest.tenure, { loanType: data.applicantType || "PERSONAL" }),
-    documents: Object.fromEntries(Object.entries(data.documents || {}).filter(([slot]) => slot !== "signedAgreement")),
-    witness: Object.assign({ fullName: "", phone: "" }, data.witness || {}),
-    agreement: Object.assign({
-      generatedAt: null,
-      generatedHtml: null,
-      signedAgreementAccepted: false,
-    }, data.agreement || {}),
-    createdAt: data.createdAt || now,
-    updatedAt: data.updatedAt || now,
-    submittedAt: data.submittedAt || null,
+    collateral: {
+      provided: typeof prevCollateral?.provided === "boolean" ? prevCollateral.provided : typeof dataCollateral.provided === "boolean" ? dataCollateral.provided : false,
+      type: pickString(prevCollateral?.type, dataCollateral.type, ""),
+      description: pickString(prevCollateral?.description, dataCollateral.description, ""),
+      estimatedValue: pickString(prevCollateral?.estimatedValue, dataCollateral.estimatedValue, ""),
+      ownership: pickString(prevCollateral?.ownership, dataCollateral.ownership, ""),
+      location: pickString(prevCollateral?.location, dataCollateral.location, ""),
+      documentReference: pickString(prevCollateral?.documentReference, dataCollateral.documentReference, ""),
+    },
+    calculation: data.calculation || priorState?.calculation || calculateLoan(loanRequest.amount, loanRequest.tenure, { loanType: data.applicantType || "PERSONAL" }),
+    documents: Object.fromEntries(Object.entries(data.documents || priorState?.documents || {}).filter(([slot]) => slot !== "signedAgreement")),
+    witness: {
+      fullName: pickString(prevWitness?.fullName, dataWitness.fullName, ""),
+      phone: pickString(prevWitness?.phone, dataWitness.phone, ""),
+    },
+    agreement: Object.assign(
+      {
+        generatedAt: null,
+        generatedHtml: null,
+        signedAgreementAccepted: false,
+      },
+      data.agreement || {},
+      priorState?.agreement || {}
+    ),
+    createdAt: data.createdAt || priorState?.createdAt || now,
+    updatedAt: data.updatedAt || priorState?.updatedAt || now,
+    submittedAt: data.submittedAt ?? priorState?.submittedAt ?? null,
   };
 }
 

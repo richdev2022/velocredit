@@ -4,7 +4,7 @@
 // Supports label, helper text, error message, prefix, and suffix.
 // ============================================================================
 
-import { forwardRef } from "react";
+import { forwardRef, useRef } from "react";
 import type { InputHTMLAttributes, ReactNode } from "react";
 
 interface FormInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "prefix"> {
@@ -20,7 +20,11 @@ const FormInput = forwardRef<HTMLInputElement, FormInputProps>(function FormInpu
   { label, helper, error, prefix, suffix, required, className = "", id, ...rest },
   ref
 ) {
-  const inputId = id || rest.name || Math.random().toString(36).slice(2, 9);
+  const autoIdRef = useRef<string | null>(null);
+  if (autoIdRef.current === null) {
+    autoIdRef.current = `fi_${Math.random().toString(36).slice(2, 9)}`;
+  }
+  const inputId = id || rest.name || autoIdRef.current;
   const describedBy = error ? `${inputId}-error` : helper ? `${inputId}-helper` : undefined;
 
   return (

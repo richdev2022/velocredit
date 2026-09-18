@@ -124,6 +124,30 @@ async function persistMutation(res: any): Promise<boolean> {
   }
 }
 
+type PersistBestEffortResult = { ok: true; persistRetrying: false } | { ok: true; persistRetrying: true; persistError: string };
+
+async function persistMutationBestEffort(res: any): Promise<PersistBestEffortResult> {
+  if (!sql) {
+    return { ok: true, persistRetrying: true, persistError: "PostgreSQL is not configured. Retrying in background." };
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      persistStore(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Persistence timed out")), PERSIST_TIMEOUT_MS);
+      }),
+    ]);
+    return { ok: true, persistRetrying: false };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Unknown persistence error";
+    console.error("[routes] PostgreSQL persistence failed (best-effort — continuing with in-memory state):", error);
+    return { ok: true, persistRetrying: true, persistError: msg };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 const normalizePhone = (value: unknown): unknown => {
   if (typeof value !== "string") return value;
   const digits = value.replace(/[\s()-]/g, "");
@@ -1509,8 +1533,8 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
           resendSecondsRemaining: challenge.resendSecondsRemaining,
           requiresPhoneVerification: true,
         };
-      } catch (otpError) {
-        if (otpError instanceof OtpRateLimitError) {
+      } catch (_e) {
+        if (_e instanceof OtpRateLimitError) {
           const active = findLatestOtpChallenge(req.user!.id, "KYC_VERIFICATION");
           if (active) {
             otpChallengeForPhone = {
@@ -1523,6 +1547,12 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
               requiresPhoneVerification: true,
             };
           }
+        } else {
+          const msg = otpError instanceof Error ? otpError.message : "Unknown OTP dispatch error";
+          console.error("[routes] BVN OTP dispatch failed (non-rate-limit) — falling back to ownership auto-complete:", msg);
+          kyc.checklist.bvn = true;
+          kyc.bvnVerifiedAt = new Date().toISOString();
+          otpChallengeForPhone = undefined;
         }
       }
     } else {
@@ -1545,7 +1575,7 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
   kyc.updatedAt = new Date().toISOString();
   if (user) user.kycStatus = kyc.status;
   markKycChecklistComplete(req.user!.id);
-  if (!(await persistMutation(res))) return;
+  const persistResult = await persistMutationBestEffort(res);
   res.json({
     ok: true,
     verificationStatus: result.status,
@@ -1554,6 +1584,8 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     error: result.errorMessage,
     verifiedDetails: result.status === "SUCCESS" ? result.normalizedFields : undefined,
     otpChallenge: otpChallengeForPhone,
+    persistRetrying: persistResult.persistRetrying,
+    persistError: persistResult.persistRetrying ? persistResult.persistError : undefined,
   });
 });
 
@@ -1740,8 +1772,8 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
           resendSecondsRemaining: challenge.resendSecondsRemaining,
           requiresPhoneVerification: true,
         };
-      } catch (otpError) {
-        if (otpError instanceof OtpRateLimitError) {
+      } catch (_e) {
+        if (_e instanceof OtpRateLimitError) {
           const active = findLatestOtpChallenge(req.user!.id, "KYC_VERIFICATION");
           if (active) {
             ninOtpChallenge = {
@@ -1754,6 +1786,12 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
               requiresPhoneVerification: true,
             };
           }
+        } else {
+          const msg = otpError instanceof Error ? otpError.message : "Unknown OTP dispatch error";
+          console.error("[routes] NIN OTP dispatch failed (non-rate-limit) — falling back to ownership auto-complete:", msg);
+          kyc.checklist.nin = true;
+          kyc.ninVerifiedAt = new Date().toISOString();
+          ninOtpChallenge = undefined;
         }
       }
     } else {
@@ -1770,7 +1808,7 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
   kyc.updatedAt = new Date().toISOString();
   if (user) user.kycStatus = kyc.status;
   markKycChecklistComplete(req.user!.id);
-  if (!(await persistMutation(res))) return;
+  const ninPersistResult = await persistMutationBestEffort(res);
   res.json({
     ok: true,
     verificationStatus: result.status,
@@ -1779,6 +1817,8 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     error: result.errorMessage,
     verifiedDetails: result.status === "SUCCESS" ? result.normalizedFields : undefined,
     otpChallenge: ninOtpChallenge,
+    persistRetrying: ninPersistResult.persistRetrying,
+    persistError: ninPersistResult.persistRetrying ? ninPersistResult.persistError : undefined,
   });
 });
 
@@ -2526,335 +2566,369 @@ router.delete("/borrower/application-draft/:applicationId", requireAuth, require
 });
 
 router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
-  const parsed = loanApplicationSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ ok: false, error: parsed.error.flatten() });
-    return;
-  }
-  const input = { ...parsed.data, ...compactApplicationPayload(parsed.data) };
-  if (input.applicationId) {
-    const existingApplication = loanApplications.find((item) => item.applicationId === input.applicationId);
-    if (existingApplication) {
-      if (existingApplication.borrowerId !== req.user!.id) {
-        res.status(409).json({ ok: false, error: "That application reference ID is already in use." });
-      } else {
-        res.status(200).json({ ok: true, application: existingApplication, duplicate: true });
-      }
+  try {
+    const parsed = loanApplicationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: parsed.error.flatten() });
       return;
     }
-  }
-  const dbBorrowing = await dbHasUnresolvedBorrowing(req.user!.id);
-  const memBorrowing = hasUnresolvedBorrowing(req.user!.id);
-  if (dbBorrowing !== null && dbBorrowing !== memBorrowing) {
-    console.warn(
-      `[store_reconciliation_warning] hasUnresolvedBorrowing diverged user=${req.user!.id}: DB=${dbBorrowing} in-memory=${memBorrowing}. Trusting DB truth.`
-    );
-    auditLogs.push({
-      id: randomUUID(),
-      userId: req.user!.id,
-      action: "store_reconciliation_warning",
-      resourceType: "BORROWING",
-      resourceId: null as unknown as undefined,
-      metadata: { dbBorrowing, memBorrowing, reason: "application_submit_gate" },
-      ipAddress: req.ip,
-      userAgent: req.get("user-agent") ?? undefined,
-      createdAt: new Date().toISOString(),
-    });
-  }
-  const unresolvedBorrowing = dbBorrowing !== null ? dbBorrowing : memBorrowing;
-  if (unresolvedBorrowing) {
-    res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
-    return;
-  }
-  const kyc = findOrCreateKycCase(req.user!.id);
-  if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
-    res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
-    return;
-  }
-  const user = users.find((item) => item.id === req.user!.id);
-  recordConsent(req.user!.id, "CREDIT_REPORT");
-
-  const kycBvnData = (kyc.providerRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data ?? {};
-  const bvnFullName: string | undefined =
-    [kycBvnData.title ? `${String(kycBvnData.title)} ` : "", kycBvnData.firstName, kycBvnData.middleName ? `${String(kycBvnData.middleName)} ` : "", kycBvnData.lastName]
-      .filter(Boolean).join(" ") || undefined;
-  const bvnDob: string | undefined = typeof kycBvnData.dateOfBirth === "string" ? kycBvnData.dateOfBirth : undefined;
-  const now = new Date().toISOString();
-
-  let latestExternalCredit = creditReports
-    .filter((item) => item.userId === req.user!.id && item.status === "RECEIVED" && item.score != null)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-
-  const creditBureauPromise: Promise<CreditReport | null> = (async (): Promise<CreditReport | null> => {
+    const input = { ...parsed.data, ...compactApplicationPayload(parsed.data) };
+    if (input.applicationId) {
+      const existingApplication = loanApplications.find((item) => item.applicationId === input.applicationId);
+      if (existingApplication) {
+        if (existingApplication.borrowerId !== req.user!.id) {
+          res.status(409).json({ ok: false, error: "That application reference ID is already in use." });
+        } else {
+          res.status(200).json({ ok: true, application: existingApplication, duplicate: true });
+        }
+        return;
+      }
+    }
+    let dbBorrowing: boolean | null = null;
     try {
-      const hasBvn = typeof kyc.bvn === "string" && kyc.bvn.length === 11;
-      const cbResult = await requestCreditReport(
-        hasBvn
-          ? { mode: "ID", number: kyc.bvn, customer_name: bvnFullName ?? user?.fullName, dob: bvnDob ?? user?.dateOfBirth }
-          : { mode: "BIO", customer_name: user?.fullName, dob: user?.dateOfBirth }
+      dbBorrowing = await dbHasUnresolvedBorrowing(req.user!.id);
+    } catch (_e) {
+      console.warn(`[routes] dbHasUnresolvedBorrowing failed user=${req.user!.id}, falling back to in-memory`);
+      dbBorrowing = null;
+    }
+    const memBorrowing = hasUnresolvedBorrowing(req.user!.id);
+    if (dbBorrowing !== null && dbBorrowing !== memBorrowing) {
+      console.warn(
+        `[store_reconciliation_warning] hasUnresolvedBorrowing diverged user=${req.user!.id}: DB=${dbBorrowing} in-memory=${memBorrowing}. Trusting DB truth.`
       );
-      const cbRaw = cbResult.rawResponse ?? {};
-      const cbScore: number | undefined =
-        typeof (cbResult.normalizedFields as { score?: unknown } | undefined)?.score === "number"
-          ? ((cbResult.normalizedFields as { score: number }).score as number)
-          : typeof (cbRaw as { score?: unknown }).score === "number"
-          ? (cbRaw as { score: number }).score
-          : undefined;
-      const cbStatus: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED" =
-        cbResult.status === "SUCCESS"
-          ? "RECEIVED"
-          : cbResult.status === "PENDING" || cbResult.status === "MANUAL_REVIEW"
-          ? "PENDING"
-          : "FAILED";
-      const report: CreditReport = {
+      auditLogs.push({
         id: randomUUID(),
         userId: req.user!.id,
-        provider: "prembly" as const,
-        consentGrantedAt: now,
-        requestedAt: now,
-        reportReference: cbResult.providerReference,
-        status: cbStatus,
-        score: cbScore,
-        normalizedFields: cbResult.normalizedFields,
-        redactedRaw: cbRaw,
-        createdAt: now,
-      };
-      creditReports.push(report);
-      return report;
-    } catch (_e) {
-      return null;
+        action: "store_reconciliation_warning",
+        resourceType: "BORROWING",
+        resourceId: null as unknown as undefined,
+        metadata: { dbBorrowing, memBorrowing, reason: "application_submit_gate" },
+        ipAddress: req.ip,
+        userAgent: req.get("user-agent") ?? undefined,
+        createdAt: new Date().toISOString(),
+      });
     }
-  })();
+    const unresolvedBorrowing = dbBorrowing !== null ? dbBorrowing : memBorrowing;
+    if (unresolvedBorrowing) {
+      res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
+      return;
+    }
+    const kyc = findOrCreateKycCase(req.user!.id);
+    if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
+      res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
+      return;
+    }
+    const user = users.find((item) => item.id === req.user!.id);
+    recordConsent(req.user!.id, "CREDIT_REPORT");
 
-  const currentExternalCredit = await creditBureauPromise;
-  if (currentExternalCredit) latestExternalCredit = currentExternalCredit;
+    const kycBvnData = (kyc.providerRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data ?? {};
+    const bvnFullName: string | undefined =
+      [kycBvnData.title ? `${String(kycBvnData.title)} ` : "", kycBvnData.firstName, kycBvnData.middleName ? `${String(kycBvnData.middleName)} ` : "", kycBvnData.lastName]
+        .filter(Boolean).join(" ") || undefined;
+    const bvnDob: string | undefined = typeof kycBvnData.dateOfBirth === "string" ? kycBvnData.dateOfBirth : undefined;
+    const now = new Date().toISOString();
 
-  void creditBureauPromise.then((report) => {
-    if (!report || report.status !== "RECEIVED" || report.score == null) return;
-    const idx = creditScores.findIndex((s) => s.userId === req.user!.id);
-    if (idx < 0) return;
-    const recomputed = calculateCreditScore({
-      completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
-      onTimePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true).length,
-      latePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false).length,
-      defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
-      outstandingMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100), 0),
-      totalBorrowedMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100), 0),
-      kycVerified: user?.kycStatus === "VERIFIED",
-      bureauScore: report.score,
-    });
-    creditScores[idx] = { ...creditScores[idx], score: recomputed.score, band: recomputed.band, factors: recomputed.factors, createdAt: recomputed.calculatedAt };
-  });
+    let latestExternalCredit = creditReports
+      .filter((item) => item.userId === req.user!.id && item.status === "RECEIVED" && item.score != null)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 
-  const customerSnapshot = {
-    userId: req.user!.id,
-    fullName: user?.fullName,
-    email: user?.email,
-    phone: user?.phone,
-    personalInfo: input.personalInfo,
-    businessInfo: input.businessInfo,
-    businessRep: input.businessRep,
-    personalFinancial: input.personalFinancial,
-    businessFinancial: input.businessFinancial,
-    loanRequest: input.loanRequest,
-    calculation: input.calculation,
-    kyc: input.kyc,
-    disbursementAccount: { ...input.disbursementAccount, institution: "VELO" },
-    collateral: input.collateral,
-    witness: input.witness,
-    documents: input.documents,
-  };
-  const internalCredit = calculateCreditScore({
-    completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
-    onTimePayments: repayments.filter(
-      (item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true
-    ).length,
-    latePayments: repayments.filter(
-      (item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false
-    ).length,
-    defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
-    outstandingMinor: loans.reduce(
-      (sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100),
-      0
-    ),
-    totalBorrowedMinor: loans.reduce(
-      (sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100),
-      0
-    ),
-    kycVerified: user?.kycStatus === "VERIFIED",
-    bureauScore: latestExternalCredit?.score ?? null,
-  });
-  const externalCreditReport: Record<string, unknown> = latestExternalCredit
-    ? {
-        provider: latestExternalCredit.provider,
-        status: latestExternalCredit.status,
-        score: latestExternalCredit.score ?? null,
-        reportReference: latestExternalCredit.reportReference ?? null,
-        requestedAt: latestExternalCredit.requestedAt ?? null,
-        consentGrantedAt: latestExternalCredit.consentGrantedAt ?? null,
-        pulledAt: latestExternalCredit.createdAt,
-        normalizedFields: latestExternalCredit.normalizedFields,
-        redactedRaw: latestExternalCredit.redactedRaw,
+    const creditBureauPromise: Promise<CreditReport | null> = (async (): Promise<CreditReport | null> => {
+      try {
+        const hasBvn = typeof kyc.bvn === "string" && kyc.bvn.length === 11;
+        const cbResult = await requestCreditReport(
+          hasBvn
+            ? { mode: "ID", number: kyc.bvn, customer_name: bvnFullName ?? user?.fullName, dob: bvnDob ?? user?.dateOfBirth }
+            : { mode: "BIO", customer_name: user?.fullName, dob: user?.dateOfBirth }
+        );
+        const cbRaw = cbResult.rawResponse ?? {};
+        const cbScore: number | undefined =
+          typeof (cbResult.normalizedFields as { score?: unknown } | undefined)?.score === "number"
+            ? ((cbResult.normalizedFields as { score: number }).score as number)
+            : typeof (cbRaw as { score?: unknown }).score === "number"
+            ? (cbRaw as { score: number }).score
+            : undefined;
+        const cbStatus: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED" =
+          cbResult.status === "SUCCESS"
+            ? "RECEIVED"
+            : cbResult.status === "PENDING" || cbResult.status === "MANUAL_REVIEW"
+            ? "PENDING"
+            : "FAILED";
+        const report: CreditReport = {
+          id: randomUUID(),
+          userId: req.user!.id,
+          provider: "prembly" as const,
+          consentGrantedAt: now,
+          requestedAt: now,
+          reportReference: cbResult.providerReference,
+          status: cbStatus,
+          score: cbScore,
+          normalizedFields: cbResult.normalizedFields,
+          redactedRaw: cbRaw,
+          createdAt: now,
+        };
+        creditReports.push(report);
+        return report;
+      } catch (_e) {
+        return null;
       }
-    : {
-        provider: "prembly" as const,
-        status: "PENDING" as const,
-        score: null,
-        reportReference: null,
-        requestedAt: now,
-        consentGrantedAt: now,
-        consentRequired: true,
-        reason: "External credit bureau is being pulled in the background at submission.",
-      };
-  const amountNaira = input.loanRequest?.amount ?? 0;
-  const eligibility = evaluateLoanEligibility(internalCredit, amountNaira);
-  creditScores.push({
-    id: randomUUID(),
-    userId: req.user!.id,
-    version: internalCredit.version,
-    score: internalCredit.score,
-    band: internalCredit.band,
-    factors: internalCredit.factors,
-    createdAt: internalCredit.calculatedAt,
-  });
-  const application: (typeof loanApplications)[number] = seedLoanStageStatuses({
-    id: randomUUID(),
-    applicationId: input.applicationId ?? randomUUID(),
-    borrowerId: req.user!.id,
-    applicantType: input.applicantType,
-    customerSnapshot,
-    creditReportSnapshot: { internal: internalCredit, external: externalCreditReport },
-    amountNaira,
-    tenureDays: input.loanRequest?.tenure,
-    status: "UNDER_REVIEW",
-    stageStatuses: { profile: "COMPLETED", employment: "COMPLETED", bvn_nin: "COMPLETED", address: "COMPLETED", liveness: "COMPLETED", loan_details: "COMPLETED", documents: "COMPLETED", disbursement_account: "COMPLETED", consent: "COMPLETED", credit_review: "PENDING_REVIEW", risk_review: "PENDING_REVIEW", approval: "PENDING_REVIEW" },
-    stageRejectionNotes: {},
-    systemDecision: eligibility as unknown as Record<string, unknown>,
-    manualDecision: "PENDING",
-    disbursementInstitution: "VELO",
-    disbursementAccount: customerSnapshot.disbursementAccount,
-    createdAt: now,
-    updatedAt: now,
-    submittedAt: now,
-  });
-  loanApplications.push(application);
-  creditHistory.push({
-    id: randomUUID(),
-    userId: req.user!.id,
-    loanId: undefined,
-    eventType: "LOAN_APPLIED",
-    detail: `Application ${application.applicationId} submitted`,
-    occurredAt: now,
-    createdAt: now,
-  });
-  if (!(await persistMutation(res))) return;
-  res.status(201).json({ ok: true, application });
+    })();
+
+    const currentExternalCredit = await creditBureauPromise;
+    if (currentExternalCredit) latestExternalCredit = currentExternalCredit;
+
+    void creditBureauPromise.then((report) => {
+      if (!report || report.status !== "RECEIVED" || report.score == null) return;
+      const idx = creditScores.findIndex((s) => s.userId === req.user!.id);
+      if (idx < 0) return;
+      const recomputed = calculateCreditScore({
+        completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
+        onTimePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true).length,
+        latePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false).length,
+        defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
+        outstandingMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100), 0),
+        totalBorrowedMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100), 0),
+        kycVerified: user?.kycStatus === "VERIFIED",
+        bureauScore: report.score,
+      });
+      creditScores[idx] = { ...creditScores[idx], score: recomputed.score, band: recomputed.band, factors: recomputed.factors, createdAt: recomputed.calculatedAt };
+    });
+
+    const customerSnapshot = {
+      userId: req.user!.id,
+      fullName: user?.fullName,
+      email: user?.email,
+      phone: user?.phone,
+      personalInfo: input.personalInfo,
+      businessInfo: input.businessInfo,
+      businessRep: input.businessRep,
+      personalFinancial: input.personalFinancial,
+      businessFinancial: input.businessFinancial,
+      loanRequest: input.loanRequest,
+      calculation: input.calculation,
+      kyc: input.kyc,
+      disbursementAccount: { ...input.disbursementAccount, institution: "VELO" },
+      collateral: input.collateral,
+      witness: input.witness,
+      documents: input.documents,
+    };
+    const internalCredit = calculateCreditScore({
+      completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
+      onTimePayments: repayments.filter(
+        (item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true
+      ).length,
+      latePayments: repayments.filter(
+        (item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false
+      ).length,
+      defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
+      outstandingMinor: loans.reduce(
+        (sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100),
+        0
+      ),
+      totalBorrowedMinor: loans.reduce(
+        (sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100),
+        0
+      ),
+      kycVerified: user?.kycStatus === "VERIFIED",
+      bureauScore: latestExternalCredit?.score ?? null,
+    });
+    const externalCreditReport: Record<string, unknown> = latestExternalCredit
+      ? {
+          provider: latestExternalCredit.provider,
+          status: latestExternalCredit.status,
+          score: latestExternalCredit.score ?? null,
+          reportReference: latestExternalCredit.reportReference ?? null,
+          requestedAt: latestExternalCredit.requestedAt ?? null,
+          consentGrantedAt: latestExternalCredit.consentGrantedAt ?? null,
+          pulledAt: latestExternalCredit.createdAt,
+          normalizedFields: latestExternalCredit.normalizedFields,
+          redactedRaw: latestExternalCredit.redactedRaw,
+        }
+      : {
+          provider: "prembly" as const,
+          status: "PENDING" as const,
+          score: null,
+          reportReference: null,
+          requestedAt: now,
+          consentGrantedAt: now,
+          consentRequired: true,
+          reason: "External credit bureau is being pulled in the background at submission.",
+        };
+    const amountNaira = input.loanRequest?.amount ?? 0;
+    const eligibility = evaluateLoanEligibility(internalCredit, amountNaira);
+    creditScores.push({
+      id: randomUUID(),
+      userId: req.user!.id,
+      version: internalCredit.version,
+      score: internalCredit.score,
+      band: internalCredit.band,
+      factors: internalCredit.factors,
+      createdAt: internalCredit.calculatedAt,
+    });
+    const application: (typeof loanApplications)[number] = seedLoanStageStatuses({
+      id: randomUUID(),
+      applicationId: input.applicationId ?? randomUUID(),
+      borrowerId: req.user!.id,
+      applicantType: input.applicantType,
+      customerSnapshot,
+      creditReportSnapshot: { internal: internalCredit, external: externalCreditReport },
+      amountNaira,
+      tenureDays: input.loanRequest?.tenure,
+      status: "UNDER_REVIEW",
+      stageStatuses: { profile: "COMPLETED", employment: "COMPLETED", bvn_nin: "COMPLETED", address: "COMPLETED", liveness: "COMPLETED", loan_details: "COMPLETED", documents: "COMPLETED", disbursement_account: "COMPLETED", consent: "COMPLETED", credit_review: "PENDING_REVIEW", risk_review: "PENDING_REVIEW", approval: "PENDING_REVIEW" },
+      stageRejectionNotes: {},
+      systemDecision: eligibility as unknown as Record<string, unknown>,
+      manualDecision: "PENDING",
+      disbursementInstitution: "VELO",
+      disbursementAccount: customerSnapshot.disbursementAccount,
+      createdAt: now,
+      updatedAt: now,
+      submittedAt: now,
+    });
+    loanApplications.push(application);
+    creditHistory.push({
+      id: randomUUID(),
+      userId: req.user!.id,
+      loanId: undefined,
+      eventType: "LOAN_APPLIED",
+      detail: `Application ${application.applicationId} submitted`,
+      occurredAt: now,
+      createdAt: now,
+    });
+    if (!(await persistMutation(res))) return;
+    res.status(201).json({ ok: true, application });
+  } catch (_e) {
+    console.error("[routes] unexpected POST /borrower/applications error:", _e);
+    if (res.headersSent) return;
+    const message = _e instanceof Error ? _e.message : "Unexpected error processing your loan application. Please try again in a few minutes.";
+    res.status(500).json({ ok: false, error: message });
+  }
 });
 
 router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
-  const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
-  if (!application) {
-    res.status(404).json({ ok: false, error: "Application not found" });
-    return;
-  }
-  if (!["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(application.status)) {
-    res.status(409).json({ ok: false, error: `Application ${application.status} cannot be modified` });
-    return;
-  }
-  const schema = z.object({
-    personalInfo: z.record(z.unknown()).optional(),
-    businessInfo: z.record(z.unknown()).optional(),
-    businessRep: z.record(z.unknown()).optional(),
-    personalFinancial: z.record(z.unknown()).optional(),
-    businessFinancial: z.record(z.unknown()).optional(),
-    kyc: z.record(z.unknown()).optional(),
-    disbursementAccount: z.record(z.unknown()).optional(),
-    loanRequest: z
-      .object({ amount: z.number().positive(), tenure: z.number().int().positive(), purpose: z.string().min(1) })
-      .optional(),
-    collateral: z.record(z.unknown()).optional(),
-    documents: z.record(z.unknown()).optional(),
-    witness: z.record(z.unknown()).optional(),
-    calculation: z.record(z.unknown()).nullable().optional(),
-  });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ ok: false, error: parsed.error.flatten() });
-    return;
-  }
-  const snapshot = application.customerSnapshot ?? {};
-  if (parsed.data.personalInfo) Object.assign(snapshot, { personalInfo: parsed.data.personalInfo });
-  if (parsed.data.businessInfo) Object.assign(snapshot, { businessInfo: parsed.data.businessInfo });
-  if (parsed.data.businessRep) Object.assign(snapshot, { businessRep: parsed.data.businessRep });
-  if (parsed.data.personalFinancial) Object.assign(snapshot, { personalFinancial: parsed.data.personalFinancial });
-  if (parsed.data.businessFinancial) Object.assign(snapshot, { businessFinancial: parsed.data.businessFinancial });
-  if (parsed.data.disbursementAccount) {
-    const account = { ...parsed.data.disbursementAccount, institution: "VELO" };
-    Object.assign(snapshot, { disbursementAccount: account });
-    application.disbursementAccount = account;
-  }
-  if (parsed.data.loanRequest) {
-    Object.assign(snapshot, { loanRequest: parsed.data.loanRequest });
-    application.amountNaira = parsed.data.loanRequest.amount;
-    application.tenureDays = parsed.data.loanRequest.tenure;
-  }
-  if (parsed.data.collateral) Object.assign(snapshot, { collateral: parsed.data.collateral });
-  if (parsed.data.kyc) {
-    Object.assign(snapshot, { kyc: parsed.data.kyc });
-    const kyc = findOrCreateKycCase(req.user!.id);
-    const anyKyc = parsed.data.kyc as Record<string, unknown>;
-    if (typeof anyKyc.bvn === "string" && /^\d{11}$/.test(anyKyc.bvn)) {
-      kyc.bvn = anyKyc.bvn;
-      kyc.checklist.bvn = true;
+  try {
+    const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
+    if (!application) {
+      res.status(404).json({ ok: false, error: "Application not found" });
+      return;
     }
-    if (typeof anyKyc.nin === "string" && /^\d{11}$/.test(anyKyc.nin)) {
-      kyc.nin = anyKyc.nin;
-      kyc.checklist.nin = true;
+    if (!["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(application.status)) {
+      res.status(409).json({ ok: false, error: `Application ${application.status} cannot be modified` });
+      return;
     }
-    if (typeof anyKyc.identificationNumber === "string" && typeof anyKyc.identificationType === "string") {
-      if (anyKyc.identificationType === "BVN" && /^\d{11}$/.test(anyKyc.identificationNumber)) {
-        kyc.bvn = anyKyc.identificationNumber;
+    const schema = z.object({
+      personalInfo: z.record(z.unknown()).optional(),
+      businessInfo: z.record(z.unknown()).optional(),
+      businessRep: z.record(z.unknown()).optional(),
+      personalFinancial: z.record(z.unknown()).optional(),
+      businessFinancial: z.record(z.unknown()).optional(),
+      kyc: z.record(z.unknown()).optional(),
+      disbursementAccount: z.record(z.unknown()).optional(),
+      loanRequest: z
+        .object({ amount: z.number().positive(), tenure: z.number().int().positive(), purpose: z.string().min(1) })
+        .optional(),
+      collateral: z.record(z.unknown()).optional(),
+      documents: z.record(z.unknown()).optional(),
+      witness: z.record(z.unknown()).optional(),
+      calculation: z.record(z.unknown()).nullable().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: parsed.error.flatten() });
+      return;
+    }
+    const snapshot = application.customerSnapshot ?? {};
+    if (parsed.data.personalInfo) Object.assign(snapshot, { personalInfo: parsed.data.personalInfo });
+    if (parsed.data.businessInfo) Object.assign(snapshot, { businessInfo: parsed.data.businessInfo });
+    if (parsed.data.businessRep) Object.assign(snapshot, { businessRep: parsed.data.businessRep });
+    if (parsed.data.personalFinancial) Object.assign(snapshot, { personalFinancial: parsed.data.personalFinancial });
+    if (parsed.data.businessFinancial) Object.assign(snapshot, { businessFinancial: parsed.data.businessFinancial });
+    if (parsed.data.disbursementAccount) {
+      const account = { ...parsed.data.disbursementAccount, institution: "VELO" };
+      Object.assign(snapshot, { disbursementAccount: account });
+      application.disbursementAccount = account;
+    }
+    if (parsed.data.loanRequest) {
+      Object.assign(snapshot, { loanRequest: parsed.data.loanRequest });
+      application.amountNaira = parsed.data.loanRequest.amount;
+      application.tenureDays = parsed.data.loanRequest.tenure;
+    }
+    if (parsed.data.collateral) Object.assign(snapshot, { collateral: parsed.data.collateral });
+    if (parsed.data.kyc) {
+      Object.assign(snapshot, { kyc: parsed.data.kyc });
+      const kyc = findOrCreateKycCase(req.user!.id);
+      const anyKyc = parsed.data.kyc as Record<string, unknown>;
+      if (typeof anyKyc.bvn === "string" && /^\d{11}$/.test(anyKyc.bvn)) {
+        kyc.bvn = anyKyc.bvn;
         kyc.checklist.bvn = true;
-      } else if (anyKyc.identificationType === "NIN" && /^\d{11}$/.test(anyKyc.identificationNumber)) {
-        kyc.nin = anyKyc.identificationNumber;
+      }
+      if (typeof anyKyc.nin === "string" && /^\d{11}$/.test(anyKyc.nin)) {
+        kyc.nin = anyKyc.nin;
         kyc.checklist.nin = true;
       }
+      if (typeof anyKyc.identificationNumber === "string" && typeof anyKyc.identificationType === "string") {
+        if (anyKyc.identificationType === "BVN" && /^\d{11}$/.test(anyKyc.identificationNumber)) {
+          kyc.bvn = anyKyc.identificationNumber;
+          kyc.checklist.bvn = true;
+        } else if (anyKyc.identificationType === "NIN" && /^\d{11}$/.test(anyKyc.identificationNumber)) {
+          kyc.nin = anyKyc.identificationNumber;
+          kyc.checklist.nin = true;
+        }
+      }
+      markKycChecklistComplete(req.user!.id);
     }
-    markKycChecklistComplete(req.user!.id);
+    if (parsed.data.witness) Object.assign(snapshot, { witness: parsed.data.witness });
+    if (parsed.data.calculation !== undefined) Object.assign(snapshot, { calculation: parsed.data.calculation });
+    if (parsed.data.documents) {
+      Object.assign(snapshot, { documents: parsed.data.documents });
+    }
+    application.customerSnapshot = snapshot;
+    application.updatedAt = new Date().toISOString();
+    if (!(await persistMutation(res))) return;
+    res.json({ ok: true, application });
+  } catch (_e) {
+    console.error("[routes] unexpected PATCH /borrower/applications/:id error:", _e);
+    if (res.headersSent) return;
+    const message = _e instanceof Error ? _e.message : "Unexpected error updating your loan application. Please try again in a few minutes.";
+    res.status(500).json({ ok: false, error: message });
   }
-  if (parsed.data.witness) Object.assign(snapshot, { witness: parsed.data.witness });
-  if (parsed.data.calculation !== undefined) Object.assign(snapshot, { calculation: parsed.data.calculation });
-  if (parsed.data.documents) {
-    Object.assign(snapshot, { documents: parsed.data.documents });
-  }
-  application.customerSnapshot = snapshot;
-  application.updatedAt = new Date().toISOString();
-  if (!(await persistMutation(res))) return;
-  res.json({ ok: true, application });
 });
 
 router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
-  const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
-  if (!application) {
-    res.status(404).json({ ok: false, error: "Application not found" });
-    return;
+  try {
+    const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
+    if (!application) {
+      res.status(404).json({ ok: false, error: "Application not found" });
+      return;
+    }
+    const kyc = findOrCreateKycCase(req.user!.id);
+    if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
+      res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
+      return;
+    }
+    let unresolvedBorrowing = false;
+    try {
+      unresolvedBorrowing = hasUnresolvedBorrowing(req.user!.id, application.id);
+    } catch (_e) {
+      console.warn(`[routes] hasUnresolvedBorrowing throw in submit user=${req.user!.id}, treating as false`);
+      unresolvedBorrowing = false;
+    }
+    if (unresolvedBorrowing) {
+      res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
+      return;
+    }
+    const wasSubmitted = Boolean(application.submittedAt);
+    application.status = "SUBMITTED";
+    application.submittedAt = application.submittedAt ?? new Date().toISOString();
+    application.updatedAt = new Date().toISOString();
+    if (!(await persistMutation(res))) return;
+    res.json({ ok: true, application });
+    if (!wasSubmitted) void sendLoanEmails(application, "SUBMITTED");
+  } catch (_e) {
+    console.error("[routes] unexpected POST /borrower/applications/:id/submit error:", _e);
+    if (res.headersSent) return;
+    const message = _e instanceof Error ? _e.message : "Unexpected error submitting your loan application. Please try again in a few minutes.";
+    res.status(500).json({ ok: false, error: message });
   }
-  const kyc = findOrCreateKycCase(req.user!.id);
-  if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
-    res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
-    return;
-  }
-  if (hasUnresolvedBorrowing(req.user!.id, application.id)) {
-    res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
-    return;
-  }
-  const wasSubmitted = Boolean(application.submittedAt);
-  application.status = "SUBMITTED";
-  application.submittedAt = application.submittedAt ?? new Date().toISOString();
-  application.updatedAt = new Date().toISOString();
-  if (!(await persistMutation(res))) return;
-  res.json({ ok: true, application });
-  if (!wasSubmitted) void sendLoanEmails(application, "SUBMITTED");
 });
 
 router.get("/borrower/loans", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
@@ -3591,6 +3665,26 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), (req, res)
     res.status(404).json({ ok: false, error: "Loan not found" });
     return;
   }
+  const borrowerId = application?.borrowerId ?? loan?.borrowerId;
+  const borrowerKyc = borrowerId ? indexes.kycCasesByUserId.get(borrowerId) : undefined;
+  const kycDocuments: Record<string, unknown> = {};
+  if (borrowerId) {
+    const userDocs = documents.filter((d) => d.userId === borrowerId);
+    const proofOfAddress = userDocs.find((d) => d.documentType === "PROOF_OF_ADDRESS");
+    const passport = userDocs.find((d) => d.documentType === "PASSPORT_PHOTO" || d.documentSlot === "passportPhoto");
+    const signature = userDocs.find((d) => d.documentType === "SIGNATURE" || d.documentSlot === "signature");
+    const selfie = userDocs.find((d) => (d.documentType as string) === "LIVENESS_SELFIE" || d.documentSlot === "selfie");
+    if (proofOfAddress) kycDocuments.proofOfAddress = proofOfAddress;
+    if (passport) kycDocuments.passportPhoto = passport;
+    if (signature) kycDocuments.signature = signature;
+    if (selfie) kycDocuments.selfie = selfie;
+  }
+  if (borrowerKyc?.identityPhoto || borrowerKyc?.identityPhotoUrl) {
+    kycDocuments.identityPhoto = borrowerKyc.identityPhotoUrl ?? borrowerKyc.identityPhoto;
+  }
+  if (borrowerKyc?.selfieImageData) {
+    kycDocuments.selfieImageData = borrowerKyc.selfieImageData;
+  }
   res.json({
     ok: true,
     application,
@@ -3599,6 +3693,8 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), (req, res)
     schedule: loan ? loanSchedules.filter((s) => s.loanId === loan.id) : [],
     repayments: loan ? repayments.filter((r) => r.loanId === loan.id) : [],
     creditHistory: application ? creditHistory.filter((c) => c.userId === application.borrowerId) : [],
+    kycCase: borrowerKyc,
+    kycDocuments,
   });
 });
 

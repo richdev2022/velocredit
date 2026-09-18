@@ -127,6 +127,7 @@ export interface KycCase {
   rejectionReason?: string;
   verifiedDetails?: Record<string, unknown>;
   identityPhoto?: string;
+  identityPhotoUrl?: string;
   selfieImageData?: string;
   checklist: {
     bvn: boolean;

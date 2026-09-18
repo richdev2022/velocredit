@@ -52,7 +52,7 @@ export async function verifyAdminLoginOtp(challengeId: string, code: string) {
 }
 export async function adminListApplications(opts: { status?: string; type?: string; search?: string; limit?: number; offset?: number } = {}): Promise<{ total: number; applications: AdminApplicationSummary[] }> { const params = new URLSearchParams(); if (opts.status) params.set("status", opts.status); if (opts.type) params.set("type", opts.type); if (opts.search) params.set("search", opts.search); params.set("limit", String(opts.limit || 20)); params.set("offset", String(opts.offset || 0)); const response = await request<{ loans: any[]; meta?: { total?: number } }>(`/api/v1/admin/loans?${params.toString()}`); const applications = (response.loans || []).map((loan) => ({ applicationId: loan.applicationId || loan.id, applicantType: (loan.customerSnapshot?.businessInfo?.businessName ? "BUSINESS" : "PERSONAL") as "PERSONAL" | "BUSINESS", status: loan.status, applicantName: loan.customerSnapshot?.fullName || "Borrower", email: loan.customerSnapshot?.email || "", phone: loan.customerSnapshot?.phone || "", loanAmount: Number(loan.amountNaira || 0), totalRepayment: Number(loan.totalRepaymentNaira || 0), tenure: `${loan.tenureDays || 0} days`, repaymentDate: loan.dueAt || "", dateCreated: loan.createdAt, dateSubmitted: loan.createdAt, dateUpdated: loan.createdAt, driveFolderUrl: "" })); return { total: response.meta?.total || applications.length, applications }; }
 export async function adminGetApplication(id: string): Promise<AdminApplicationDetail> {
-  const response = await request<{ loan?: any; application?: any }>(`/api/v1/admin/loans/${encodeURIComponent(id)}`);
+  const response = await request<{ loan?: any; application?: any; kycCase?: any; kycDocuments?: any }>(`/api/v1/admin/loans/${encodeURIComponent(id)}`);
   const loan = response.loan || response.application || {};
   const source = response.application || loan;
   const snapshot = source.customerSnapshot || loan.customerSnapshot || {};
@@ -73,6 +73,11 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
     disbursementAccount: loan.disbursementAccount ?? source.disbursementAccount ?? snapshot.disbursementAccount,
   };
   const applicantType = (source.applicantType || (snapshot.businessInfo?.businessName ? "BUSINESS" : "PERSONAL")) as "PERSONAL" | "BUSINESS";
+  const kyc = snapshot.kyc || response.kycCase || {};
+  const combinedDocuments: any = {
+    ...(source.documents || snapshot.documents || loan.documents || {}),
+    ...(response.kycDocuments || {}),
+  };
   return {
     applicationId: source.applicationId || loan.applicationId || loan.id,
     applicantType,
@@ -83,10 +88,10 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
     personalInfo: snapshot.personalInfo || {},
     businessInfo: snapshot.businessInfo || {},
     businessRep: snapshot.businessRep || {},
-    kyc: snapshot.kyc || {},
+    kyc,
     financial: applicantType === "BUSINESS" ? (snapshot.businessFinancial || {}) : (snapshot.personalFinancial || {}),
     loan: normalizedLoan,
-    documents: source.documents || snapshot.documents || loan.documents || {},
+    documents: combinedDocuments,
     customerSnapshot: snapshot,
     creditReportSnapshot: source.creditReportSnapshot || loan.creditReportSnapshot || {},
     stageStatuses: source.stageStatuses || {},
