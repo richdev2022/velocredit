@@ -3168,6 +3168,41 @@ router.post("/borrower/loans/:loanId/repayments", requireAuth, requireRole("BORR
   }
 });
 
+router.get("/admin/application-drafts", requireAuth, requireRole("ADMIN"), (_req, res) => {
+  const query = String(_req.query.search ?? "").trim().toLowerCase();
+  const type = String(_req.query.type ?? "").trim().toUpperCase();
+  const status = String(_req.query.status ?? "").trim().toUpperCase();
+  const drafts = applicationDrafts
+    .map((draft) => {
+      const borrower = users.find((user) => user.id === draft.userId);
+      const data = draft.data as Record<string, any>;
+      const totalSections = draft.applicantType === "BUSINESS" ? 9 : 8;
+      const currentSection = Math.min(totalSections - 1, Math.max(0, draft.lastSectionIndex));
+      return {
+        applicationId: draft.applicationId,
+        applicantType: draft.applicantType,
+        status: data.status === "IN_PROGRESS" ? "IN_PROGRESS" : "DRAFT",
+        applicantName: data.personalInfo?.fullName || data.businessInfo?.businessName || borrower?.fullName || "Borrower",
+        email: data.personalInfo?.email || borrower?.email || "",
+        phone: data.personalInfo?.phone || borrower?.phone || "",
+        loanAmount: Number(data.loanRequest?.amount || 0),
+        tenure: `${Number(data.loanRequest?.tenure || 0)} days`,
+        dateCreated: draft.createdAt,
+        dateUpdated: draft.updatedAt,
+        currentSection,
+        totalSections,
+        progressPercent: Math.round(((currentSection + 1) / totalSections) * 100),
+      };
+    })
+    .filter((draft) => !type || draft.applicantType === type)
+    .filter((draft) => !status || draft.status === status)
+    .filter((draft) => !query || [draft.applicationId, draft.applicantName, draft.email, draft.phone].some((value) => String(value).toLowerCase().includes(query)))
+    .sort((a, b) => b.dateUpdated.localeCompare(a.dateUpdated));
+  const limit = Math.max(1, Math.min(100, Number(_req.query.limit ?? 20)));
+  const offset = Math.max(0, Number(_req.query.offset ?? 0));
+  res.json({ ok: true, drafts: drafts.slice(offset, offset + limit), total: drafts.length });
+});
+
 router.get("/admin/summary", requireAuth, requireRole("ADMIN"), (_req, res) => {
   const approved = loans.filter((l) => ["APPROVED", "DISBURSEMENT_PENDING", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID"].includes(l.status));
   res.json({

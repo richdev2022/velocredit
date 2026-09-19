@@ -46,9 +46,9 @@ export default function SectionShell({
       if (destination === false) return;
       if (typeof destination === "number") {
         navigateSection(destination);
-        return;
+      } else if (!onContinue) {
+        next();
       }
-      next();
     } finally {
       setContinueBusy(false);
     }
@@ -84,7 +84,7 @@ export default function SectionShell({
               </button>
             )}
             <button type="button" onClick={() => void handleSaveAndContinue()} disabled={continueBusy} className="btn-primary w-full sm:w-auto">
-              {continueBusy ? "Loading…" : (continueLabel || "Continue")}
+              {continueBusy ? "Saving…" : (continueLabel || "Save & Continue")}
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                 <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>

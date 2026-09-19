@@ -53,9 +53,9 @@ type TenureFeeState = Record<number, {
 export default function AdminSettings(props?: { displaySection?: "all" | "ledger" | "withdrawals" | "investor-tools" }) {
   const displaySection: NonNullable<typeof props>["displaySection"] = props?.displaySection ?? "all";
   const showConfig = displaySection === "all";
-  const showInvestorTools = displaySection === "all" || displaySection === "investor-tools";
-  const showWithdrawals = displaySection === "all" || displaySection === "withdrawals";
-  const showLedger = displaySection === "all" || displaySection === "ledger";
+  const showInvestorTools = displaySection === "investor-tools";
+  const showWithdrawals = displaySection === "withdrawals";
+  const showLedger = displaySection === "ledger";
   const [min, setMin] = useState(currentConfig.loanLimits.min);
   const [max, setMax] = useState(currentConfig.loanLimits.max);
   const [defaultAmount, setDefaultAmount] = useState(currentConfig.loanLimits.defaultAmount);
