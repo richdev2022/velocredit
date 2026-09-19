@@ -19,6 +19,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}':
 -- ============================================================
 ALTER TABLE kyc_cases ADD COLUMN IF NOT EXISTS category_results JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE kyc_cases ADD COLUMN IF NOT EXISTS liveness_verified_at TIMESTAMPTZ;
+ALTER TABLE kyc_cases ADD COLUMN IF NOT EXISTS liveness_status TEXT;
+ALTER TABLE kyc_cases ADD COLUMN IF NOT EXISTS liveness_manual_uploaded BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE kyc_cases ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 ALTER TABLE kyc_cases ADD COLUMN IF NOT EXISTS verified_details JSONB;
 ALTER TABLE kyc_cases ADD COLUMN IF NOT EXISTS identity_photo TEXT;
