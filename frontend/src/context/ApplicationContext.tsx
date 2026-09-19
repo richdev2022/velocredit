@@ -24,7 +24,7 @@ import type {
 } from "../types/application";
 import type { LoanCalculation } from "../types/loan";
 import { calculateLoan } from "../utils/loanCalculator";
-import { config, getLoanProgram } from "../utils/config";
+import { applyLoanProducts, config, getLoanProgram } from "../utils/config";
 import { generateDraftId } from "../utils/applicationId";
 import {
   loadApplication,
@@ -33,7 +33,14 @@ import {
   findDraftsByEmailOrPhone,
   getSavedSectionIndex,
 } from "../utils/storage";
-import { deleteApplicationDraft, getAccessToken, submitBorrowerApplication } from "../services/apiClient";
+import {
+  deleteApplicationDraft,
+  getAccessToken,
+  getApplicationDraft,
+  saveApplicationDraft,
+  submitBorrowerApplication,
+  getLoanProducts,
+} from "../services/apiClient";
 import { useAuth } from "./AuthContext";
 import type {
   LookupDraftResponse,
@@ -162,12 +169,23 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [sectionStatusOverrides, setSectionStatusOverrides] = useState<Partial<Record<SectionKey, SectionStatus>>>({});
+  const [loanConfigVersion, setLoanConfigVersion] = useState(0);
 
   const applicationRef = useRef<ApplicationData | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextAutoSave = useRef(false);
   const currentIndexRef = useRef(0);
   const restoredUserIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    void getLoanProducts().then((response) => {
+      applyLoanProducts(response.products);
+      setLoanConfigVersion((version) => version + 1);
+    }).catch(() => {
+      // The deployed frontend defaults remain usable when products are unavailable.
+    });
+  }, [user]);
 
   // Restore the complete local draft after login. KYC is fetched separately,
   // but the application wizard data and pending section live in local storage.
@@ -184,9 +202,21 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       let savedIndex = 0;
       const match = findDraftsByEmailOrPhone(user.email || "", user.phone || "").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       const local = match ? loadApplication(match.applicationId) : null;
-      if (!resumed && local) {
+      if (local) {
         resumed = normalizeApplicationData(local, applicationRef.current);
         savedIndex = getSavedSectionIndex(resumed);
+      }
+      try {
+        const remote = await getApplicationDraft();
+        if (remote.draft) {
+          const remoteApplication = normalizeApplicationData(remote.draft.data as unknown as ApplicationData, applicationRef.current);
+          if (!resumed || new Date(remote.draft.updatedAt).getTime() >= new Date(resumed.updatedAt).getTime()) {
+            resumed = remoteApplication;
+            savedIndex = remote.draft.lastSectionIndex;
+          }
+        }
+      } catch {
+        // Local drafts remain available when the database is temporarily unavailable.
       }
       if (!cancelled && resumed) {
         setApplication((current) => {
@@ -210,7 +240,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const calculation = useMemo<LoanCalculation | null>(() => {
     if (!application?.loanRequest?.amount) return null;
     return calculateLoan(application.loanRequest.amount, application.loanRequest.tenure, { loanType: application.applicantType || "PERSONAL" });
-  }, [application?.loanRequest?.amount, application?.loanRequest?.tenure]);
+  }, [application?.loanRequest?.amount, application?.loanRequest?.tenure, application?.applicantType, loanConfigVersion]);
 
   // ----- derived: section metadata -----
   const sectionMeta: SectionMeta[] = useMemo(() => {
@@ -229,12 +259,35 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     });
   }, [application, sectionMeta, sectionStatusOverrides]);
 
-  // ----- persistence: localStorage on every change -----
+  // ----- persistence: localStorage and the authenticated database draft -----
   useEffect(() => {
     if (!application) return;
     saveApplication(application, currentIndexRef.current);
-
     skipNextAutoSave.current = false;
+
+    if (!getAccessToken() || !application.applicantType || application.status === "SUBMITTED") return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const draft = applicationRef.current;
+      if (!draft || !draft.applicantType) return;
+      setSaveState("saving");
+      void saveApplicationDraft({
+        applicationId: draft.applicationId,
+        applicantType: draft.applicantType,
+        data: compactApplicationData(draft),
+        lastSectionIndex: currentIndexRef.current,
+        updatedAt: draft.updatedAt,
+      }).then(() => {
+        setSaveState("saved");
+        setLastSavedAt(new Date().toISOString());
+      }).catch(() => {
+        setSaveState("error");
+      });
+    }, 600);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, [application]);
 
   useEffect(() => {
@@ -438,9 +491,27 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     applicationRef.current = draft;
     setApplication((existing) => existing?.applicationId === draft.applicationId ? draft : existing);
     saveApplication(draft, currentIndexRef.current);
-    setSaveState("saved");
-    setLastSavedAt(new Date().toISOString());
-    return { ok: true, applicationId: draft.applicationId, status: draft.status };
+    if (!getAccessToken() || !draft.applicantType || draft.status === "SUBMITTED") {
+      setSaveState("saved");
+      setLastSavedAt(new Date().toISOString());
+      return { ok: true, applicationId: draft.applicationId, status: draft.status };
+    }
+    setSaveState("saving");
+    try {
+      await saveApplicationDraft({
+        applicationId: draft.applicationId,
+        applicantType: draft.applicantType,
+        data: compactApplicationData(draft),
+        lastSectionIndex: currentIndexRef.current,
+        updatedAt: draft.updatedAt,
+      });
+      setSaveState("saved");
+      setLastSavedAt(new Date().toISOString());
+      return { ok: true, applicationId: draft.applicationId, status: draft.status };
+    } catch (error) {
+      setSaveState("error");
+      return { ok: false, applicationId: draft.applicationId, status: draft.status, error: error instanceof Error ? error.message : "Unable to save your progress." };
+    }
   }, [application]);
 
   // ----- submit -----

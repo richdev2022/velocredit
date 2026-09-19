@@ -6,8 +6,10 @@
 import { useEffect, useCallback, useState } from "react";
 import {
   adminListApplications,
+  adminListApplicationDrafts,
   adminListStats,
   type AdminApplicationSummary,
+  type AdminDraftSummary,
   type AdminStats,
 } from "../../services/adminApi";
 import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
@@ -36,7 +38,7 @@ const TYPE_FILTERS = [
 
 export default function AdminList({ onSelect }: AdminListProps) {
   const [stats, setStats] = useState<AdminStats | null>(null);
-  const [apps, setApps] = useState<AdminApplicationSummary[]>([]);
+  const [apps, setApps] = useState<Array<AdminApplicationSummary | AdminDraftSummary>>([]);
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
@@ -48,13 +50,14 @@ export default function AdminList({ onSelect }: AdminListProps) {
     setLoading(true);
     setError(null);
     try {
-      const [statsRes, listRes] = await Promise.all([
+      const [statsRes, listRes, draftRes] = await Promise.all([
         adminListStats(),
         adminListApplications({ status: statusFilter, type: typeFilter, search, limit: 100, offset: 0 }),
+        adminListApplicationDrafts({ status: statusFilter, type: typeFilter, search, limit: 100, offset: 0 }),
       ]);
       setStats(statsRes);
-      setApps(listRes.applications);
-      setTotal(listRes.total);
+      setApps([...listRes.applications, ...draftRes.drafts]);
+      setTotal(listRes.total + draftRes.total);
     } catch (err: any) {
       setError(err?.message || "Failed to load applications.");
     } finally {
@@ -148,8 +151,8 @@ export default function AdminList({ onSelect }: AdminListProps) {
                 {apps.map((app) => (
                   <tr
                     key={app.applicationId}
-                    onClick={() => onSelect(app.applicationId)}
-                    className="hover:bg-velo-50/30 cursor-pointer transition"
+                    onClick={() => !("progressPercent" in app) && onSelect(app.applicationId)}
+                    className={`hover:bg-velo-50/30 transition ${"progressPercent" in app ? "" : "cursor-pointer"}`}
                   >
                     <td className="px-4 py-3">
                       <div className="font-medium text-velo-900">{app.applicantName || "—"}</div>
@@ -161,16 +164,19 @@ export default function AdminList({ onSelect }: AdminListProps) {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={app.status} />
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={app.status} />
+                        {"progressPercent" in app && <span className="text-[11px] text-slate-500">{app.progressPercent}% complete</span>}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-right font-semibold text-velo-900">
                       {formatNaira(app.loanAmount)}
                     </td>
                     <td className="px-4 py-3 text-right text-velo-700">
-                      {formatNaira(app.totalRepayment)}
+                      {"progressPercent" in app ? "—" : formatNaira(app.totalRepayment)}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-500">
-                      {app.dateSubmitted ? formatDateLabel(app.dateSubmitted) : "—"}
+                      {"progressPercent" in app ? formatDateLabel(app.dateUpdated) : (app.dateSubmitted ? formatDateLabel(app.dateSubmitted) : "—")}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <svg className="inline text-slate-400" width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -189,7 +195,7 @@ export default function AdminList({ onSelect }: AdminListProps) {
               <button
                 key={app.applicationId}
                 type="button"
-                onClick={() => onSelect(app.applicationId)}
+                onClick={() => !("progressPercent" in app) && onSelect(app.applicationId)}
                 className="w-full text-left p-4 hover:bg-slate-50 transition"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -197,13 +203,13 @@ export default function AdminList({ onSelect }: AdminListProps) {
                     <div className="font-medium text-velo-900 truncate">{app.applicantName || "—"}</div>
                     <div className="text-xs text-slate-500 font-mono mt-0.5">{app.applicationId}</div>
                   </div>
-                  <StatusBadge status={app.status} />
+                  <div className="text-right"><StatusBadge status={app.status} />{"progressPercent" in app && <div className="text-[11px] text-slate-500 mt-1">{app.progressPercent}% complete</div>}</div>
                 </div>
                 <div className="mt-2 flex items-center justify-between text-xs">
                   <span className="text-slate-500">
                     {app.applicantType === "PERSONAL" ? "Personal" : "Business"} • {formatNaira(app.loanAmount)}
                   </span>
-                  <span className="text-velo-700 font-medium">{formatNaira(app.totalRepayment)}</span>
+                  <span className="text-velo-700 font-medium">{"progressPercent" in app ? "Draft progress" : formatNaira(app.totalRepayment)}</span>
                 </div>
               </button>
             ))}

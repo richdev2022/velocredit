@@ -8,6 +8,7 @@ const REQUEST_TIMEOUT_MS = 120_000;
 export interface AdminApplicationSummary { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: string; applicantName: string; email: string; phone: string; loanAmount: number; totalRepayment: number; tenure: string; repaymentDate: string; dateCreated: string; dateSubmitted: string; dateUpdated: string; driveFolderUrl: string; }
 export interface AdminApplicationDetail { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: string; createdAt: string; updatedAt: string; submittedAt: string; personalInfo: any; businessInfo: any; businessRep: any; kyc: any; financial: any; loan: any; documents: any; customerSnapshot?: any; creditReportSnapshot?: any; stageStatuses?: Record<string, string>; stageRejectionNotes?: Record<string, string>; systemDecision?: any; manualDecision?: string; manualNote?: string; borrowerId?: string; disbursementAccount?: any; witness?: any; collateral?: any; }
 export interface AdminStats { counts: Record<string, number>; total: number; totalLoanAmount: number; totalRepayment: number; totalLoanDisbursed: number; realizedRevenue: number; awaitingRevenue: number; }
+export interface AdminDraftSummary { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; status: "DRAFT" | "IN_PROGRESS"; applicantName: string; email: string; phone: string; loanAmount: number; tenure: string; dateCreated: string; dateUpdated: string; currentSection: number; totalSections: number; progressPercent: number; }
 
 function token() { return sessionStorage.getItem(ADMIN_TOKEN_KEY); }
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -51,6 +52,16 @@ export async function verifyAdminLoginOtp(challengeId: string, code: string) {
 		setAdminToken(response.accessToken); setAdminRole(response.user.roles[0] || "ADMIN"); sessionStorage.setItem("velo:admin-permissions", JSON.stringify(response.user.adminPermissions ?? [])); return { ok: true, role: response.user.roles[0] || "ADMIN" };
 }
 export async function adminListApplications(opts: { status?: string; type?: string; search?: string; limit?: number; offset?: number } = {}): Promise<{ total: number; applications: AdminApplicationSummary[] }> { const params = new URLSearchParams(); if (opts.status) params.set("status", opts.status); if (opts.type) params.set("type", opts.type); if (opts.search) params.set("search", opts.search); params.set("limit", String(opts.limit || 20)); params.set("offset", String(opts.offset || 0)); const response = await request<{ loans: any[]; meta?: { total?: number } }>(`/api/v1/admin/loans?${params.toString()}`); const applications = (response.loans || []).map((loan) => ({ applicationId: loan.applicationId || loan.id, applicantType: (loan.customerSnapshot?.businessInfo?.businessName ? "BUSINESS" : "PERSONAL") as "PERSONAL" | "BUSINESS", status: loan.status, applicantName: loan.customerSnapshot?.fullName || "Borrower", email: loan.customerSnapshot?.email || "", phone: loan.customerSnapshot?.phone || "", loanAmount: Number(loan.amountNaira || 0), totalRepayment: Number(loan.totalRepaymentNaira || 0), tenure: `${loan.tenureDays || 0} days`, repaymentDate: loan.dueAt || "", dateCreated: loan.createdAt, dateSubmitted: loan.createdAt, dateUpdated: loan.createdAt, driveFolderUrl: "" })); return { total: response.meta?.total || applications.length, applications }; }
+export async function adminListApplicationDrafts(opts: { status?: string; type?: string; search?: string; limit?: number; offset?: number } = {}): Promise<{ total: number; drafts: AdminDraftSummary[] }> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set("status", opts.status);
+  if (opts.type) params.set("type", opts.type);
+  if (opts.search) params.set("search", opts.search);
+  params.set("limit", String(opts.limit || 20));
+  params.set("offset", String(opts.offset || 0));
+  return request(`/api/v1/admin/application-drafts?${params.toString()}`);
+}
+
 export async function adminGetApplication(id: string): Promise<AdminApplicationDetail> {
   const response = await request<{ loan?: any; application?: any; kycCase?: any; kycDocuments?: any }>(`/api/v1/admin/loans/${encodeURIComponent(id)}`);
   const loan = response.loan || response.application || {};

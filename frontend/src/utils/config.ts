@@ -306,6 +306,48 @@ export function getLoanProgram(type: LoanProgramKey): LoanProgramConfig {
   return config.loanPrograms[type];
 }
 
+export function applyLoanProducts(products: Array<{
+  name: string;
+  minAmountNaira: number;
+  maxAmountNaira: number;
+  defaultTenureDays?: number;
+  interestRatePercent: number;
+  processingFeePercent: number;
+  lateFeePercent: number;
+}>): void {
+  for (const product of products) {
+    const type: LoanProgramKey | null = /business/i.test(product.name)
+      ? "BUSINESS"
+      : /personal/i.test(product.name)
+        ? "PERSONAL"
+        : null;
+    if (!type) continue;
+    const program = config.loanPrograms[type];
+    const limits = {
+      min: Number(product.minAmountNaira),
+      max: Number(product.maxAmountNaira),
+      defaultAmount: Math.min(Number(product.maxAmountNaira), Math.max(Number(product.minAmountNaira), program.loanLimits.defaultAmount)),
+    };
+    if (!Number.isFinite(limits.min) || !Number.isFinite(limits.max) || limits.min >= limits.max) continue;
+    config.loanPrograms[type] = {
+      ...program,
+      loanLimits: limits,
+      tenures: product.defaultTenureDays && product.defaultTenureDays > 0
+        ? [{ value: product.defaultTenureDays, label: `${product.defaultTenureDays} Days` }]
+        : program.tenures,
+      fees: {
+        ...program.fees,
+        interest: { ...program.fees.interest, value: Number(product.interestRatePercent) },
+        processingFee: { ...program.fees.processingFee, type: "percentage", value: Number(product.processingFeePercent) },
+        lateFee: { ...program.fees.lateFee, type: "percentage", value: Number(product.lateFeePercent) },
+      },
+    };
+  }
+  const personal = config.loanPrograms.PERSONAL;
+  config.loanLimits = { ...personal.loanLimits };
+  config.tenures = personal.tenures.slice();
+}
+
 // Re-export base for the admin UI (to show env-default values)
 export { baseConfig };
 
