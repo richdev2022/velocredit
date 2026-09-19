@@ -39,6 +39,7 @@ import type {
   LookupDraftResponse,
   SaveDraftResponse,
   SubmitResponse,
+  BusinessRepresentative,
 } from "../types/application";
 
 // ---------------------------------------------------------------------------
@@ -615,7 +616,7 @@ function normalizeApplicationData(
       accountNumber: pickString(prevDisb?.accountNumber, dataDisb.accountNumber, ""),
     },
     personalFinancial: {
-      employmentStatus: pickString(prevPF?.employmentStatus, dataPF.employmentStatus, ""),
+      employmentStatus: pickString(prevPF?.employmentStatus, dataPF.employmentStatus, "") as ApplicationData["personalFinancial"]["employmentStatus"],
       employerBusinessName: pickString(prevPF?.employerBusinessName, dataPF.employerBusinessName, ""),
       monthlyIncome: pickString(prevPF?.monthlyIncome, dataPF.monthlyIncome, ""),
       monthlyExpenses: pickString(prevPF?.monthlyExpenses, dataPF.monthlyExpenses, ""),
@@ -625,7 +626,7 @@ function normalizeApplicationData(
     businessInfo: {
       businessName: pickString(prevBI?.businessName, dataBI.businessName, ""),
       businessRegistrationNumber: pickString(prevBI?.businessRegistrationNumber, dataBI.businessRegistrationNumber, ""),
-      businessType: pickString(prevBI?.businessType, dataBI.businessType, ""),
+      businessType: pickString(prevBI?.businessType, dataBI.businessType, "") as ApplicationData["businessInfo"]["businessType"],
       businessAddress: pickString(prevBI?.businessAddress, dataBI.businessAddress, ""),
       businessIndustry: pickString(prevBI?.businessIndustry, dataBI.businessIndustry, ""),
       yearsInBusiness: pickString(prevBI?.yearsInBusiness, dataBI.yearsInBusiness, ""),

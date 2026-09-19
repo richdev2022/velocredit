@@ -1533,8 +1533,8 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
           resendSecondsRemaining: challenge.resendSecondsRemaining,
           requiresPhoneVerification: true,
         };
-      } catch (_e) {
-        if (_e instanceof OtpRateLimitError) {
+      } catch (otpError) {
+        if (otpError instanceof OtpRateLimitError) {
           const active = findLatestOtpChallenge(req.user!.id, "KYC_VERIFICATION");
           if (active) {
             otpChallengeForPhone = {
@@ -1772,8 +1772,8 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
           resendSecondsRemaining: challenge.resendSecondsRemaining,
           requiresPhoneVerification: true,
         };
-      } catch (_e) {
-        if (_e instanceof OtpRateLimitError) {
+      } catch (otpError) {
+        if (otpError instanceof OtpRateLimitError) {
           const active = findLatestOtpChallenge(req.user!.id, "KYC_VERIFICATION");
           if (active) {
             ninOtpChallenge = {
