@@ -324,7 +324,7 @@ const registerSchema = z
     fullName: z.string().min(2).max(120),
     password: z.string().min(8, "Password must be at least 8 characters"),
     role: z.enum(["INVESTOR", "BORROWER"]).default("BORROWER"),
-    preferredOtpChannel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).default("EMAIL"),
+    preferredOtpChannel: z.enum(["SMS", "EMAIL"]).default("EMAIL"),
     dateOfBirth: z.string().optional(),
     residentialAddress: z.record(z.unknown()).optional(),
     occupation: z.string().optional(),
@@ -403,7 +403,7 @@ const otpRequestSchema = z.object({
     "KYC_VERIFICATION",
     "WITHDRAWAL",
   ]),
-  channel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).default("SMS"),
+  channel: z.enum(["SMS", "EMAIL"]).default("SMS"),
 });
 const otpVerifySchema = z.object({ challengeId: z.string().min(1), code: z.string().min(4) });
 const passwordResetRequestSchema = z.object({ email: z.string().email() });
@@ -412,8 +412,8 @@ const passwordResetConfirmSchema = z.object({
   token: z.string().min(1),
   newPassword: z.string().min(8),
 });
-const bvnVerifySchema = z.object({ bvn: z.string().regex(/^\d{11}$/, "BVN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS","WHATSAPP"]).optional() });
-const ninVerifySchema = z.object({ nin: z.string().regex(/^\d{11}$/, "NIN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS","WHATSAPP"]).optional() });
+const bvnVerifySchema = z.object({ bvn: z.string().regex(/^\d{11}$/, "BVN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS"]).optional() });
+const ninVerifySchema = z.object({ nin: z.string().regex(/^\d{11}$/, "NIN must be exactly 11 digits"), firstName: z.string().optional(), lastName: z.string().optional(), dateOfBirth: z.string().optional(), otpChannel: z.enum(["SMS"]).optional() });
 const payoutAccountSchema = z.object({ accountName: z.string().min(2), accountNumber: z.string().regex(/^\d{10}$/, "Account number must be 10 digits"), bankCode: z.string().min(2), bankName: z.string().optional() });
 const createInvestmentSchema = z.object({ amountNaira: z.number().positive().finite(), planId: z.string().min(1).optional(), tenureDays: z.number().int().positive().default(90), annualRatePercent: z.number().nonnegative().default(12) });
 const earlyLiquiditySchema = z.object({ otpChallengeId: z.string().optional(), otpCode: z.string().optional() });
@@ -584,7 +584,7 @@ router.post("/auth/login", async (req, res) => {
       userId: user.id,
       email: user.email,
       fullName: user.fullName,
-      channels: ["SMS", "WHATSAPP", "EMAIL"] as const,
+      channels: ["SMS", "EMAIL"] as const,
     });
     return;
   }
@@ -623,7 +623,7 @@ router.post("/auth/login", async (req, res) => {
 });
 
 router.post("/auth/login/resend-otp", async (req, res) => {
-  const parsed = z.object({ userId: z.string().uuid(), challengeId: z.string().uuid().optional(), channel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).optional() }).safeParse(req.body);
+  const parsed = z.object({ userId: z.string().uuid(), challengeId: z.string().uuid().optional(), channel: z.enum(["SMS", "EMAIL"]).optional() }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const user = users.find((item) => item.id === parsed.data.userId && item.isActive !== false && item.otpLoginEnabled);
   if (!user) { res.status(404).json({ ok: false, error: "Login verification is not available" }); return; }
@@ -826,7 +826,7 @@ router.post("/auth/otp/request", requireAuth, async (req: AuthRequest, res) => {
 });
 
 router.post("/auth/register/resend-otp", async (req, res) => {
-  const parsed = z.object({ userId: z.string().uuid(), channel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).optional() }).safeParse(req.body);
+  const parsed = z.object({ userId: z.string().uuid(), channel: z.enum(["SMS", "EMAIL"]).optional() }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
@@ -1025,7 +1025,7 @@ router.get("/user/settings", requireAuth, (req: AuthRequest, res) => {
 });
 
 router.put("/user/settings", requireAuth, async (req: AuthRequest, res) => {
-  const parsed = z.object({ preferredOtpChannel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).optional(), otpLoginEnabled: z.boolean().optional() }).safeParse(req.body);
+  const parsed = z.object({ preferredOtpChannel: z.enum(["SMS", "EMAIL"]).optional(), otpLoginEnabled: z.boolean().optional() }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
   const user = users.find((item) => item.id === req.user?.id);
   if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
@@ -1082,7 +1082,7 @@ router.patch("/me", requireAuth, async (req: AuthRequest, res) => {
 const profileUpdateInitiateSchema = z.object({
   phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")).optional(),
   email: z.string().email("Valid email address is required").optional(),
-  channel: z.enum(["SMS", "WHATSAPP", "EMAIL"]).default("SMS"),
+  channel: z.enum(["SMS", "EMAIL"]).default("SMS"),
 });
 
 router.post("/me/profile-update/initiate", requireAuth, async (req: AuthRequest, res) => {
@@ -1121,7 +1121,7 @@ router.post("/me/profile-update/initiate", requireAuth, async (req: AuthRequest,
   const channel = (() => {
     if (newEmail && !newPhone) return "EMAIL";
     if (parsed.data.channel === "EMAIL" && !newEmail) {
-      return (user.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";
+      return (user.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS";
     }
     return parsed.data.channel;
   })();
@@ -1146,7 +1146,7 @@ router.post("/me/profile-update/initiate", requireAuth, async (req: AuthRequest,
   }
 });
 
-const profileUpdateResendSchema = z.object({ challengeId: z.string().min(1), channel: z.enum(["SMS","WHATSAPP","EMAIL"]).optional() });
+const profileUpdateResendSchema = z.object({ challengeId: z.string().min(1), channel: z.enum(["SMS","EMAIL"]).optional() });
 
 router.post("/me/profile-update/resend-otp", requireAuth, async (req: AuthRequest, res) => {
   const user = users.find((u) => u.id === req.user?.id);
@@ -1165,7 +1165,7 @@ router.post("/me/profile-update/resend-otp", requireAuth, async (req: AuthReques
     return;
   }
   try {
-    const channel = (parsed.data.channel ?? found.deliveryChannel) as "SMS"|"WHATSAPP"|"EMAIL";
+    const channel = (parsed.data.channel ?? found.deliveryChannel) as "SMS"|"EMAIL";
     const challenge = await createOtpChallenge(found.userId, "PROFILE_UPDATE", found.phone ?? user.phone, found.email ?? user.email, channel);
     res.json({
       ok: true,
@@ -1515,7 +1515,7 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
       phoneRequiresOwnershipProof = true;
     }
     if (phoneRequiresOwnershipProof && normalizedPhone) {
-      const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";
+      const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS";
       try {
         const challenge = await createOtpChallenge(
           req.user!.id,
@@ -1754,7 +1754,7 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
       phoneRequiresOwnershipProof = true;
     }
     if (phoneRequiresOwnershipProof && normalizedPhone) {
-      const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS"|"WHATSAPP";
+      const channel = parsed.data.otpChannel ?? (user?.preferredOtpChannel && user.preferredOtpChannel !== "EMAIL" ? user.preferredOtpChannel : "SMS") as "SMS";
       try {
         const challenge = await createOtpChallenge(
           req.user!.id,
@@ -1822,7 +1822,7 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
   });
 });
 
-const kycConfirmOtpSchema = z.object({ idType: z.enum(["BVN","NIN"]), challengeId: z.string().min(1), code: z.string().regex(/^\d{6}$/, "6-digit OTP code is required"), channel: z.enum(["SMS","WHATSAPP"]).optional() });
+const kycConfirmOtpSchema = z.object({ idType: z.enum(["BVN","NIN"]), challengeId: z.string().min(1), code: z.string().regex(/^\d{6}$/, "6-digit OTP code is required"), channel: z.enum(["SMS"]).optional() });
 
 router.post("/me/kyc/verify-confirm-otp", requireAuth, async (req: AuthRequest, res) => {
   const parsed = kycConfirmOtpSchema.safeParse(req.body);
@@ -1865,7 +1865,7 @@ router.post("/me/kyc/verify-confirm-otp", requireAuth, async (req: AuthRequest, 
 });
 
 router.post("/me/kyc/verify-resend-otp", requireAuth, async (req: AuthRequest, res) => {
-  const schema = z.object({ idType: z.enum(["BVN","NIN"]), challengeId: z.string().min(1), channel: z.enum(["SMS","WHATSAPP"]).optional() });
+  const schema = z.object({ idType: z.enum(["BVN","NIN"]), challengeId: z.string().min(1), channel: z.enum(["SMS"]).optional() });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -1878,7 +1878,7 @@ router.post("/me/kyc/verify-resend-otp", requireAuth, async (req: AuthRequest, r
   }
   const user = users.find((u) => u.id === req.user?.id);
   try {
-    const channel = (parsed.data.channel ?? (found.deliveryChannel === "EMAIL" ? "SMS" : found.deliveryChannel)) as "SMS"|"WHATSAPP";
+    const channel = (parsed.data.channel ?? (found.deliveryChannel === "EMAIL" ? "SMS" : found.deliveryChannel)) as "SMS";
     const challenge = await createOtpChallenge(found.userId, "KYC_VERIFICATION", found.phone ?? user?.phone, found.email ?? user?.email, channel);
     res.json({
       ok: true,

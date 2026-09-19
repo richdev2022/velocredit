@@ -252,7 +252,7 @@ export default function PersonalKycSection() {
     setOtpMethodPickerFor(type.toUpperCase() as "BVN" | "NIN");
   }
 
-  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS" | "WHATSAPP") {
+  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS") {
     const value = type === "BVN" ? currentApplication.kyc?.bvn || "" : currentApplication.kyc?.nin || "";
     const lowerType = type.toLowerCase() as "bvn" | "nin";
     setOtpPickerState({ phase: "sending", channel });
@@ -331,7 +331,7 @@ export default function PersonalKycSection() {
     }
   }
 
-  async function resendActiveKycOtp(newChannel?: "SMS" | "WHATSAPP") {
+  async function resendActiveKycOtp(newChannel?: "SMS") {
     if (!activeOtpChallenge) return;
     try {
       const res = await resendKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, channel: newChannel });
@@ -716,8 +716,8 @@ export default function PersonalKycSection() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}
-                      className="w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition group"
+                      onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}
+                      className="hidden w-full text-left p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition group"
                     >
                       <div className="flex items-center gap-3">
                         <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 text-white flex items-center justify-center shrink-0 shadow-soft group-hover:shadow-md transition">
@@ -817,7 +817,6 @@ export default function PersonalKycSection() {
                 {activeOtpChallenge.error && <p className="text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 rounded-lg px-3 py-2">{activeOtpChallenge.error}</p>}
                 <div className="flex flex-wrap items-center gap-2">
                   <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-sky-800 hover:bg-sky-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("SMS")}>{activeOtpChallenge.cooldown > 0 ? `Resend SMS (${activeOtpChallenge.cooldown}s)` : "Resend via SMS"}</button>
-                  <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-emerald-200 bg-white px-3 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("WHATSAPP")}>{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
                 </div>
                 <button type="button" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50 min-h-[48px] text-base font-bold" disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
               </div>

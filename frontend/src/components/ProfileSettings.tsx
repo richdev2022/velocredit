@@ -39,9 +39,7 @@ export default function ProfileSettings() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [contactChannel, setContactChannel] = useState<ProfileUpdateChannel>(
-    (user as any)?.preferredOtpChannel === "WHATSAPP"
-      ? "WHATSAPP"
-      : (user as any)?.preferredOtpChannel === "EMAIL"
+    (user as any)?.preferredOtpChannel === "EMAIL"
         ? "EMAIL"
         : "SMS"
   );
@@ -319,7 +317,6 @@ export default function ProfileSettings() {
                   disabled={saving}
                 >
                   <option value="SMS">Text message (SMS)</option>
-                  <option value="WHATSAPP">WhatsApp</option>
                   <option value="EMAIL">Email</option>
                 </select>
               </label>

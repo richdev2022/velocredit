@@ -708,7 +708,6 @@ export default function AccountAccess() {
                         <select className="velo-input" value={preferredOtpChannel} onChange={(event) => setPreferredOtpChannel(event.target.value as OtpChannel)}>
                           <option value="EMAIL">Email</option>
                           <option value="SMS">Phone (SMS)</option>
-                          <option value="WHATSAPP">WhatsApp</option>
                         </select>
                         <span className="mt-1 block text-xs text-slate-500">Resends will use this preferred option.</span>
                       </label>
@@ -724,7 +723,7 @@ export default function AccountAccess() {
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           {(loginOtpUser.channels).map((channel) => {
-                          const label = channel === "SMS" ? { title: "Text message (SMS)", icon: <Icon name="message" size={24} /> } : channel === "WHATSAPP" ? { title: "WhatsApp", icon: <Icon name="message" size={24} /> } : { title: "Email", icon: <Icon name="email" size={24} /> };
+                          const label = channel === "SMS" ? { title: "Text message (SMS)", icon: <Icon name="message" size={24} /> } : { title: "Email", icon: <Icon name="email" size={24} /> };
                           return (
                             <button
                               key={channel}
@@ -747,7 +746,7 @@ export default function AccountAccess() {
                         <div>
                           <p className="text-sm font-semibold text-velo-900 dark:text-white">Verify your account</p>
                           <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                            Enter the 6-digit code sent by {(signupVerification ?? loginStepUp)!.channel === "SMS" ? "SMS" : (signupVerification ?? loginStepUp)!.channel === "WHATSAPP" ? "WhatsApp" : "email"}.
+                            Enter the 6-digit code sent by {(signupVerification ?? loginStepUp)!.channel === "SMS" ? "SMS" : "email"}.
                           </p>
                         </div>
                         <label className="block">

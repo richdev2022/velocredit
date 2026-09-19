@@ -278,7 +278,7 @@ export default function InvestorDashboard() {
     setOtpMethodPickerFor(type);
   }
 
-  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS" | "WHATSAPP") {
+  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS") {
     const value = type === "BVN" ? bvn : nin;
     setOtpPickerState({ phase: "sending", channel });
     setKycBusy(type);
@@ -355,7 +355,7 @@ export default function InvestorDashboard() {
     }
   }
 
-  async function resendActiveKycOtp(newChannel?: "SMS"|"WHATSAPP") {
+  async function resendActiveKycOtp(newChannel?: "SMS") {
     if (!activeOtpChallenge) return;
     try {
       const res = await resendKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, channel: newChannel });

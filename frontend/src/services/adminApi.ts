@@ -39,7 +39,7 @@ export function setAdminRole(value: string) { sessionStorage.setItem(ADMIN_ROLE_
 export function clearAdminToken() { sessionStorage.removeItem(ADMIN_TOKEN_KEY); sessionStorage.removeItem(ADMIN_ROLE_KEY); sessionStorage.removeItem("velo:admin-permissions"); }
 export async function adminLogout() { return request<{ ok: true }>("/api/v1/auth/admin/logout", { method: "POST" }); }
 
-export type AdminOtpChannel = "SMS" | "WHATSAPP" | "EMAIL";
+export type AdminOtpChannel = "SMS" | "EMAIL";
 export interface AdminOtpChallenge { challengeId: string; expiresAt: string; channel: AdminOtpChannel; resendAvailableAt: string; resendSecondsRemaining: number; }
 export async function adminLogin(email: string, password: string, channel: AdminOtpChannel): Promise<{ ok: true; requiresOtp: true; user: { roles: string[]; adminPermissions?: AdminPermission[] }; verification: AdminOtpChallenge }> {
 	const response = await request<{ ok: true; requiresOtp: true; user: { roles: string[]; adminPermissions?: AdminPermission[] }; challengeId: string; expiresAt: string; channel: AdminOtpChannel; resendAvailableAt: string; resendSecondsRemaining: number }>("/api/v1/auth/admin/login", { method: "POST", body: JSON.stringify({ email, password, channel }) });
