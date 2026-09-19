@@ -18,6 +18,7 @@ A complete, production-ready **multi-step Loan Application** for **Velo Finance 
 
 1. [Quick Start (Local Development)](#1-quick-start-local-development)
 2. [Environment Configuration](#2-environment-configuration)
+- [WhatsApp OTP Production Setup](./WHATSAPP_OTP_SETUP.md)
 3. [Backend Deployment — Google Apps Script](#3-backend-deployment--google-apps-script)
 4. [Frontend Deployment — User Site](#4-frontend-deployment--user-site)
 5. [Admin Dashboard](#5-admin-dashboard)
