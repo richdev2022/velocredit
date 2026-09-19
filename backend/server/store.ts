@@ -15,7 +15,7 @@ export type PaymentStatus = "PENDING_PROVIDER_CONFIRMATION" | "SUCCESSFUL" | "FA
 export type PayoutStatus = "PENDING_PROVIDER_CONFIRMATION" | "SUCCESSFUL" | "FAILED" | "PENDING_APPROVAL" | "CANCELLED";
 export type DocumentStatus = "PENDING_REVIEW" | "VERIFIED" | "REJECTED" | "EXPIRED";
 export type OtpAction = "SIGNUP_VERIFY" | "LOGIN_STEP_UP" | "PAYOUT_ACCOUNT_CHANGE" | "EARLY_LIQUIDITY" | "PASSWORD_RESET" | "KYC_VERIFICATION" | "WITHDRAWAL" | "PROFILE_UPDATE";
-export type NotificationChannel = "SMS" | "WHATSAPP" | "EMAIL" | "IN_APP";
+export type NotificationChannel = "SMS" | "EMAIL" | "IN_APP";
 
 export interface User {
   id: string;
@@ -30,7 +30,7 @@ export interface User {
   updatedAt?: string;
   lastLoginAt?: string;
   isActive?: boolean;
-  preferredOtpChannel?: "SMS" | "WHATSAPP" | "EMAIL";
+  preferredOtpChannel?: "SMS" | "EMAIL";
   otpLoginEnabled?: boolean;
   otpVerifiedAt?: string;
   dateOfBirth?: string;
@@ -500,7 +500,7 @@ export interface OtpChallenge {
   maxAttempts: number;
   consumedAt?: string;
   createdAt: string;
-  deliveryChannel: "SMS" | "WHATSAPP" | "EMAIL";
+  deliveryChannel: "SMS" | "EMAIL";
 }
 
 export interface PasswordResetToken {

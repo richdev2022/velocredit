@@ -8,11 +8,11 @@ export type PaymentStatus = "PENDING_PROVIDER_CONFIRMATION" | "SUCCESSFUL" | "FA
 export type PayoutStatus = "PENDING_PROVIDER_CONFIRMATION" | "SUCCESSFUL" | "FAILED" | "PENDING_APPROVAL" | "CANCELLED";
 export type OtpAction = "SIGNUP_VERIFY" | "LOGIN_STEP_UP" | "PAYOUT_ACCOUNT_CHANGE" | "EARLY_LIQUIDITY" | "PASSWORD_RESET" | "KYC_VERIFICATION" | "WITHDRAWAL";
 export type ConsentType = "TERMS" | "PRIVACY" | "IDENTITY_VERIFICATION" | "CREDIT_REPORT" | "INVESTMENT_AGREEMENT" | "LOAN_AGREEMENT" | "ELECTRONIC_COMMUNICATIONS";
-export type NotificationChannel = "SMS" | "EMAIL" | "WHATSAPP" | "IN_APP";
+export type NotificationChannel = "SMS" | "EMAIL" | "IN_APP";
 
 export interface SessionUser { id: string; email: string; fullName: string; phone: string; dateOfBirth?: string; roles: Role[]; kycStatus?: KycStatus; createdAt: string; }
 export interface AuthResponse { ok: true; accessToken: string; user: SessionUser; }
-export type OtpChannel = "SMS" | "WHATSAPP" | "EMAIL";
+export type OtpChannel = "SMS" | "EMAIL";
 export interface RegistrationVerification { userId: string; challengeId: string; expiresAt: string; channel: OtpChannel; resendAvailableAt: string; resendSecondsRemaining: number; }
 export interface RegistrationResponse { ok: true; user: SessionUser; verification: RegistrationVerification; message: string; }
 export interface PaginationMeta { total: number; limit: number; offset: number; }
@@ -204,7 +204,7 @@ export interface MePatchInput { fullName?: string; dateOfBirth?: string; residen
 export async function patchMe(input: MePatchInput): Promise<{ ok: true; user: SessionUser }> {
   return request("/api/v1/me", { method: "PATCH", body: JSON.stringify(input) });
 }
-export type ProfileUpdateChannel = "SMS" | "WHATSAPP" | "EMAIL";
+export type ProfileUpdateChannel = "SMS" | "EMAIL";
 export interface ProfileUpdateInitiateInput { phone?: string; email?: string; channel?: ProfileUpdateChannel; }
 export interface ProfileUpdateChallenge {
   ok: true;
@@ -294,11 +294,11 @@ export async function submitKyc(): Promise<KycResponse> {
   return updateMyKyc({ statusOverride: "PENDING_VERIFICATION" });
 }
 
-export async function verifyMyBvn(bvn: string, firstName?: string, lastName?: string, dateOfBirth?: string, otpChannel?: "SMS"|"WHATSAPP"): Promise<KycResponse> {
+export async function verifyMyBvn(bvn: string, firstName?: string, lastName?: string, dateOfBirth?: string, otpChannel?: "SMS"): Promise<KycResponse> {
   return request("/api/v1/me/kyc/bvn/verify", { method: "POST", body: JSON.stringify({ bvn, firstName, lastName, dateOfBirth, otpChannel }) });
 }
 
-export async function verifyMyNin(nin: string, firstName?: string, lastName?: string, dateOfBirth?: string, otpChannel?: "SMS"|"WHATSAPP"): Promise<KycResponse> {
+export async function verifyMyNin(nin: string, firstName?: string, lastName?: string, dateOfBirth?: string, otpChannel?: "SMS"): Promise<KycResponse> {
   return request("/api/v1/me/kyc/nin/verify", { method: "POST", body: JSON.stringify({ nin, firstName, lastName, dateOfBirth, otpChannel }) });
 }
 
@@ -306,7 +306,7 @@ export type KycOtpChallenge = {
   requiresPhoneVerification: true;
   challengeId: string;
   expiresAt: string;
-  channel: "SMS"|"WHATSAPP"|"EMAIL";
+  channel: "SMS"|"EMAIL";
   phoneLastFour: string;
   resendAvailableAt: string;
   resendSecondsRemaining: number;
@@ -315,7 +315,7 @@ export interface KycOtpConfirmResponse { ok: true; idType: "BVN"|"NIN"; checklis
 export async function confirmKycOwnershipOtp(params: { idType: "BVN"|"NIN"; challengeId: string; code: string }): Promise<KycOtpConfirmResponse> {
   return request("/api/v1/me/kyc/verify-confirm-otp", { method: "POST", body: JSON.stringify(params) });
 }
-export async function resendKycOwnershipOtp(params: { idType: "BVN"|"NIN"; challengeId: string; channel?: "SMS"|"WHATSAPP" }): Promise<{ ok: true; challengeId: string; expiresAt: string; channel: "SMS"|"WHATSAPP"|"EMAIL"; resendAvailableAt: string; resendSecondsRemaining: number; }> {
+export async function resendKycOwnershipOtp(params: { idType: "BVN"|"NIN"; challengeId: string; channel?: "SMS" }): Promise<{ ok: true; challengeId: string; expiresAt: string; channel: "SMS"|"EMAIL"; resendAvailableAt: string; resendSecondsRemaining: number; }> {
   return request("/api/v1/me/kyc/verify-resend-otp", { method: "POST", body: JSON.stringify(params) });
 }
 export async function verifyMyLiveness(file: File, input?: { idType?: "BVN" | "NIN"; idNumber?: string; dateOfBirth?: string }): Promise<KycResponse> {

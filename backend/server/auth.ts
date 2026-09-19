@@ -26,7 +26,7 @@ import {
 import { sendOtpSms, maskPhone, formatOtpMessage } from "./providers/kudi.js";
 // import { sendSms, maskPhone, formatOtpMessage } from "./providers/kudi.js"; // legacy generic SMS, replaced with Kudi Send OTP endpoint
 import { sendEmail, welcomeEmail, loginAttemptEmail } from "./email.js";
-import { sendWhatsAppText, maskPhoneForWa } from "./providers/meta.js";
+// import { sendWhatsAppText, maskPhoneForWa } from "./providers/meta.js";
 
 const secret = env.JWT_SECRET ?? "local-development-secret-change-me-please-32chars-min";
 
@@ -138,7 +138,7 @@ async function deliverOtp(input: {
   action: OtpAction;
   phone?: string;
   email?: string;
-  channel: "SMS" | "WHATSAPP" | "EMAIL";
+  channel: "SMS" | "EMAIL";
   code: string;
   smsText: string;
   ttlMinutes: number;
@@ -155,6 +155,7 @@ async function deliverOtp(input: {
       notifications.push({ id: randomUUID(), userId, channel: "SMS", kind: "OTP", recipientMasked: maskPhone(phone), status: "FAILED", error: message, retryCount: 0, createdAt: createdAt.toISOString(), failedAt: createdAt.toISOString() });
     }
   }
+  /* WhatsApp OTP is temporarily disabled.
   if (phone && channel === "WHATSAPP") {
     try {
       const result = await sendWhatsAppText({ to: phone, text: smsText });
@@ -163,6 +164,7 @@ async function deliverOtp(input: {
       // The challenge remains usable when the delivery provider is unavailable.
     }
   }
+  */
   if (email && channel === "EMAIL") {
     try {
       const result = await sendEmail({ to: email, name: users.find((user) => user.id === userId)?.fullName ?? "User", subject: `Velo OTP — ${action.replace(/_/g, " ")}`, html: `<div style="font-family:Arial,sans-serif"><h2>Velo One-Time Code</h2><p>Code: <strong style="font-size:28px">${code}</strong></p><p>Use to ${action.replace(/_/g, " ").toLowerCase()}. Expires in ${ttlMinutes} minutes.</p><p>Never share this code with anyone.</p></div>` });
@@ -179,7 +181,7 @@ export async function createOtpChallenge(
   action: OtpAction,
   phone?: string,
   email?: string,
-  channel: "SMS" | "WHATSAPP" | "EMAIL" = "SMS",
+  channel: "SMS" | "EMAIL" = "SMS",
   options: { skipRateLimit?: boolean } = {}
 ): Promise<{ id: string; expiresAt: string; resendAvailableAt: string; resendSecondsRemaining: number; channel: "SMS"|"WHATSAPP"|"EMAIL"; phone?: string; email?: string; }> {
   const now = new Date();

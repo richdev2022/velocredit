@@ -281,7 +281,7 @@ describe("BVN / NIN fixes — Neon PostgreSQL integration (Tasks 1, 2, 3)", () =
       (premblyMod.verifyNin as any) = vi.fn().mockResolvedValue(mockPremblySuccess(user.phone, user.fullName));
       (authMod.createOtpChallenge as any) = vi.fn().mockResolvedValue({
         challengeId: "ch_ac2_001",
-        channel: "WHATSAPP",
+        channel: "SMS",
         expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
         resendAvailableAt: new Date(Date.now() + 30 * 1000).toISOString(),
         resendSecondsRemaining: 30,

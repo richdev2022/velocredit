@@ -125,7 +125,7 @@ export default function BusinessKycSection() {
     setOtpMethodPickerFor(type.toUpperCase() as "BVN" | "NIN");
   }
 
-  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS" | "WHATSAPP") {
+  async function verifyIdentityWithChannel(type: "BVN" | "NIN", channel: "SMS") {
     const typeLower = type.toLowerCase() as "bvn" | "nin";
     const value = typeLower === "bvn" ? currentApplication.kyc?.bvn : currentApplication.kyc?.nin;
     if (!value) return;
@@ -191,7 +191,7 @@ export default function BusinessKycSection() {
     }
   }
 
-  async function resendActiveKycOtp(newChannel?: "SMS" | "WHATSAPP") {
+  async function resendActiveKycOtp(newChannel?: "SMS") {
     if (!activeOtpChallenge) return;
     try {
       const res = await resendKycOwnershipOtp({ idType: activeOtpChallenge.idType, challengeId: activeOtpChallenge.challenge.challengeId, channel: newChannel });
@@ -489,9 +489,9 @@ export default function BusinessKycSection() {
                       <div className="text-left flex-1 min-w-0"><div className="text-sm font-semibold text-velo-900 dark:text-white">Retry SMS</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Text to identity phone</div></div>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-300 group-hover:text-velo-500 dark:text-slate-600 dark:group-hover:text-velo-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
-                    <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}>
+                    <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" style={{ display: "none" }} onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}>
                       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 group-hover:bg-emerald-500 group-hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 11-3.2-6.4L20 4l-1.6 3.2A7.9 7.9 0 0120 12zM8.3 15.4c-.2-.5-1-1-1.5-1.1l-.5-.2c-.6-.2-1.3.2-1.3.9 0 1.4 1.8 2.8 4.1 2.8 2 0 3.6-.8 4.6-2.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></div>
-                      <div className="text-left flex-1 min-w-0"><div className="text-sm font-semibold text-velo-900 dark:text-white">Retry WhatsApp</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Message on WhatsApp</div></div>
+                      <div className="text-left flex-1 min-w-0"><div className="text-sm font-semibold text-velo-900 dark:text-white">WhatsApp (disabled)</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Message on WhatsApp</div></div>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-300 group-hover:text-emerald-500 dark:text-slate-600 dark:group-hover:text-emerald-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </button>
                   </div>
@@ -503,9 +503,9 @@ export default function BusinessKycSection() {
                     <div className="text-left flex-1 min-w-0"><div className="text-sm font-semibold text-velo-900 dark:text-white">SMS</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Text to identity phone</div></div>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-300 group-hover:text-velo-500 dark:text-slate-600 dark:group-hover:text-velo-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </button>
-                  <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "WHATSAPP")}>
+                  <button type="button" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white p-4 hover:border-emerald-500 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-emerald-400 dark:hover:bg-emerald-950/20 transition-colors group" style={{ display: "none" }} onClick={() => void verifyIdentityWithChannel(otpMethodPickerFor, "SMS")}>
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-sm shadow-emerald-500/20"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 11-3.2-6.4L20 4l-1.6 3.2A7.9 7.9 0 0120 12zM8.3 15.4c-.2-.5-1-1-1.5-1.1l-.5-.2c-.6-.2-1.3.2-1.3.9 0 1.4 1.8 2.8 4.1 2.8 2 0 3.6-.8 4.6-2.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></div>
-                    <div className="text-left flex-1 min-w-0"><div className="text-sm font-semibold text-velo-900 dark:text-white">WhatsApp</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Message on WhatsApp</div></div>
+                    <div className="text-left flex-1 min-w-0"><div className="text-sm font-semibold text-velo-900 dark:text-white">WhatsApp (disabled)</div><div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">Message on WhatsApp</div></div>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-300 group-hover:text-emerald-500 dark:text-slate-600 dark:group-hover:text-emerald-400"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </button>
                 </div>
@@ -554,7 +554,7 @@ export default function BusinessKycSection() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-sky-800 hover:bg-sky-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/30" disabled={activeOtpChallenge.cooldown > 0 || !!activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("SMS")}>{activeOtpChallenge.cooldown > 0 ? `Resend SMS (${activeOtpChallenge.cooldown}s)` : "Resend via SMS"}</button>
-                <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-emerald-200 bg-white px-3 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30" disabled={activeOtpChallenge.cooldown > 0 || !!activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("WHATSAPP")}>{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
+                <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-emerald-200 bg-white px-3 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30" disabled={activeOtpChallenge.cooldown > 0 || !!activeOtpChallenge.busy} style={{ display: "none" }} onClick={() => void resendActiveKycOtp("SMS")}>{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
               </div>
               <button type="button" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50 min-h-[48px] text-base font-bold" disabled={activeOtpChallenge.otpCode.length !== 6 || !!activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
             </div>
