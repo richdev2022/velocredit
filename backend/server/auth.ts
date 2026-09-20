@@ -93,9 +93,11 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       adminPermissions: payload.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : payload.adminPermissions,
       kycStatus: (payload.kycStatus ?? "NOT_STARTED") as User["kycStatus"],
     };
-    if (req.originalUrl.includes("/api/v1/admin/")) {
-      auditLogs.push({ id: randomUUID(), userId: req.user.id, action: "ADMIN_ENDPOINT_CALL", resourceType: "ENDPOINT", resourceId: req.originalUrl.split("?")[0], metadata: { method: req.method }, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
-    }
+    // NOTE: We no longer push an "ADMIN_ENDPOINT_CALL" audit log on every
+    // admin request — that was generating thousands of noise rows per day
+    // and drowning out the meaningful events (USER_CREATED, LOAN_APPROVED,
+    // LOAN_DISBURSED, KYC_DECISION, etc.). Meaningful admin actions are
+    // still audited via the `recordAdminAudit()` helper in routes.ts.
     next();
   } catch {
     res.status(401).json({ ok: false, error: "Invalid or expired token" });

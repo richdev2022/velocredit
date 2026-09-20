@@ -137,7 +137,22 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
 }
 export async function adminUpdateStatus(id: string, decision: "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED") { const response = await request<{ application: { status: string } }>(`/api/v1/admin/loans/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }); return { ok: true, status: response.application.status }; }
 export async function adminDisburseLoan(id: string): Promise<{ ok: true; loan: any; disbursement: LoanDisbursement }> { return request(`/api/v1/admin/loans/${encodeURIComponent(id)}/disburse`, { method: "POST", body: JSON.stringify({}) }); }
-export async function adminListStats(): Promise<AdminStats> { const response = await request<{ totals: Record<string, number> }>("/api/v1/admin/summary"); return { counts: {}, total: response.totals.users || 0, totalLoanAmount: 0, totalRepayment: 0, totalLoanDisbursed: 0, realizedRevenue: 0, awaitingRevenue: response.totals.pendingPayments || 0 }; }
+export async function adminListStats(): Promise<AdminStats> {
+  const response = await request<{ totals: Record<string, number> }>("/api/v1/admin/summary");
+  const t = response.totals || {};
+  return {
+    counts: {
+      REPAID: Number(t.repaidCount || 0),
+      ACTIVE: Number(t.approvedLoans || 0),
+    },
+    total: Number(t.loans || 0),
+    totalLoanAmount: Number(t.disbursedPrincipal || 0),
+    totalRepayment: Number(t.totalRepaid || 0),
+    totalLoanDisbursed: Number(t.totalLoanDisbursed || t.disbursedPrincipal || 0),
+    realizedRevenue: Number(t.realizedRevenue || 0),
+    awaitingRevenue: Number(t.awaitingRevenue || 0),
+  };
+}
 export async function adminSaveConfig(overrides: AdminConfigOverride) { return overrides; }
 export async function adminResetConfig() { return { ok: true }; }
 export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loan_applications", "loan_decisions", "loan_disbursements", "loan_repayments", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;

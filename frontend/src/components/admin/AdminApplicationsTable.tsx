@@ -127,7 +127,20 @@ export default function AdminApplicationsTable({ onSelect }: { onSelect: (id: st
       )}
 
       {loading ? (
-        <div className="velo-card p-8 text-center text-sm text-slate-500 dark:text-slate-400">Loading applications…</div>
+        <div className="velo-card overflow-hidden">
+          <div className="p-4">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="flex items-center justify-between py-3 border-b border-slate-100 dark:border-slate-800 last:border-0 animate-pulse">
+                <div className="space-y-2">
+                  <div className="h-3 w-32 rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-2 w-24 rounded bg-slate-100 dark:bg-slate-800" />
+                </div>
+                <div className="h-3 w-16 rounded bg-slate-200 dark:bg-slate-700" />
+                <div className="h-3 w-20 rounded bg-slate-100 dark:bg-slate-800" />
+              </div>
+            ))}
+          </div>
+        </div>
       ) : (
         <div className="velo-card overflow-hidden">
           <div className="overflow-x-auto">

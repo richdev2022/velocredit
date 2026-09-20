@@ -100,18 +100,26 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
 }
 
-function documentImage(document: { data?: string; type?: string; driveUrl?: string; previewUrl?: string } | undefined, label: string): string {
-  const imageType = document?.type && /^image\/(?:jpeg|jpg|png|webp|gif)$/i.test(document.type)
-    ? document.type
-    : "image/png";
-  const remoteUrl = document?.previewUrl || document?.driveUrl;
-  const source = document?.data
+function documentImage(document: { data?: string; type?: string; mimeType?: string; driveUrl?: string; previewUrl?: string; url?: string; provider?: string; providerFileId?: string; name?: string; fileName?: string } | undefined, label: string): string {
+  if (!document) return `<div class="media-placeholder">${escapeHtml(label)} not uploaded</div>`;
+  // Determine the MIME type from either `type` or `mimeType` (backend uses
+  // `mimeType`, the loan-application form uses `type`).
+  const mimeType = document.type || document.mimeType || "";
+  const isImage = /^image\/(?:jpeg|jpg|png|webp|gif|bmp)$/i.test(mimeType)
+    || /\.(jpg|jpeg|png|webp|gif|bmp)(\?|$)/i.test(document.previewUrl || document.url || document.driveUrl || "");
+  const imageType = mimeType && /^image\//i.test(mimeType) ? mimeType : "image/png";
+  // Build the preview URL. For Google Drive documents, construct a /uc?export=view URL.
+  let remoteUrl = document.previewUrl || document.driveUrl || document.url;
+  if (!remoteUrl && document.provider === "google_drive" && document.providerFileId) {
+    remoteUrl = `https://drive.google.com/uc?export=view&id=${encodeURIComponent(document.providerFileId)}`;
+  }
+  const source = document.data
     ? `data:${imageType};base64,${document.data}`
-    : remoteUrl && /^https:\/\//i.test(remoteUrl) ? remoteUrl : undefined;
+    : remoteUrl && /^https?:\/\//i.test(remoteUrl) ? remoteUrl : undefined;
 
   if (!source) return `<div class="media-placeholder">${escapeHtml(label)} not uploaded</div>`;
-  if (!document?.type?.startsWith("image/")) {
-    return `<a class="agreement-media-link" href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer">View ${escapeHtml(label)}</a>`;
+  if (!isImage) {
+    return `<a class="agreement-media-link" href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer">View ${escapeHtml(label)}${document.fileName || document.name ? ` (${escapeHtml(document.fileName || document.name || "")})` : ""}</a>`;
   }
   return `<img class="agreement-media" src="${escapeHtml(source)}" alt="${escapeHtml(label)}" />`;
 }

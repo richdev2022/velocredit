@@ -70,6 +70,8 @@ type KycData = {
 };
 type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number };
 
+type InvestorView = "overview" | "wallet" | "investments" | "kyc" | "transactions" | "payout" | "profile";
+
 type UnifiedTx = {
   id: string;
   kind: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RETURN" | "INVESTMENT" | "PAYOUT" | "DEPOSIT" | "FEE" | "OTHER";
@@ -110,9 +112,25 @@ export default function InvestorDashboard() {
   const [fundingAmount, setFundingAmount] = useState("100000");
   const [plans, setPlans] = useState([] as Plan[]);
   const [fundingBanner, setFundingBanner] = useState(null as { ok: boolean; text: string } | null);
-  const [view, setView] = useState("overview" as "overview" | "wallet" | "investments" | "kyc" | "transactions" | "payout" | "profile");
+  const [view, setView] = useState(() => {
+    const hash = window.location.hash.replace(/^#/, "");
+    const params = new URLSearchParams(hash);
+    const v = params.get("view") as InvestorView | null;
+    const valid: InvestorView[] = ["overview", "wallet", "investments", "kyc", "transactions", "payout", "profile"];
+    return v && valid.includes(v) ? v : "overview";
+  });
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (view !== "overview") params.set("view", view);
+    const hash = params.toString();
+    const target = hash ? `#${hash}` : "#";
+    if (window.location.hash !== target) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${target}`);
+    }
+  }, [view]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const investorMenu: Array<{ key: typeof view; label: string; icon: string; hint?: string }> = [
+  const investorMenu: Array<{ key: InvestorView; label: string; icon: string; hint?: string }> = [
     { key: "overview", label: "Overview", icon: "grid", hint: "Summary & KPIs" },
     { key: "wallet", label: "Wallet", icon: "wallet", hint: "Fund & withdraw" },
     { key: "investments", label: "Investments", icon: "chart", hint: "Plans & positions" },

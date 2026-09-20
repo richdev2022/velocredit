@@ -129,6 +129,8 @@ function MenuIcon({ name }: { name: string }) {
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.grid}</svg>;
 }
 
+type BorrowerView = "overview" | "applications" | "repayments" | "kyc" | "account" | "credit" | "profile";
+
 export default function BorrowerDashboard() {
   const { user, addUserRole } = useAuth();
   const navigate = useNavigate();
@@ -137,7 +139,25 @@ export default function BorrowerDashboard() {
   const [error, setError] = useState("");
   const [switchingBusy, setSwitchingBusy] = useState(false);
   const [switchMsg, setSwitchMsg] = useState("");
-  const [view, setView] = useState("overview" as "overview" | "applications" | "repayments" | "kyc" | "account" | "credit" | "profile");
+  const [view, setView] = useState(() => {
+    // Persist the current view in the URL hash so refresh keeps the user on
+    // the same page.
+    const hash = window.location.hash.replace(/^#/, "");
+    const params = new URLSearchParams(hash);
+    const v = params.get("view") as BorrowerView | null;
+    const valid: BorrowerView[] = ["overview", "applications", "repayments", "kyc", "account", "credit", "profile"];
+    return v && valid.includes(v) ? v : "overview";
+  });
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (view !== "overview") params.set("view", view);
+    const hash = params.toString();
+    const target = hash ? `#${hash}` : "#";
+    if (window.location.hash !== target) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${target}`);
+    }
+  }, [view]);
   const [successMsg, setSuccessMsg] = useState("");
   const [repayBusy, setRepayBusy] = useState(null as string | null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -148,7 +168,7 @@ export default function BorrowerDashboard() {
   const [repaySubmitting, setRepaySubmitting] = useState(false);
   const [repayModeMsg, setRepayModeMsg] = useState("");
 
-  const borrowerMenu: Array<{ key: typeof view; label: string; icon: string; hint?: string }> = [
+  const borrowerMenu: Array<{ key: BorrowerView; label: string; icon: string; hint?: string }> = [
     { key: "overview", label: "Overview", icon: "grid", hint: "Summary & KPIs" },
     { key: "applications", label: "Applications", icon: "document", hint: "Loan requests" },
     { key: "repayments", label: "Repayments", icon: "wallet", hint: "Schedules & history" },

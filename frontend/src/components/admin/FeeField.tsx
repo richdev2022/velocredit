@@ -3,6 +3,9 @@ import type { FeeKey } from "../../types/loan";
 
 type FeeValue = { type: "flat" | "percentage"; value: number; includeUpfront: boolean; enabled?: boolean };
 
+// Permissive decimal regex — allows: "", "0", "0.", "0.1", ".5", "12.345", etc.
+const DECIMAL_REGEX = /^\d*\.?\d*$/;
+
 export default function FeeField({ label, value, onChange, baseLabel }: { feeKey: FeeKey; label: string; baseFee: FeeValue; baseLabel?: string; value: FeeValue; onChange: (value: FeeValue) => void }) {
   // Keep a raw text draft so the user can type "0.", "0.1", ".5", etc. without
   // the input snapping back to "0" while they are still typing.
@@ -15,12 +18,20 @@ export default function FeeField({ label, value, onChange, baseLabel }: { feeKey
   }, [value.value]);
 
   function commit(raw: string) {
-    setDraftValue(raw);
-    if (raw === "" || raw === ".") {
+    // Strip anything that's not a digit or dot so paste-from-clipboard is safe.
+    const cleaned = raw.replace(/[^\d.]/g, "");
+    // Only allow one dot.
+    const firstDot = cleaned.indexOf(".");
+    const normalized = firstDot >= 0
+      ? cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "")
+      : cleaned;
+    if (!DECIMAL_REGEX.test(normalized)) return;
+    setDraftValue(normalized);
+    if (normalized === "" || normalized === ".") {
       onChange({ ...value, value: 0 });
       return;
     }
-    const next = parseNumber(raw);
+    const next = parseNumber(normalized);
     if (Number.isFinite(next) && next >= 0) onChange({ ...value, value: next });
   }
 
@@ -42,10 +53,8 @@ export default function FeeField({ label, value, onChange, baseLabel }: { feeKey
           <option value="percentage">Percentage (%)</option>
         </select>
         <input
-          type="number"
+          type="text"
           inputMode="decimal"
-          step="0.01"
-          min={0}
           value={draftValue}
           onChange={(e) => commit(e.target.value)}
           onBlur={() => {
@@ -53,6 +62,7 @@ export default function FeeField({ label, value, onChange, baseLabel }: { feeKey
             else setDraftValue(formatNumber(parseNumber(draftValue)));
           }}
           className="velo-input !py-2 text-sm font-bold w-full min-w-0"
+          placeholder="0"
         />
         <span className="text-xs font-bold text-slate-500">{value.type === "flat" ? "₦" : "%"}</span>
       </div>
