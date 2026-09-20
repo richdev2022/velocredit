@@ -67,10 +67,10 @@ export function calculateLoan(
   const safeTenure = clampTenure(tenureDays, program.tenures);
   const fees = options.fees ?? resolveFeesForTenure({ ...config, ...program }, safeTenure);
 
-  const interest      = calculateTermInterest(safeAmount, fees.interest, safeTenure);
-  const serviceFee    = calculateFee(safeAmount, fees.serviceFee);
-  const processingFee = calculateFee(safeAmount, fees.processingFee);
-  const lateFee       = calculateFee(safeAmount, fees.lateFee);
+  const interest      = fees.interest.enabled === false ? 0 : calculateTermInterest(safeAmount, fees.interest, safeTenure);
+  const serviceFee    = fees.serviceFee.enabled === false ? 0 : calculateFee(safeAmount, fees.serviceFee);
+  const processingFee = fees.processingFee.enabled === false ? 0 : calculateFee(safeAmount, fees.processingFee);
+  const lateFee       = fees.lateFee.enabled === false ? 0 : calculateFee(safeAmount, fees.lateFee);
 
   const breakdown: FeeBreakdownItem[] = [
     { key: "interest",      label: FEE_LABELS.interest,      amount: interest,      category: feeCategory("interest") },

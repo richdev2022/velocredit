@@ -332,9 +332,10 @@ export function applyLoanProducts(products: Array<{
     config.loanPrograms[type] = {
       ...program,
       loanLimits: limits,
-      tenures: product.defaultTenureDays && product.defaultTenureDays > 0
-        ? [{ value: product.defaultTenureDays, label: `${product.defaultTenureDays} Days` }]
-        : program.tenures,
+      // Products expose a default tenure, not the complete admin-configured
+      // tenor list. Keep the configured list so calculator options and
+      // validation remain consistent with admin settings.
+      tenures: program.tenures,
       fees: {
         ...program.fees,
         interest: { ...program.fees.interest, value: Number(product.interestRatePercent) },

@@ -47,7 +47,7 @@ const FEE_LABELS: Record<FeeKey, string> = {
 /** Per-tenure override state: Record<tenureDays, { enabled: boolean, fees }> */
 type TenureFeeState = Record<number, {
   enabled: boolean;
-  fees: Record<FeeKey, { type: "flat" | "percentage"; value: number; includeUpfront: boolean }>;
+  fees: Record<FeeKey, { type: "flat" | "percentage"; value: number; includeUpfront: boolean; enabled?: boolean }>;
 }>;
 
 export default function AdminSettings(props?: { displaySection?: "all" | "ledger" | "withdrawals" | "investor-tools" }) {
@@ -421,6 +421,8 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     try {
       saveAdminOverrides(overrides);
       refreshConfig(overrides);
+      // Refresh the in-memory form source immediately so calculator consumers
+      // see the same limits and tenures after saving, without a reload.
       const products = (await adminListLoanProducts()).products;
       for (const [type, program] of Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>) {
         const existing = products.find((product: any) => String(product.name).toUpperCase().includes(type));
