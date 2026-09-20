@@ -2504,8 +2504,28 @@ router.get("/investor/transactions", requireAuth, requireRole("INVESTOR"), (req:
   });
 });
 
-router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+function synchronizeLoanApplicationStatus(application: (typeof loanApplications)[number]): boolean {
+  const loan = loans.find((item) => item.applicationId === application.id || item.applicationId === application.applicationId);
+  if (!loan) return false;
+  const successfulDisbursement = loanDisbursements.some((item) => item.loanId === loan.id && item.status === "SUCCESSFUL");
+  let loanChanged = false;
+  if (successfulDisbursement && ["APPROVED", "DISBURSEMENT_PENDING"].includes(loan.status)) {
+    loan.status = "DISBURSED";
+    loan.disbursedAt = loan.disbursedAt ?? new Date().toISOString();
+    loan.updatedAt = new Date().toISOString();
+    loanChanged = true;
+  }
+  const nextStatus = loan.status === "REPAID" ? "REPAID" : loan.status === "ACTIVE" ? "ACTIVE" : ["DISBURSED", "PAST_DUE", "DEFAULTED", "WRITTEN_OFF"].includes(loan.status) ? loan.status : loan.status === "DISBURSEMENT_PENDING" ? "APPROVED" : application.status;
+  if (application.status === nextStatus) return loanChanged;
+  application.status = nextStatus as typeof application.status;
+  application.updatedAt = new Date().toISOString();
+  return true;
+}
+
+router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const userApplications = loanApplications.filter((item) => item.borrowerId === req.user!.id);
+  const changed = userApplications.some(synchronizeLoanApplicationStatus);
+  if (changed) await persistStore().catch(() => undefined);
   const userLoans = loans.filter((item) => item.borrowerId === req.user!.id);
   const userRepayments = repayments.filter((item) => item.borrowerId === req.user!.id);
   const disbursementAccount = disbursementAccounts.find((item) => item.borrowerId === req.user!.id) ?? null;
@@ -2948,15 +2968,18 @@ router.get("/borrower/loans", requireAuth, requireRole("BORROWER"), (req: AuthRe
   });
 });
 
-router.get("/borrower/loans/:loanId", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+router.get("/borrower/loans/:loanId", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const loan = loans.find((item) => item.id === req.params.loanId && item.borrowerId === req.user!.id);
   if (!loan) {
     res.status(404).json({ ok: false, error: "Loan not found" });
     return;
   }
+  const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+  if (application && synchronizeLoanApplicationStatus(application)) await persistStore().catch(() => undefined);
   res.json({
     ok: true,
     loan,
+    application,
     schedule: loanSchedules.filter((s) => s.loanId === loan.id),
     repayments: repayments.filter((r) => r.loanId === loan.id),
   });
@@ -3205,6 +3228,19 @@ router.get("/admin/application-drafts", requireAuth, requireRole("ADMIN"), (_req
 
 router.get("/admin/summary", requireAuth, requireRole("ADMIN"), (_req, res) => {
   const approved = loans.filter((l) => ["APPROVED", "DISBURSEMENT_PENDING", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID"].includes(l.status));
+  const today = new Date();
+  const trends = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(today);
+    date.setDate(today.getDate() - (6 - index));
+    const day = date.toISOString().slice(0, 10);
+    const createdOn = (value?: string) => value?.slice(0, 10) === day;
+    return {
+      date,
+      applications: loanApplications.filter((item) => createdOn(item.createdAt)).length,
+      disbursements: loans.filter((item) => createdOn(item.disbursedAt)).length,
+      repayments: repayments.filter((item) => createdOn(item.createdAt)).length,
+    };
+  });
   res.json({
     ok: true,
     totals: {
@@ -3224,6 +3260,8 @@ router.get("/admin/summary", requireAuth, requireRole("ADMIN"), (_req, res) => {
       failedPayouts: payouts.filter((p) => p.status === "FAILED").length,
       reconciliationItems: providerEvents.filter((e) => !(e as { processed?: boolean }).processed).length,
     },
+    trends,
+    recentActivity: auditLogs.slice().sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? ""))).slice(0, 10),
   });
 });
 
@@ -3692,9 +3730,12 @@ router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
   res.json({ ok: true, loans: page.items, disbursedLoans: loans, meta: page.meta, stages: LOAN_STAGES });
 });
 
-router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), (req, res) => {
+router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
-  if (application) seedLoanStageStatuses(application);
+  if (application) {
+    seedLoanStageStatuses(application);
+    if (synchronizeLoanApplicationStatus(application)) await persistStore().catch(() => undefined);
+  }
   const loan = loans.find((l) => l.applicationId === req.params.loanId || l.id === req.params.loanId);
   if (!application && !loan) {
     res.status(404).json({ ok: false, error: "Loan not found" });

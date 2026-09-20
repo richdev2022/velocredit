@@ -514,7 +514,7 @@ export async function initializeLoanRepayment(loanId: string, amountNaira: numbe
   return request(`/api/v1/borrower/loans/${encodeURIComponent(loanId)}/repayments`, { method: "POST", body: JSON.stringify({ amountNaira }) });
 }
 
-export interface AdminSummaryResponse { ok: true; totals: Record<string, number>; recentActivity: unknown[]; }
+export interface AdminSummaryResponse { ok: true; totals: Record<string, number>; recentActivity: unknown[]; trends?: Array<{ date: string; applications: number; disbursements: number; repayments: number }>; }
 export async function getAdminSummary(): Promise<AdminSummaryResponse> { return request("/api/v1/admin/summary"); }
 
 export interface AdminInvestorsResponse { ok: true; investors: unknown[]; meta?: PaginationMeta; }

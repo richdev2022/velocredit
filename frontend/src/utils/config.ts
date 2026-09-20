@@ -36,6 +36,9 @@ export interface AdminConfigOverride {
   apiUrl?: string;
   loanManagerEmails?: string[];
   adminEmails?: string[];
+  globalLimitsEnabled?: boolean;
+  globalFeesEnabled?: boolean;
+  globalInterestEnabled?: boolean;
 }
 
 export function loadAdminOverrides(): AdminConfigOverride {
@@ -118,6 +121,9 @@ export interface AppConfig {
   apiUrl: string;
   loanManagerEmails: string[];
   adminEmails: string[];
+  globalLimitsEnabled: boolean;
+  globalFeesEnabled: boolean;
+  globalInterestEnabled: boolean;
   premblyWidgetId: string;
   premblyWidgetKey: string;
   premblyWidgetIsTest: boolean;
@@ -178,6 +184,9 @@ const baseConfig: AppConfig = {
     lateFee:      buildFee("LATE_FEE",       "percentage", 5,      getBool("VITE_INCLUDE_LATE_FEE_UPFRONT", false)),
   },
   tenureFees: {},
+  globalLimitsEnabled: true,
+  globalFeesEnabled: true,
+  globalInterestEnabled: true,
   loanPrograms: {} as Record<LoanProgramKey, LoanProgramConfig>,
   companyName: getStr("VITE_COMPANY_NAME", "Velo Finance LTD"),
   companyWebsite: getStr("VITE_COMPANY_WEBSITE", "www.velofinance.co"),
@@ -272,6 +281,9 @@ export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOve
     ...baseConfig,
     loanLimits,
     tenures: overrides.tenures && overrides.tenures.length > 0 ? overrides.tenures : baseConfig.tenures,
+    globalLimitsEnabled: overrides.globalLimitsEnabled ?? true,
+    globalFeesEnabled: overrides.globalFeesEnabled ?? true,
+    globalInterestEnabled: overrides.globalInterestEnabled ?? true,
     fees: {
       interest:      { ...baseConfig.fees.interest,      ...(overrides.fees?.interest || {}) },
       serviceFee:    { ...baseConfig.fees.serviceFee,    ...(overrides.fees?.serviceFee || {}) },
@@ -280,8 +292,8 @@ export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOve
     },
     tenureFees: mergeTenureFees(baseConfig.tenureFees, overrides.tenureFees),
     loanPrograms: {
-      PERSONAL: buildProgram(basePrograms.PERSONAL, overrides.loanPrograms?.PERSONAL, loanLimits),
-      BUSINESS: buildProgram(basePrograms.BUSINESS, overrides.loanPrograms?.BUSINESS, loanLimits),
+      PERSONAL: buildProgram(basePrograms.PERSONAL, overrides.loanPrograms?.PERSONAL, (overrides.globalLimitsEnabled ?? true) ? loanLimits : undefined),
+      BUSINESS: buildProgram(basePrograms.BUSINESS, overrides.loanPrograms?.BUSINESS, (overrides.globalLimitsEnabled ?? true) ? loanLimits : undefined),
     },
     companyName: overrides.companyName || baseConfig.companyName,
     companyWebsite: overrides.companyWebsite || baseConfig.companyWebsite,
