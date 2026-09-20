@@ -120,7 +120,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
 
   const isPersonal = app.applicantType === "PERSONAL";
   const loan = app.loan || {};
-  const terminalLoan = ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF", "CANCELLED"].includes(String(app.status).toUpperCase());
+  const terminalLoan = ["DISBURSEMENT_PENDING", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF", "CANCELLED"].includes(String(app.status).toUpperCase());
   const personalInfo = app.personalInfo || {};
   const businessInfo = app.businessInfo || {};
   const businessRep = app.businessRep || {};

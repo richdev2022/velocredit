@@ -83,16 +83,30 @@ function KycResetButtons({ user, busyPrefix, actionBusy, onReset }: { user: any;
 }
 
 function Overview() {
-  const [data, setData] = useState<AdminSummaryResponse | null>(null); const [error, setError] = useState("");
+  const [data, setData] = useState<AdminSummaryResponse | null>(null);
+  const [error, setError] = useState("");
   useEffect(() => { getAdminSummary().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load summary")); }, []);
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Panel title="Portfolio overview"><div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading dashboard overview…</div></Panel>;
   const totals = data.totals || {};
-  const chartKeys = ["users", "investors", "borrowers", "loans", "investments", "kycPending"];
-  const chartMax = Math.max(1, ...chartKeys.map((key) => Number(totals[key] || 0)));
-  return <div className="space-y-5"><div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">{Object.entries(totals).map(([key, value]) => <div key={key} className={`rounded-xl border p-4 ${Number(value) > 0 && ["kycPending", "pendingPayouts", "failedPayouts", "reconciliationItems"].includes(key) ? "border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20" : "border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50"}`}><div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{labels[key] || key}</div><div className="mt-2 text-xl font-bold text-velo-900 dark:text-white">{moneyKeys.has(key) ? formatNaira(Number(value)) : Number(value).toLocaleString()}</div></div>)}</div><Panel title="Portfolio analysis"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{chartKeys.map((key) => <div key={key}><div className="mb-1 flex justify-between text-xs text-slate-500 dark:text-slate-400"><span>{labels[key]}</span><strong className="text-velo-900 dark:text-white">{Number(totals[key] || 0).toLocaleString()}</strong></div><div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800"><div className="h-3 rounded-full bg-velo-500 transition-all" style={{ width: `${Math.max(4, Number(totals[key] || 0) / chartMax * 100)}%` }} /></div></div>)}</div></Panel><Panel title="Recent activity"><Empty text={data.recentActivity?.length ? `${data.recentActivity.length} recent events available in Audit logs.` : "No recent activity yet."} /></Panel></div>;
+  const statusData = [
+    ["Approved", Number(totals.approvedLoans || 0), "bg-emerald-500"],
+    ["Outstanding", Number(totals.outstandingPrincipal || 0), "bg-amber-500"],
+    ["Pending payments", Number(totals.pendingPayments || 0), "bg-sky-500"],
+    ["KYC pending", Number(totals.kycPending || 0), "bg-violet-500"],
+  ] as const;
+  const maxStatus = Math.max(1, ...statusData.map(([, value]) => value));
+  const trend = data.trends || [];
+  const maxTrend = Math.max(1, ...trend.map((item) => Math.max(Number(item.applications || 0), Number(item.disbursements || 0), Number(item.repayments || 0))));
+  return <div className="space-y-5">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">{Object.entries(totals).map(([key, value]) => <div key={key} className={`rounded-2xl border p-4 shadow-sm ${Number(value) > 0 && ["kycPending", "pendingPayouts", "failedPayouts", "reconciliationItems"].includes(key) ? "border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20" : "border-slate-100 bg-white dark:border-slate-800 dark:bg-slate-900/50"}`}><div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{labels[key] || key}</div><div className="mt-2 text-xl font-bold text-velo-900 dark:text-white">{moneyKeys.has(key) ? formatNaira(Number(value)) : Number(value).toLocaleString()}</div></div>)}</div>
+    <div className="grid gap-5 lg:grid-cols-5">
+      <Panel title="Loan activity trend"><div className="flex h-52 items-end gap-2">{trend.length ? trend.map((item) => <div key={item.date} className="flex min-w-0 flex-1 items-end gap-1" title={`${item.date}: ${item.applications} applications, ${item.disbursements} disbursements`}><div className="w-full rounded-t bg-velo-300" style={{ height: `${Math.max(8, Number(item.applications || 0) / maxTrend * 100)}%` }} /><div className="w-full rounded-t bg-emerald-500" style={{ height: `${Math.max(8, Number(item.disbursements || 0) / maxTrend * 100)}%` }} /><div className="w-full rounded-t bg-amber-400" style={{ height: `${Math.max(8, Number(item.repayments || 0) / maxTrend * 100)}%` }} /></div>) : <div className="flex w-full items-center justify-center text-sm text-slate-500">Trend data will appear as activity accumulates.</div>}</div><div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-500"><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-velo-300" />Applications</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-500" />Disbursements</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400" />Repayments</span></div></Panel>
+      <Panel title="Portfolio mix"><div className="space-y-5">{statusData.map(([label, value, color]) => <div key={label}><div className="mb-1 flex justify-between text-xs text-slate-500"><span>{label}</span><strong className="text-velo-900 dark:text-white">{moneyKeys.has(label === "Outstanding" ? "outstandingPrincipal" : "") ? formatNaira(value) : value.toLocaleString()}</strong></div><div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800"><div className={`h-3 rounded-full ${color}`} style={{ width: `${Math.max(4, value / maxStatus * 100)}%` }} /></div></div>)}</div></Panel>
+    </div>
+    <Panel title="Recent activity"><div className="space-y-3">{data.recentActivity?.length ? data.recentActivity.slice(0, 6).map((activity: any, index: number) => <div key={activity.id || index} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-3 text-sm dark:bg-slate-950"><span className="font-medium text-slate-700 dark:text-slate-200">{activity.action || activity.eventType || "Platform activity"}</span><span className="text-xs text-slate-500">{activity.createdAt ? new Date(activity.createdAt).toLocaleString("en-NG") : "Recently"}</span></div>) : <Empty text="No recent admin activity yet." />}</div></Panel>
+  </div>;
 }
-
 function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title: string; onSelect?: (user: any) => void }) {
   const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const size = 20;
   const [createOpen, setCreateOpen] = useState(false);

@@ -26,6 +26,7 @@ import {
   walletTransactions,
   findWallet,
   appendLedger,
+  ledgerEntries,
   wallets,
   users,
   appendAdminLedger,
@@ -50,6 +51,15 @@ assertProductionSecrets();
 
 const app = express();
 app.disable("x-powered-by");
+
+async function runAndPersistInvestmentMaturitySweep(): Promise<void> {
+  try {
+    await runInvestmentMaturitySweep();
+    if (sql) await persistStore();
+  } catch (error) {
+    console.error("[index] investment maturity sweep failed:", error);
+  }
+}
 app.use(helmet());
 const allowedOrigins = env.API_ORIGIN
   .split(",")
@@ -300,11 +310,11 @@ app.post(
             (l.providerTransfer as { data?: { reference?: string } }).data?.reference === transferRef
         );
         if (disbursementLoan) {
-          const wasDisbursed = disbursementLoan.status === "DISBURSED";
-          disbursementLoan.status = "DISBURSED";
+          const wasDisbursed = ["DISBURSED", "ACTIVE"].includes(disbursementLoan.status);
+          disbursementLoan.status = "ACTIVE";
           const application = loanApplications.find((item) => item.id === disbursementLoan.applicationId || item.applicationId === disbursementLoan.applicationId);
           if (application) {
-            application.status = "DISBURSED";
+            application.status = "ACTIVE";
             application.updatedAt = new Date().toISOString();
           }
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
@@ -350,7 +360,7 @@ app.post(
             p.providerTransfer &&
             (p.providerTransfer as { data?: { reference?: string } }).data?.reference === transferRef
         );
-        if (payout) {
+        if (payout && payout.status !== "SUCCESSFUL") {
           payout.status = "SUCCESSFUL";
           payout.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
           payout.updatedAt = new Date().toISOString();
@@ -375,18 +385,21 @@ app.post(
                     investmentId: investment.id,
                   },
                 });
-                appendLedger(wallet, {
-                  entryType: "INVESTMENT_RETURN",
-                  referenceId: investment.id,
-                  amountMinor,
-                  direction: "CREDIT",
-                  description: `Investment payout ${payout.id}`,
-                  metadata: {
-                    provider: "flutterwave",
-                    providerReference: payout.providerReference,
-                    payoutType: payout.payoutType,
-                  },
-                });
+                const alreadyCredited = ledgerEntries.some((entry) => entry.entryType === "INVESTMENT_RETURN" && entry.referenceId === investment.id && entry.direction === "CREDIT");
+                if (!alreadyCredited) {
+                  appendLedger(wallet, {
+                    entryType: "INVESTMENT_RETURN",
+                    referenceId: investment.id,
+                    amountMinor,
+                    direction: "CREDIT",
+                    description: `Investment payout ${payout.id}`,
+                    metadata: {
+                      provider: "flutterwave",
+                      providerReference: payout.providerReference,
+                      payoutType: payout.payoutType,
+                    },
+                  });
+                }
                 const investorUser = users.find((u) => u.id === payout.userId);
                 if (investorUser) {
                   const principalVal = Number(payout.principalNaira ?? investment.amountNaira ?? 0);
@@ -829,10 +842,10 @@ async function start(): Promise<void> {
       console.log(`Prembly KYC webhook (paste in widget dashboard): ${env.API_PUBLIC_URL}/api/v1/webhooks/prembly/kyc`);
       console.log(`Database: ${databaseMessage}`);
       void runRepaymentReminderSweep();
-      void runInvestmentMaturitySweep();
+      void runAndPersistInvestmentMaturitySweep();
       setInterval(() => {
         void runRepaymentReminderSweep();
-        void runInvestmentMaturitySweep();
+        void runAndPersistInvestmentMaturitySweep();
       }, 60 * 60 * 1000).unref();
     });
     server.on("error", (err) => {

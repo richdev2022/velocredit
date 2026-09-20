@@ -59,6 +59,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const [min, setMin] = useState(currentConfig.loanLimits.min);
   const [max, setMax] = useState(currentConfig.loanLimits.max);
   const [defaultAmount, setDefaultAmount] = useState(currentConfig.loanLimits.defaultAmount);
+  const [globalLimitsEnabled, setGlobalLimitsEnabled] = useState(currentConfig.globalLimitsEnabled);
+  const [globalFeesEnabled, setGlobalFeesEnabled] = useState(currentConfig.globalFeesEnabled);
+  const [globalInterestEnabled, setGlobalInterestEnabled] = useState(currentConfig.globalInterestEnabled);
   const [selectedTenures, setSelectedTenures] = useState<number[]>(() => currentConfig.tenures.map((t) => t.value));
   const [companyName, setCompanyName] = useState(currentConfig.companyName);
   const [companyWebsite, setCompanyWebsite] = useState(currentConfig.companyWebsite);
@@ -74,7 +77,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     BUSINESS: structuredClone(currentConfig.loanPrograms.BUSINESS),
   }));
 
-  const [fees, setFees] = useState<Record<FeeKey, { type: "flat" | "percentage"; value: number; includeUpfront: boolean }>>(() => ({
+  const [fees, setFees] = useState<Record<FeeKey, { type: "flat" | "percentage"; value: number; includeUpfront: boolean; enabled?: boolean }>>(() => ({
     interest:      { ...currentConfig.fees.interest },
     serviceFee:    { ...currentConfig.fees.serviceFee },
     processingFee: { ...currentConfig.fees.processingFee },
@@ -385,6 +388,20 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }));
   }
 
+  async function withSaveTimeout<T>(operation: Promise<T>, timeoutMs = 20000): Promise<T> {
+    let timeoutId: number | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<T>((_, reject) => {
+          timeoutId = window.setTimeout(() => reject(new Error("Saving configuration timed out. Please try again.")), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    }
+  }
+
   async function handleSave() {
     const overrides: AdminConfigOverride = {
       loanLimits: {
@@ -405,6 +422,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       apiUrl: apiUrl !== baseConfig.apiUrl ? apiUrl : undefined,
       loanManagerEmails: loanManagerEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
       adminEmails: adminEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
+      globalLimitsEnabled,
+      globalFeesEnabled,
+      globalInterestEnabled,
     };
     (Object.keys(fees) as FeeKey[]).forEach((k) => {
       const b = baseConfig.fees[k];
@@ -417,29 +437,44 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     if (overrides.loanLimits && Object.keys(overrides.loanLimits).length === 0) overrides.loanLimits = undefined;
 
     setSaving(true);
+    setSaved(false);
     setSaveError("");
     try {
+      const activePrograms = Object.fromEntries(
+        (Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>).map(([type, program]) => [type, {
+          ...program,
+          loanLimits: globalLimitsEnabled ? { min, max, defaultAmount } : program.loanLimits,
+          fees: {
+            ...program.fees,
+            ...(globalFeesEnabled ? { ...fees, interest: globalInterestEnabled ? fees.interest : program.fees.interest } : {}),
+            ...(globalInterestEnabled ? { interest: fees.interest } : {}),
+          },
+        }]),
+      ) as Record<LoanProgramKey, LoanProgramConfig>;
+      overrides.loanPrograms = activePrograms;
       saveAdminOverrides(overrides);
       refreshConfig(overrides);
       // Refresh the in-memory form source immediately so calculator consumers
       // see the same limits and tenures after saving, without a reload.
-      const products = (await adminListLoanProducts()).products;
-      for (const [type, program] of Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>) {
-        const existing = products.find((product: any) => String(product.name).toUpperCase().includes(type));
-        const productInput = {
-          name: `${type === "PERSONAL" ? "Personal" : "Business"} Loan`,
-          minAmountNaira: program.loanLimits.min,
-          maxAmountNaira: program.loanLimits.max,
-          defaultTenureDays: program.tenures[0]?.value || 30,
-          interestRatePercent: program.fees.interest.value,
-          interestType: "ANNUALIZED" as const,
-          processingFeePercent: program.fees.processingFee.type === "percentage" ? program.fees.processingFee.value : 0,
-          lateFeePercent: program.fees.lateFee.type === "percentage" ? program.fees.lateFee.value : 0,
-          isActive: true,
-        };
-        if (existing) await adminPatchLoanProduct(existing.id, productInput);
-        else await adminCreateLoanProduct(productInput);
-      }
+      await withSaveTimeout((async () => {
+        const products = (await adminListLoanProducts()).products;
+        for (const [type, program] of Object.entries(activePrograms) as Array<[LoanProgramKey, LoanProgramConfig]>) {
+          const existing = products.find((product: any) => String(product.name).toUpperCase().includes(type));
+          const productInput = {
+            name: `${type === "PERSONAL" ? "Personal" : "Business"} Loan`,
+            minAmountNaira: program.loanLimits.min,
+            maxAmountNaira: program.loanLimits.max,
+            defaultTenureDays: program.tenures[0]?.value || 30,
+            interestRatePercent: program.fees.interest.value,
+            interestType: "ANNUALIZED" as const,
+            processingFeePercent: program.fees.processingFee.type === "percentage" ? program.fees.processingFee.value : 0,
+            lateFeePercent: program.fees.lateFee.type === "percentage" ? program.fees.lateFee.value : 0,
+            isActive: existing?.isActive ?? true,
+          };
+          if (existing) await adminPatchLoanProduct(existing.id, productInput);
+          else await adminCreateLoanProduct(productInput);
+        }
+      })());
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (error) {
@@ -458,6 +493,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     setMin(currentConfig.loanLimits.min);
     setMax(currentConfig.loanLimits.max);
     setDefaultAmount(currentConfig.loanLimits.defaultAmount);
+    setGlobalLimitsEnabled(true);
+    setGlobalFeesEnabled(true);
+    setGlobalInterestEnabled(true);
     setSelectedTenures(baseConfig.tenures.map((t) => t.value));
     setCompanyName(baseConfig.companyName);
     setCompanyWebsite(baseConfig.companyWebsite);
@@ -579,7 +617,11 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           </Section>
 
-          <Section title="Loan Amount Limits" subtitle="Global limits automatically apply to both Personal and Business loans." icon={<Icon name="money" size={20} />}>
+          <Section title="Loan Amount Limits" subtitle="Activate global limits to apply them to both programs, or deactivate to use each program's limits." icon={<Icon name="money" size={20} />}>
+            <div className="mb-4 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950">
+              <span className="text-sm font-bold">Apply global limits</span>
+              <button type="button" role="switch" aria-checked={globalLimitsEnabled} onClick={() => setGlobalLimitsEnabled((value) => !value)} className={`relative h-6 w-11 rounded-full transition ${globalLimitsEnabled ? "bg-velo-500" : "bg-slate-300 dark:bg-slate-700"}`}><span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${globalLimitsEnabled ? "left-6" : "left-1"}`} /></button>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <NumberField
                 label="Minimum Loan Amount (₦)"
@@ -620,7 +662,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </Field>
           </Section>
 
-          <Section title="Fees Configuration (Global)" subtitle="Each fee can be a flat ₦ amount or a % of the loan amount. Late fee is shown separately by default. These apply to ALL tenures unless you set per-tenure overrides below." icon={<Icon name="money" size={20} />}>
+          <Section title="Fees Configuration (Global)" subtitle="Activate global fees for all programs, or deactivate to use each program's separate fee configuration." icon={<Icon name="money" size={20} />}>
+            <div className="mb-4 grid gap-3 sm:grid-cols-2">
+              {[["Global fees", globalFeesEnabled, setGlobalFeesEnabled], ["Global interest", globalInterestEnabled, setGlobalInterestEnabled]].map(([label, enabled, setter]) => <div key={String(label)} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950"><span className="text-sm font-bold">{String(label)}</span><button type="button" role="switch" aria-checked={Boolean(enabled)} onClick={() => (setter as (value: boolean) => void)(!Boolean(enabled))} className={`relative h-6 w-11 rounded-full transition ${enabled ? "bg-velo-500" : "bg-slate-300 dark:bg-slate-700"}`}><span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${enabled ? "left-6" : "left-1"}`} /></button></div>)}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
                 <FeeField

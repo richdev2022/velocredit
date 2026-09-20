@@ -16,6 +16,7 @@ export type ApplicationStatus =
   | "APPROVED"
   | "REJECTED"
   | "DISBURSED"
+  | "ACTIVE"
   | "REPAID";
 
 export type SectionKey =
