@@ -300,11 +300,11 @@ app.post(
             (l.providerTransfer as { data?: { reference?: string } }).data?.reference === transferRef
         );
         if (disbursementLoan) {
-          const wasDisbursed = disbursementLoan.status === "DISBURSED";
-          disbursementLoan.status = "DISBURSED";
+          const wasDisbursed = ["DISBURSED", "ACTIVE"].includes(disbursementLoan.status);
+          disbursementLoan.status = "ACTIVE";
           const application = loanApplications.find((item) => item.id === disbursementLoan.applicationId || item.applicationId === disbursementLoan.applicationId);
           if (application) {
-            application.status = "DISBURSED";
+            application.status = "ACTIVE";
             application.updatedAt = new Date().toISOString();
           }
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);

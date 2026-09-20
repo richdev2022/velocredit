@@ -2509,8 +2509,8 @@ function synchronizeLoanApplicationStatus(application: (typeof loanApplications)
   if (!loan) return false;
   const successfulDisbursement = loanDisbursements.some((item) => item.loanId === loan.id && item.status === "SUCCESSFUL");
   let loanChanged = false;
-  if (successfulDisbursement && ["APPROVED", "DISBURSEMENT_PENDING"].includes(loan.status)) {
-    loan.status = "DISBURSED";
+  if (loan.status === "DISBURSED" || (successfulDisbursement && ["APPROVED", "DISBURSEMENT_PENDING"].includes(loan.status))) {
+    loan.status = "ACTIVE";
     loan.disbursedAt = loan.disbursedAt ?? new Date().toISOString();
     loan.updatedAt = new Date().toISOString();
     loanChanged = true;
@@ -4113,11 +4113,11 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 2, 500, Number(loan.principalNaira));
     if (verification.settled) {
       const settledAt = new Date().toISOString();
-      loan.status = "DISBURSED";
+      loan.status = "ACTIVE";
       loan.disbursedAt = settledAt;
       loan.updatedAt = settledAt;
       if (application) {
-        application.status = "DISBURSED";
+        application.status = "ACTIVE";
         application.updatedAt = settledAt;
       }
       loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);
@@ -5489,11 +5489,11 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     if (verification.settled) {
       const settledAt = new Date().toISOString();
       const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
-      loan.status = "DISBURSED";
+      loan.status = "ACTIVE";
       loan.disbursedAt = settledAt;
       loan.updatedAt = settledAt;
       if (application) {
-        application.status = "DISBURSED";
+        application.status = "ACTIVE";
         application.updatedAt = settledAt;
       }
       loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? retry.providerReference);
