@@ -2522,6 +2522,17 @@ function synchronizeLoanApplicationStatus(application: (typeof loanApplications)
   return true;
 }
 
+const LOCKED_LOAN_STATUSES = new Set(["APPROVED", "DISBURSEMENT_PENDING", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF", "CANCELLED"]);
+
+function linkedLoan(application: (typeof loanApplications)[number]) {
+  return loans.find((item) => item.applicationId === application.id || item.applicationId === application.applicationId);
+}
+
+function isLockedLoanApplication(application: (typeof loanApplications)[number]): boolean {
+  const loan = linkedLoan(application);
+  return Boolean(loan && LOCKED_LOAN_STATUSES.has(loan.status));
+}
+
 router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const userApplications = loanApplications.filter((item) => item.borrowerId === req.user!.id);
   const changed = userApplications.some(synchronizeLoanApplicationStatus);
@@ -2599,6 +2610,8 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
         if (existingApplication.borrowerId !== req.user!.id) {
           res.status(409).json({ ok: false, error: "That application reference ID is already in use." });
         } else {
+          const reconciled = synchronizeLoanApplicationStatus(existingApplication);
+          if (reconciled) await persistStore().catch(() => undefined);
           res.status(200).json({ ok: true, application: existingApplication, duplicate: true });
         }
         return;
@@ -2829,6 +2842,12 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
     const application = loanApplications.find((a) => (a.id === req.params.id || a.applicationId === req.params.id) && a.borrowerId === req.user?.id);
     if (!application) {
       res.status(404).json({ ok: false, error: "Application not found" });
+      return;
+    }
+    const reconciled = synchronizeLoanApplicationStatus(application);
+    if (reconciled) await persistStore().catch(() => undefined);
+    if (isLockedLoanApplication(application)) {
+      res.status(409).json({ ok: false, error: `Application ${application.applicationId} is locked because its loan is ${application.status}.`, application });
       return;
     }
     if (!["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(application.status)) {
@@ -3726,6 +3745,8 @@ router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
     const searchable = JSON.stringify({ application, snapshot }).toLowerCase();
     return (!status || application.status === status) && (!type || applicantType === type) && (!borrowerId || application.borrowerId === borrowerId) && (!search || searchable.includes(search));
   }).map((a) => seedLoanStageStatuses(a));
+  const reconciled = filtered.some(synchronizeLoanApplicationStatus);
+  if (reconciled) void persistStore().catch(() => undefined);
   const page = paginate(filtered, req.query as Record<string, unknown>);
   res.json({ ok: true, loans: page.items, disbursedLoans: loans, meta: page.meta, stages: LOAN_STAGES });
 });
@@ -3790,7 +3811,9 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
     res.status(404).json({ ok: false, error: "Loan application not found" });
     return;
   }
-  const existingLoan = loans.find((loan) => loan.applicationId === application.id);
+  const reconciled = synchronizeLoanApplicationStatus(application);
+  if (reconciled) await persistStore().catch(() => undefined);
+  const existingLoan = linkedLoan(application);
   if (existingLoan && ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF", "CANCELLED"].includes(existingLoan.status)) {
     res.status(409).json({ ok: false, error: "A disbursed loan cannot be changed. Its status changes automatically with repayment." });
     return;
@@ -3878,6 +3901,12 @@ router.patch("/admin/loans/:loanId/stages/:stageKey", requireAuth, requireRole("
     res.status(404).json({ ok: false, error: "Loan application not found" });
     return;
   }
+  const reconciled = synchronizeLoanApplicationStatus(application);
+  if (reconciled) await persistStore().catch(() => undefined);
+  if (isLockedLoanApplication(application)) {
+    res.status(409).json({ ok: false, error: `Application ${application.applicationId} is locked because its loan is ${application.status}.`, application });
+    return;
+  }
   const stageKey = req.params.stageKey as LoanStageKey;
   const valid = LOAN_STAGES.some((s) => s.key === stageKey);
   if (!valid) {
@@ -3916,6 +3945,12 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
   const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
   if (!application) {
     res.status(404).json({ ok: false, error: "Loan application not found" });
+    return;
+  }
+  const reconciled = synchronizeLoanApplicationStatus(application);
+  if (reconciled) await persistStore().catch(() => undefined);
+  if (isLockedLoanApplication(application)) {
+    res.status(409).json({ ok: false, error: `Application ${application.applicationId} is locked because its loan is ${application.status}.`, application });
     return;
   }
   seedLoanStageStatuses(application);
