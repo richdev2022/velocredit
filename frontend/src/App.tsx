@@ -7,6 +7,8 @@ import SEO from "./components/SEO";
 import { ThemeProvider } from "./context/ThemeContext";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import AccountAccess from "./pages/AccountAccess";
+import Terms from "./pages/Terms";
+import Privacy from "./pages/Privacy";
 
 const LoanApplication = lazy(() => import("./pages/LoanApplication"));
 const Admin = lazy(() => import("./pages/Admin"));
@@ -98,6 +100,8 @@ export default function App() {
           <Suspense fallback={<PageSkeleton />}>
             <Routes>
               <Route path="/" element={<StartApplication />} />
+              <Route path="/terms" element={<Terms />} />
+              <Route path="/privacy" element={<Privacy />} />
               <Route
                 path="/apply/*"
                 element={

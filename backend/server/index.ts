@@ -16,6 +16,7 @@ import {
 import { ensureDatabaseSchema } from "./migrate.js";
 import { runInvestmentMaturitySweep } from "./investments.js";
 import { runRepaymentReminderSweep } from "./reminders.js";
+import { startReconciliationCron } from "./reconciliation.js";
 import {
   repayments,
   creditHistory,
@@ -314,7 +315,10 @@ app.post(
           disbursementLoan.status = "ACTIVE";
           const application = loanApplications.find((item) => item.id === disbursementLoan.applicationId || item.applicationId === disbursementLoan.applicationId);
           if (application) {
-            application.status = "ACTIVE";
+            // Mirror the disbursement route: use "DISBURSED" for the application
+            // status so the borrower and admin UIs can show "Disbursed" instead
+            // of the internal "Active" lifecycle label.
+            application.status = "DISBURSED";
             application.updatedAt = new Date().toISOString();
           }
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);
@@ -843,6 +847,7 @@ async function start(): Promise<void> {
       console.log(`Database: ${databaseMessage}`);
       void runRepaymentReminderSweep();
       void runAndPersistInvestmentMaturitySweep();
+      startReconciliationCron();
       setInterval(() => {
         void runRepaymentReminderSweep();
         void runAndPersistInvestmentMaturitySweep();

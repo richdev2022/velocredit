@@ -1396,7 +1396,7 @@ function BorrowerApplications(props: any) {
                       {app.productName ?? "Loan application"}
                     </h3>
                     <span className={`badge ${["REJECTED", "DEFAULTED", "WRITTEN_OFF"].includes(String(app.status)) ? "badge-rejected" : ["DISBURSED", "ACTIVE", "REPAID"].includes(String(app.status)) ? "badge-completed" : "badge-pending"}`}>
-                      {String(app.status).replace(/_/g, " ")}
+                      {formatLoanStatus(app.status)}
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">

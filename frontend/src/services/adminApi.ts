@@ -43,13 +43,13 @@ export async function adminLogout() { return request<{ ok: true }>("/api/v1/auth
 export type AdminOtpChannel = "SMS" | "EMAIL";
 export interface AdminOtpChallenge { challengeId: string; expiresAt: string; channel: AdminOtpChannel; resendAvailableAt: string; resendSecondsRemaining: number; }
 export async function adminLogin(email: string, password: string, channel: AdminOtpChannel): Promise<{ ok: true; requiresOtp: true; user: { roles: string[]; adminPermissions?: AdminPermission[] }; verification: AdminOtpChallenge }> {
-	const response = await request<{ ok: true; requiresOtp: true; user: { roles: string[]; adminPermissions?: AdminPermission[] }; challengeId: string; expiresAt: string; channel: AdminOtpChannel; resendAvailableAt: string; resendSecondsRemaining: number }>("/api/v1/auth/admin/login", { method: "POST", body: JSON.stringify({ email, password, channel }) });
-	return { ok: true, requiresOtp: true, user: response.user, verification: { challengeId: response.challengeId, expiresAt: response.expiresAt, channel: response.channel, resendAvailableAt: response.resendAvailableAt, resendSecondsRemaining: response.resendSecondsRemaining } };
+        const response = await request<{ ok: true; requiresOtp: true; user: { roles: string[]; adminPermissions?: AdminPermission[] }; challengeId: string; expiresAt: string; channel: AdminOtpChannel; resendAvailableAt: string; resendSecondsRemaining: number }>("/api/v1/auth/admin/login", { method: "POST", body: JSON.stringify({ email, password, channel }) });
+        return { ok: true, requiresOtp: true, user: response.user, verification: { challengeId: response.challengeId, expiresAt: response.expiresAt, channel: response.channel, resendAvailableAt: response.resendAvailableAt, resendSecondsRemaining: response.resendSecondsRemaining } };
 }
 export async function resendAdminLoginOtp(challengeId: string, email: string, channel: AdminOtpChannel) { return request<{ ok: true } & AdminOtpChallenge>("/api/v1/auth/admin/login/resend-otp", { method: "POST", body: JSON.stringify({ challengeId, email, channel }) }); }
 export async function verifyAdminLoginOtp(challengeId: string, code: string) {
-	const response = await request<{ ok: true; accessToken: string; user: { roles: string[]; adminPermissions?: AdminPermission[] } }>("/api/v1/auth/admin/login/verify-otp", { method: "POST", body: JSON.stringify({ challengeId, code }) });
-		setAdminToken(response.accessToken); setAdminRole(response.user.roles[0] || "ADMIN"); sessionStorage.setItem("velo:admin-permissions", JSON.stringify(response.user.adminPermissions ?? [])); return { ok: true, role: response.user.roles[0] || "ADMIN" };
+        const response = await request<{ ok: true; accessToken: string; user: { roles: string[]; adminPermissions?: AdminPermission[] } }>("/api/v1/auth/admin/login/verify-otp", { method: "POST", body: JSON.stringify({ challengeId, code }) });
+                setAdminToken(response.accessToken); setAdminRole(response.user.roles[0] || "ADMIN"); sessionStorage.setItem("velo:admin-permissions", JSON.stringify(response.user.adminPermissions ?? [])); return { ok: true, role: response.user.roles[0] || "ADMIN" };
 }
 export async function adminListApplications(opts: { status?: string; type?: string; search?: string; limit?: number; offset?: number } = {}): Promise<{ total: number; applications: AdminApplicationSummary[] }> { const params = new URLSearchParams(); if (opts.status) params.set("status", opts.status); if (opts.type) params.set("type", opts.type); if (opts.search) params.set("search", opts.search); params.set("limit", String(opts.limit || 20)); params.set("offset", String(opts.offset || 0)); const response = await request<{ loans: any[]; meta?: { total?: number } }>(`/api/v1/admin/loans?${params.toString()}`); const applications = (response.loans || []).map((loan) => ({ applicationId: loan.applicationId || loan.id, applicantType: (loan.customerSnapshot?.businessInfo?.businessName ? "BUSINESS" : "PERSONAL") as "PERSONAL" | "BUSINESS", status: loan.status, applicantName: loan.customerSnapshot?.fullName || "Borrower", email: loan.customerSnapshot?.email || "", phone: loan.customerSnapshot?.phone || "", loanAmount: Number(loan.amountNaira || 0), totalRepayment: Number(loan.totalRepaymentNaira || 0), tenure: `${loan.tenureDays || 0} days`, repaymentDate: loan.dueAt || "", dateCreated: loan.createdAt, dateSubmitted: loan.createdAt, dateUpdated: loan.createdAt, driveFolderUrl: "" })); return { total: response.meta?.total || applications.length, applications }; }
 export async function adminListApplicationDrafts(opts: { status?: string; type?: string; search?: string; limit?: number; offset?: number } = {}): Promise<{ total: number; drafts: AdminDraftSummary[] }> {
@@ -60,6 +60,25 @@ export async function adminListApplicationDrafts(opts: { status?: string; type?:
   params.set("limit", String(opts.limit || 20));
   params.set("offset", String(opts.offset || 0));
   return request(`/api/v1/admin/application-drafts?${params.toString()}`);
+}
+
+export interface AdminApplicationDraftDetail {
+  applicationId: string;
+  applicantType: "PERSONAL" | "BUSINESS";
+  status: "DRAFT" | "IN_PROGRESS";
+  borrower: { id: string; fullName: string; email: string; phone: string } | null;
+  data: Record<string, any>;
+  lastSectionIndex: number;
+  currentSection: number;
+  totalSections: number;
+  progressPercent: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function adminGetApplicationDraft(applicationId: string): Promise<AdminApplicationDraftDetail> {
+  const response = await request<{ ok: true; draft: AdminApplicationDraftDetail }>(`/api/v1/admin/application-drafts/${encodeURIComponent(applicationId)}`);
+  return response.draft;
 }
 
 export async function adminGetApplication(id: string): Promise<AdminApplicationDetail> {
@@ -126,7 +145,7 @@ export type AdminPermission = typeof ADMIN_PERMISSIONS[number];
 export interface LoanManager { id: string; email: string; fullName: string; phone: string; role: "LOAN_MANAGER"; adminPermissions?: AdminPermission[]; isActive?: boolean; createdAt: string; }
 export async function adminListLoanManagers(): Promise<{ ok: true; managers: LoanManager[] }> { return request("/api/v1/admin/loan-managers"); }
 export async function adminCreateLoanManager(email: string, name: string, _appUrl: string, phone: string, password: string, permissions: AdminPermission[] = [...ADMIN_PERMISSIONS]) {
-	return request<{ ok: true; manager: LoanManager }>("/api/v1/admin/loan-managers", { method: "POST", body: JSON.stringify({ email, fullName: name, phone, password, role: "LOAN_MANAGER", permissions }) });
+        return request<{ ok: true; manager: LoanManager }>("/api/v1/admin/loan-managers", { method: "POST", body: JSON.stringify({ email, fullName: name, phone, password, role: "LOAN_MANAGER", permissions }) });
 }
 export async function adminSetLoanManagerStatus(id: string, isActive: boolean) { return request<{ ok: true; manager: LoanManager }>(`/api/v1/admin/loan-managers/${encodeURIComponent(id)}/status`, { method: "PATCH", body: JSON.stringify({ isActive }) }); }
 export async function adminDeleteLoanManager(id: string) { return request<{ ok: true; deleted: true }>(`/api/v1/admin/loan-managers/${encodeURIComponent(id)}`, { method: "DELETE" }); }

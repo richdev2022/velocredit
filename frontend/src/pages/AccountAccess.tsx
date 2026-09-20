@@ -697,7 +697,7 @@ export default function AccountAccess() {
                       <label className="flex items-start gap-2.5 cursor-pointer select-none group">
                         <input type="checkbox" required className="mt-0.5 h-4 w-4 rounded border-slate-300 text-velo-600 focus:ring-velo-500 cursor-pointer" />
                         <span className="text-xs text-slate-500 leading-relaxed group-hover:text-slate-700 transition-colors">
-                          I agree to Velo's <a href="#" className="text-velo-600 font-semibold hover:underline">Terms of Service</a>, <a href="#" className="text-velo-600 font-semibold hover:underline">Privacy Policy</a>, and consent to identity verification & electronic communications.
+                          I agree to Velo's <Link to="/terms" className="text-velo-600 font-semibold hover:underline">Terms of Service</Link>, <Link to="/privacy" className="text-velo-600 font-semibold hover:underline">Privacy Policy</Link>, and consent to identity verification & electronic communications.
                         </span>
                       </label>
                     )}

@@ -27,8 +27,8 @@ export default function Layout({ children, showHomeLink = true }: LayoutProps) {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 transition-colors">
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-30">
+    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
+      <header className="bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between">
           <Link to="/" className="flex min-w-0 items-center" aria-label={`${config.companyName} home`}>
             <Logo size={20} className="!h-6 sm:!h-7 md:!h-8 w-auto !max-w-[45vw] sm:!max-w-none" />
@@ -104,8 +104,8 @@ export default function Layout({ children, showHomeLink = true }: LayoutProps) {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-10">{children}</div>
       </main>
 
-      <footer className="bg-white border-t border-slate-100">
-        <div className="max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-[11px] sm:text-xs text-slate-500">
+      <footer className="bg-white border-t border-slate-100 dark:bg-slate-950 dark:border-slate-800">
+        <div className="max-w-6xl mx-auto px-3 sm:px-6 py-4 sm:py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">
           <div className="flex items-center gap-2 min-w-0 w-full sm:w-auto">
             <Logo size={16} className="!h-4 sm:!h-5 w-auto !max-w-[35vw] sm:!max-w-none shrink-0" />
             <span className="truncate">
@@ -115,8 +115,11 @@ export default function Layout({ children, showHomeLink = true }: LayoutProps) {
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 w-full sm:w-auto justify-start sm:justify-end">
             <span>{config.companyWebsite}</span>
             <span className="hidden sm:inline">•</span>
+            <Link to="/terms" className="hover:text-velo-600 dark:hover:text-velo-400 transition">Terms</Link>
+            <Link to="/privacy" className="hover:text-velo-600 dark:hover:text-velo-400 transition">Privacy</Link>
+            <span className="hidden sm:inline">•</span>
             <span className="hidden sm:inline">Loans are subject to credit assessment.</span>
-            <Link to="/admin" className="text-slate-400 hover:text-velo-600 transition">
+            <Link to="/admin" className="text-slate-400 hover:text-velo-600 dark:hover:text-velo-400 transition">
               Admin
             </Link>
           </div>
