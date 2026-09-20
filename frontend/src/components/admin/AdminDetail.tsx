@@ -447,14 +447,39 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
             const document = raw as any;
             const source = documentSource(document);
             const label = key.replace(/([A-Z])/g, " $1").replace(/^./, (value) => value.toUpperCase());
-            return <div key={key} className="rounded-lg border border-slate-100 p-2">
-              {source && /^data:image\//i.test(source) ? <img src={source} alt={label} className="h-28 w-full rounded object-cover" /> : source ? <a href={source} target="_blank" rel="noopener noreferrer" className="flex h-28 items-center justify-center rounded bg-slate-50 text-xs font-medium text-velo-700">Open file</a> : <div className="flex h-28 items-center justify-center rounded bg-slate-50 text-xs text-slate-400">No preview</div>}
-              <div className="mt-2 text-xs font-medium text-slate-700">{label}</div>
-              <div className="text-[10px] text-slate-500">{document?.name || document?.fileName || "Uploaded attachment"}</div>
+            const isImage = source && (/^data:image\//i.test(source) || /\.(jpg|jpeg|png|gif|webp|bmp)(\?|$)/i.test(source) || (document.mimeType || "").startsWith("image/"));
+            return <div key={key} className="rounded-lg border border-slate-100 dark:border-slate-800 p-2 bg-white dark:bg-slate-900">
+              {isImage ? (
+                <a href={source} target="_blank" rel="noopener noreferrer" className="block">
+                  <img src={source} alt={label} className="h-28 w-full rounded object-cover bg-slate-50 dark:bg-slate-800" />
+                </a>
+              ) : source ? (
+                <a href={source} target="_blank" rel="noopener noreferrer" className="flex h-28 items-center justify-center rounded bg-slate-50 dark:bg-slate-800 text-xs font-medium text-velo-700 dark:text-velo-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+                  <div className="text-center">
+                    <svg className="mx-auto mb-1 text-slate-400 dark:text-slate-500" width="24" height="24" viewBox="0 0 24 24" fill="none">
+                      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                      <path d="M14 2v6h6M8 13h8M8 17h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    Open file
+                  </div>
+                </a>
+              ) : (
+                <div className="flex h-28 items-center justify-center rounded bg-slate-50 dark:bg-slate-800 text-xs text-slate-400 dark:text-slate-500">
+                  <div className="text-center">
+                    <svg className="mx-auto mb-1" width="24" height="24" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5"/>
+                      <path d="M9 9.5v0M15 9.5v0M9 15c1 1 2 1.5 3 1.5s2-.5 3-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                    No preview
+                  </div>
+                </div>
+              )}
+              <div className="mt-2 text-xs font-medium text-slate-700 dark:text-slate-200">{label}</div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{document?.name || document?.fileName || "Uploaded attachment"}</div>
             </div>;
           })}
         </div>
-        {!Object.keys(app.documents || {}).length && <div className="text-sm text-slate-500">No documents uploaded.</div>}
+        {!Object.keys(app.documents || {}).length && <div className="text-sm text-slate-500 dark:text-slate-400">No documents uploaded.</div>}
       </Card>
 
       <Card title="Review Decision & Stage Status">

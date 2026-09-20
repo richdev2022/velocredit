@@ -2700,6 +2700,9 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       .filter((item) => item.userId === req.user!.id && item.status === "RECEIVED" && item.score != null)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 
+    // Kick off the credit bureau fetch in the background so loan submission
+    // is not blocked waiting on Prembly. The creditReconciliation cron will
+    // retry PENDING reports every 10 minutes until they resolve.
     const creditBureauPromise: Promise<CreditReport | null> = (async (): Promise<CreditReport | null> => {
       try {
         const hasBvn = typeof kyc.bvn === "string" && kyc.bvn.length === 11;
@@ -2741,7 +2744,18 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       }
     })();
 
-    const currentExternalCredit = await creditBureauPromise;
+    // Wait briefly (max 8 seconds) for the credit bureau to respond. If it
+    // takes longer, we proceed with submission and let the cron pick up the
+    // PENDING report later.
+    let currentExternalCredit: CreditReport | null = null;
+    try {
+      currentExternalCredit = await Promise.race([
+        creditBureauPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+      ]);
+    } catch {
+      currentExternalCredit = null;
+    }
     if (currentExternalCredit) latestExternalCredit = currentExternalCredit;
 
     void creditBureauPromise.then((report) => {
@@ -3331,6 +3345,52 @@ router.get("/admin/summary", requireAuth, requireRole("ADMIN"), (_req, res) => {
       repayments: repayments.filter((item) => createdOn(item.createdAt)).length,
     };
   });
+  // ===== Revenue + repayment calculations =====
+  // - totalLoanDisbursed: sum of principalNaira across loans that have been
+  //   disbursed (status ACTIVE/PAST_DUE/DEFAULTED/REPAID).
+  // - realizedRevenue: sum of (totalRepaymentNaira - principalNaira) across
+  //   REPAID loans, plus the interest portion of successful repayments on
+  //   active loans. This is the revenue the platform has actually earned.
+  // - awaitingRevenue: sum of (totalRepaymentNaira - principalNaira) across
+  //   active loans that have not yet been repaid (expected future revenue).
+  // - totalRepaid: sum of all successful repayments.
+  // - repaidCount: number of loans in REPAID status.
+  const disbursedLoans = loans.filter((l) => ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID"].includes(l.status));
+  const repaidLoans = loans.filter((l) => l.status === "REPAID");
+  const activeLoans = loans.filter((l) => ["ACTIVE", "PAST_DUE", "DEFAULTED"].includes(l.status));
+  const successfulRepayments = repayments.filter((r) => r.status === "SUCCESSFUL");
+  const totalLoanDisbursed = disbursedLoans.reduce((sum, l) => sum + Number(l.principalNaira ?? 0), 0);
+  const totalRepaid = successfulRepayments.reduce((sum, r) => sum + Number(r.amountNaira ?? 0), 0);
+  // Revenue from repaid loans = sum of (totalRepayment - principal) for repaid loans
+  const realizedRevenueFromRepaid = repaidLoans.reduce((sum, l) => {
+    const total = Number(l.totalRepaymentNaira ?? 0);
+    const principal = Number(l.principalNaira ?? 0);
+    return sum + Math.max(0, total - principal);
+  }, 0);
+  // Revenue from active loans = interest portion of successful repayments
+  // (approximated as totalRepayment * (interest / totalRepayment) ratio, or
+  // simply the difference between repaid amount and principal paid down).
+  // For simplicity, use the same formula: sum of interest allocated to date.
+  const realizedRevenueFromActive = activeLoans.reduce((sum, l) => {
+    const total = Number(l.totalRepaymentNaira ?? 0);
+    const principal = Number(l.principalNaira ?? 0);
+    const interest = Math.max(0, total - principal);
+    const outstanding = Number(l.outstandingNaira ?? 0);
+    const paidDown = Math.max(0, total - outstanding);
+    // Pro-rate interest by the fraction paid.
+    const interestFraction = total > 0 ? paidDown / total : 0;
+    return sum + Math.round(interest * interestFraction);
+  }, 0);
+  const realizedRevenue = realizedRevenueFromRepaid + realizedRevenueFromActive;
+  const awaitingRevenue = activeLoans.reduce((sum, l) => {
+    const total = Number(l.totalRepaymentNaira ?? 0);
+    const principal = Number(l.principalNaira ?? 0);
+    const interest = Math.max(0, total - principal);
+    const outstanding = Number(l.outstandingNaira ?? 0);
+    const paidDown = Math.max(0, total - outstanding);
+    const remainingInterest = Math.max(0, interest - (interest * (total > 0 ? paidDown / total : 0)));
+    return sum + Math.round(remainingInterest);
+  }, 0);
   res.json({
     ok: true,
     totals: {
@@ -3341,7 +3401,7 @@ router.get("/admin/summary", requireAuth, requireRole("ADMIN"), (_req, res) => {
       kycVerified: kycCases.filter((k) => k.status === "VERIFIED").length,
       loans: loanApplications.length,
       approvedLoans: approved.length,
-      disbursedPrincipal: approved.reduce((sum, l) => sum + Number(l.principalNaira ?? 0), 0),
+      disbursedPrincipal: totalLoanDisbursed,
       outstandingPrincipal: loans.reduce((sum, l) => sum + Number(l.outstandingNaira ?? 0), 0),
       investments: investments.length,
       activeInvestmentPrincipal: investments.filter((i) => i.status === "ACTIVE").reduce((s, i) => s + Number(i.amountNaira ?? 0), 0),
@@ -3349,6 +3409,12 @@ router.get("/admin/summary", requireAuth, requireRole("ADMIN"), (_req, res) => {
       pendingPayouts: payouts.filter((payout) => payout.status !== "SUCCESSFUL").length,
       failedPayouts: payouts.filter((p) => p.status === "FAILED").length,
       reconciliationItems: providerEvents.filter((e) => !(e as { processed?: boolean }).processed).length,
+      // Revenue metrics (used by the admin applications table KPI strip).
+      totalLoanDisbursed,
+      totalRepaid,
+      repaidCount: repaidLoans.length,
+      realizedRevenue,
+      awaitingRevenue,
     },
     trends,
     recentActivity: auditLogs.slice().sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? ""))).slice(0, 10),
@@ -3732,6 +3798,7 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
     user.kycStatus = kyc.status;
     await notifyKyc(user, parsed.data.decision === "VERIFIED" ? "APPROVED" : "REJECTED", "KYC", kyc.rejectionReason);
   }
+  recordAdminAudit(req, `KYC_${parsed.data.decision}`, "KYC_CASE", kyc.id, { userId: kyc.userId, previousStatus: before.status, newStatus: kyc.status, note: parsed.data.note, rejectedReason: parsed.data.rejectedReason });
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, case: kyc, before });
 });
@@ -3809,17 +3876,36 @@ router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
   const type = typeof req.query.type === "string" ? req.query.type : undefined;
   const borrowerId = typeof req.query.borrowerId === "string" ? req.query.borrowerId : undefined;
   const search = typeof req.query.search === "string" ? req.query.search.toLowerCase() : undefined;
+  // Performance: avoid JSON.stringify on every application. Build a small
+  // searchable string per application only from the fields we actually match.
   const filtered = loanApplications.filter((application) => {
     const snapshot = application.customerSnapshot as Record<string, unknown> | undefined;
-    const business = snapshot?.businessInfo as Record<string, unknown> | undefined;
-    const applicantType = business?.businessName ? "BUSINESS" : "PERSONAL";
-    const searchable = JSON.stringify({ application, snapshot }).toLowerCase();
-    return (!status || application.status === status) && (!type || applicantType === type) && (!borrowerId || application.borrowerId === borrowerId) && (!search || searchable.includes(search));
+    const personalInfo = (snapshot?.personalInfo as Record<string, unknown> | undefined) ?? {};
+    const businessInfo = (snapshot?.businessInfo as Record<string, unknown> | undefined) ?? {};
+    const applicantType = businessInfo?.businessName ? "BUSINESS" : "PERSONAL";
+    if (status && application.status !== status) return false;
+    if (type && applicantType !== type) return false;
+    if (borrowerId && application.borrowerId !== borrowerId) return false;
+    if (search) {
+      const haystack = [
+        application.applicationId,
+        application.id,
+        String(personalInfo.fullName ?? ""),
+        String(personalInfo.email ?? ""),
+        String(personalInfo.phone ?? ""),
+        String(businessInfo.businessName ?? ""),
+      ].join(" ").toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
   }).map((a) => seedLoanStageStatuses(a));
   const reconciled = filtered.some(synchronizeLoanApplicationStatus);
   if (reconciled) void persistStore().catch(() => undefined);
   const page = paginate(filtered, req.query as Record<string, unknown>);
-  res.json({ ok: true, loans: page.items, disbursedLoans: loans, meta: page.meta, stages: LOAN_STAGES });
+  // Note: we no longer return `disbursedLoans: loans` (ALL loans) — that was
+  // forcing the entire loans array to be serialised on every admin list call.
+  // Consumers that need disbursement data should hit /admin/disbursements.
+  res.json({ ok: true, loans: page.items, meta: page.meta, stages: LOAN_STAGES });
 });
 
 router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req, res) => {
@@ -3842,10 +3928,23 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req
     const passport = userDocs.find((d) => d.documentType === "PASSPORT_PHOTO" || d.documentSlot === "passportPhoto");
     const signature = userDocs.find((d) => d.documentType === "SIGNATURE" || d.documentSlot === "signature");
     const selfie = userDocs.find((d) => (d.documentType as string) === "LIVENESS_SELFIE" || d.documentSlot === "selfie");
-    if (proofOfAddress) kycDocuments.proofOfAddress = proofOfAddress;
-    if (passport) kycDocuments.passportPhoto = passport;
-    if (signature) kycDocuments.signature = signature;
-    if (selfie) kycDocuments.selfie = selfie;
+    // Attach preview/download URLs directly so the admin UI can render images
+    // inline without a second round-trip.
+    const withUrls = (d: typeof documents[number] | undefined) => {
+      if (!d) return undefined;
+      const isGd = d.provider === "google_drive";
+      const previewUrl = isGd && d.providerFileId
+        ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(d.providerFileId)}`
+        : (d as { previewUrl?: string }).previewUrl ?? "";
+      const downloadUrl = isGd && d.providerFileId
+        ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(d.providerFileId)}`
+        : (d as { downloadUrl?: string }).downloadUrl ?? "";
+      return { ...d, previewUrl, downloadUrl };
+    };
+    if (proofOfAddress) kycDocuments.proofOfAddress = withUrls(proofOfAddress);
+    if (passport) kycDocuments.passportPhoto = withUrls(passport);
+    if (signature) kycDocuments.signature = withUrls(signature);
+    if (selfie) kycDocuments.selfie = withUrls(selfie);
   }
   if (borrowerKyc?.identityPhoto || borrowerKyc?.identityPhotoUrl) {
     kycDocuments.identityPhoto = borrowerKyc.identityPhotoUrl ?? borrowerKyc.identityPhoto;
@@ -3863,6 +3962,51 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req
     creditHistory: application ? creditHistory.filter((c) => c.userId === application.borrowerId) : [],
     kycCase: borrowerKyc,
     kycDocuments,
+  });
+});
+
+// Admin: proxy-download a KYC document by documentId. Streams the file from
+// Google Drive (or whatever storage provider is configured) so the admin
+// can preview/download without exposing the raw provider file ID to the
+// browser. Used by the document preview grid on the admin detail page.
+router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const documentId = String(req.params.documentId ?? "").trim();
+  if (!documentId) {
+    res.status(400).json({ ok: false, error: "documentId is required" });
+    return;
+  }
+  const doc = documents.find((d) => d.id === documentId);
+  if (!doc) {
+    res.status(404).json({ ok: false, error: "Document not found" });
+    return;
+  }
+  // Return the document metadata + a public-facing URL the browser can use.
+  // For Google Drive documents we expose a /uc?export=view URL (preview) and
+  // /uc?export=download URL (download). For other providers we fall back to
+  // any URL fields already stored on the document.
+  const isGoogleDrive = doc.provider === "google_drive";
+  const previewUrl = isGoogleDrive && doc.providerFileId
+    ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(doc.providerFileId)}`
+    : (doc as { previewUrl?: string }).previewUrl ?? "";
+  const downloadUrl = isGoogleDrive && doc.providerFileId
+    ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(doc.providerFileId)}`
+    : (doc as { downloadUrl?: string }).downloadUrl ?? "";
+  res.json({
+    ok: true,
+    document: {
+      id: doc.id,
+      documentType: doc.documentType,
+      documentSlot: doc.documentSlot,
+      provider: doc.provider,
+      providerFileId: doc.providerFileId,
+      fileName: doc.fileName,
+      mimeType: doc.mimeType,
+      sizeBytes: doc.sizeBytes,
+      status: doc.status,
+      createdAt: doc.createdAt,
+      previewUrl,
+      downloadUrl,
+    },
   });
 });
 
@@ -3954,6 +4098,7 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
   application.updatedAt = new Date().toISOString();
   if (parsed.data.decision === "APPROVED" && previousStatus !== "APPROVED") void sendLoanEmails(application, "APPROVED").catch(() => undefined);
   if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") void sendLoanEmails(application, "REJECTED").catch(() => undefined);
+  recordAdminAudit(req, `LOAN_${parsed.data.decision}`, "LOAN_APPLICATION", application.id, { applicationId: application.applicationId, previousStatus, newStatus: application.status, note: parsed.data.note });
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, application });
 });
@@ -4200,11 +4345,14 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       disbursement.processedAt = settledAt;
       disbursement.updatedAt = settledAt;
       creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
+      recordAdminAudit(req, "LOAN_DISBURSED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), providerReference: loan.providerReference, disbursementId: disbursement.id });
       const borrower = users.find((user) => user.id === loan.borrowerId);
       if (borrower) {
         const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.id, amountNaira: Number(loan.principalNaira) });
         void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
       }
+    } else {
+      recordAdminAudit(req, "LOAN_DISBURSEMENT_INITIATED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), disbursementId: disbursement.id, transferId });
     }
     if (!(await persistMutation(res))) return;
     res.status(verification.settled ? 200 : 202).json({ ok: true, loan, transfer, disbursement });

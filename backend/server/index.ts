@@ -17,6 +17,7 @@ import { ensureDatabaseSchema } from "./migrate.js";
 import { runInvestmentMaturitySweep } from "./investments.js";
 import { runRepaymentReminderSweep } from "./reminders.js";
 import { startReconciliationCron } from "./reconciliation.js";
+import { startCreditReconciliationCron } from "./creditReconciliation.js";
 import {
   repayments,
   creditHistory,
@@ -848,6 +849,7 @@ async function start(): Promise<void> {
       void runRepaymentReminderSweep();
       void runAndPersistInvestmentMaturitySweep();
       startReconciliationCron();
+      startCreditReconciliationCron();
       setInterval(() => {
         void runRepaymentReminderSweep();
         void runAndPersistInvestmentMaturitySweep();

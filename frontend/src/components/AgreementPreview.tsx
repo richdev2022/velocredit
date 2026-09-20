@@ -116,12 +116,14 @@ function agreementCss(): string {
       border-bottom: 1px solid #E2E8F0;
       position: relative;
       display: flex; align-items: center;
+      break-after: avoid;
+      page-break-after: avoid;
     }
     .agr-h2 .bar {
       position: absolute; left: 0; top: 7px; bottom: 8px;
       width: 4px; background: #1976D2; border-radius: 2px;
     }
-    .agr-h3 { font-size: 13px; font-weight: 700; color: #1976D2; margin: 10px 0 6px; }
+    .agr-h3 { font-size: 13px; font-weight: 700; color: #1976D2; margin: 10px 0 6px; break-after: avoid; page-break-after: avoid; }
     .agr-p { margin: 6px 0; font-size: 13px; text-align: justify; color: #334155; }
     .agr-p.vline { color: #0f172a; }
     .agr-p.vline b { color: #334155; }
@@ -133,6 +135,8 @@ function agreementCss(): string {
     .parties { display: flex; flex-direction: column; gap: 14px; margin: 10px 0 6px; }
     .party-lender, .party-borrower {
       padding: 14px 16px; border-radius: 8px;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
     .party-lender { background: #E3F2FD; }
     .party-borrower { background: #F0F9FF; }
@@ -143,7 +147,7 @@ function agreementCss(): string {
     .pn-line strong { color: #0C2947; }
     .pn-sub { font-size: 12px; color: #475569; margin: 4px 0; }
 
-    .collateral-card { background: #F8FAFC; border: 1px solid #D7E0EA; border-radius: 8px; padding: 12px 14px; margin: 10px 0 14px; }
+    .collateral-card { background: #F8FAFC; border: 1px solid #D7E0EA; border-radius: 8px; padding: 12px 14px; margin: 10px 0 14px; break-inside: avoid; page-break-inside: avoid; }
     .collateral-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 8px; }
     .collateral-grid span { display: block; color: #64748b; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
     .collateral-grid strong { display: block; color: #0C2947; font-size: 12px; margin-top: 2px; }
@@ -151,6 +155,8 @@ function agreementCss(): string {
     .summary {
       background: #E3F2FD; padding: 12px 16px;
       border-radius: 10px; margin: 10px 0;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
     .sr-row {
       display: flex; justify-content: space-between; align-items: flex-start;
@@ -168,7 +174,7 @@ function agreementCss(): string {
     .page-break { page-break-before: always; margin-top: 30px; }
 
     .exec-grid { display: flex; flex-direction: column; gap: 8px; }
-    .exec-lender, .exec-borrower, .exec-witness { break-inside: avoid; }
+    .exec-lender, .exec-borrower, .exec-witness { break-inside: avoid; page-break-inside: avoid; }
     .exec-lender { margin-bottom: 12px; }
     .lender-brand-panel {
       display: flex; flex-direction: column; align-items: flex-start;
@@ -176,6 +182,8 @@ function agreementCss(): string {
       background: #E3F2FD; border-radius: 8px;
       margin: 10px 0 16px;
       width: min(100%, 280px);
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
     .exec-logo { height: 44px; max-height: 44px; width: auto; object-fit: contain; margin-bottom: 6px; }
     .lender-brand-name { font-weight: 700; color: #0C2947; font-size: 14px; }
@@ -185,6 +193,8 @@ function agreementCss(): string {
     .sign-block {
       clear: both; margin: 16px 0 14px; max-width: 360px;
       padding-top: 6px;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
     .sign-line {
       width: 240px; border-bottom: 1px solid #475569;
@@ -211,15 +221,92 @@ function agreementCss(): string {
       padding: 18px 18px;
       border-radius: 8px;
       text-align: center;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
     .en-title { font-weight: 700; color: #0C2947; font-size: 14px; margin-bottom: 8px; }
     .en-desc { font-weight: 600; color: #334155; font-size: 11.5px; margin-bottom: 6px; }
     .en-foot { font-weight: 700; color: #0C2947; font-size: 11px; }
 
     .agreement-content { word-break: break-word; overflow-wrap: break-word; }
-    .agreement-media { display: block; max-width: 260px; max-height: 220px; object-fit: contain; border: 1px solid #CBD5E1; border-radius: 6px; margin: 8px 0; break-inside: avoid; }
+    .agreement-media { display: block; max-width: 260px; max-height: 220px; object-fit: contain; border: 1px solid #CBD5E1; border-radius: 6px; margin: 8px 0; break-inside: avoid; page-break-inside: avoid; }
     .agreement-media-link { display: inline-block; color: #1976D2; font-size: 12px; font-weight: 600; margin: 8px 0; text-decoration: underline; }
     .media-placeholder { color: #64748b; font-size: 11px; font-style: italic; margin: 8px 0; }
 
+    /* ===== A4 PRINT STYLES =====
+       When printing, force A4 page size with sensible margins, prevent
+       elements from being cut off across pages, and ensure images fit
+       within the page width. */
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 14mm 12mm 14mm 12mm;
+      }
+      html, body {
+        background: #fff !important;
+        margin: 0 !important;
+        padding: 0 !important;
+      }
+      body.printing-agreement #root,
+      body.printing-agreement #root * { visibility: hidden !important; }
+      body.printing-agreement #root .agreement-print-target,
+      body.printing-agreement #root .agreement-print-target * { visibility: visible !important; }
+      body.printing-agreement .agreement-print-target {
+        position: static !important;
+        display: block !important;
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+      }
+      body.printing-agreement .agreement-print {
+        max-height: none !important;
+        overflow: visible !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        background: #fff !important;
+        color: #1f2937 !important;
+      }
+      body.printing-agreement .no-print { display: none !important; }
+      /* Reset dark-mode backgrounds when printing so the PDF is readable. */
+      body.printing-agreement .agreement-doc,
+      body.printing-agreement .agreement-doc * {
+        color: #1f2937 !important;
+      }
+      body.printing-agreement .agr-header,
+      body.printing-agreement .party-lender,
+      body.printing-agreement .party-borrower,
+      body.printing-agreement .summary,
+      body.printing-agreement .lender-brand-panel,
+      body.printing-agreement .end-note,
+      body.printing-agreement .collateral-card { background: #F8FAFC !important; }
+      /* Ensure images fit within the printable width. */
+      body.printing-agreement .agreement-media {
+        max-width: 100% !important;
+        max-height: 180px !important;
+        page-break-inside: avoid;
+      }
+      body.printing-agreement .agr-logo,
+      body.printing-agreement .exec-logo { max-height: 44px !important; }
+      /* Headings stay with their following content. */
+      body.printing-agreement .agr-h2,
+      body.printing-agreement .agr-h3 {
+        page-break-after: avoid;
+        break-after: avoid;
+      }
+      body.printing-agreement .agr-p,
+      body.printing-agreement .pn-line,
+      body.printing-agreement .sr-row { page-break-inside: avoid; }
+      /* The execution grid should not be split awkwardly. */
+      body.printing-agreement .exec-lender,
+      body.printing-agreement .exec-borrower,
+      body.printing-agreement .exec-witness {
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+    }
   </style>`;
 }

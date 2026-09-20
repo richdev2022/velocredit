@@ -189,11 +189,52 @@ export default function Admin() {
   const [authed, setAuthed] = useState(() => Boolean(getAdminToken()));
   const [role, setRole] = useState<string | null>(() => getAdminRole());
   const [permissions, setPermissions] = useState(() => getAdminPermissions());
-  const [view, setView] = useState<View>("overview");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Persist the current view + selectedId in the URL hash so that a refresh
+  // keeps the user on the same page instead of bouncing back to "overview".
+  // Hash format: #view=applications or #view=detail&id=VEL-xxxx
+  function readHashState(): { view: View; selectedId: string | null } {
+    const hash = window.location.hash.replace(/^#/, "");
+    const params = new URLSearchParams(hash);
+    const v = params.get("view") as View | null;
+    const validViews: View[] = ["overview", "applications", "borrowers", "borrower-detail", "investors", "account-requests", "kyc", "payouts", "loans", "detail", "ledger", "withdrawals", "investor-tools", "reconciliation", "audit", "managers", "settings"];
+    const id = params.get("id");
+    return {
+      view: v && validViews.includes(v) ? v : "overview",
+      selectedId: id || null,
+    };
+  }
+  function writeHashState(view: View, selectedId: string | null) {
+    const params = new URLSearchParams();
+    if (view !== "overview") params.set("view", view);
+    if (selectedId) params.set("id", selectedId);
+    const hash = params.toString();
+    const target = hash ? `#${hash}` : "#";
+    if (window.location.hash !== target) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${target}`);
+    }
+  }
+  const initialHash = readHashState();
+  const [view, setView] = useState<View>(initialHash.view);
+  const [selectedId, setSelectedId] = useState<string | null>(initialHash.selectedId);
   const [selectedBorrower, setSelectedBorrower] = useState<any>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
+
+  // Sync view + selectedId changes back to the URL hash.
+  useEffect(() => {
+    writeHashState(view, selectedId);
+  }, [view, selectedId]);
+
+  // Listen for browser back/forward so the UI follows the hash.
+  useEffect(() => {
+    function onHashChange() {
+      const next = readHashState();
+      setView(next.view);
+      setSelectedId(next.selectedId);
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   useEffect(() => {
     if (!authed) return;

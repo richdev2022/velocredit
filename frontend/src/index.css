@@ -271,7 +271,10 @@
 
 /* Print-friendly styles for the loan agreement */
 @media print {
-  @page { margin: 12mm; }
+  @page {
+    size: A4 portrait;
+    margin: 14mm 12mm 14mm 12mm;
+  }
   html, body { height: auto !important; overflow: visible !important; }
   body { background: #fff !important; }
   .no-print { display: none !important; }
@@ -283,11 +286,14 @@
     position: static !important;
     display: block !important;
     width: auto !important;
+    max-width: none !important;
     min-height: 0 !important;
     overflow: visible !important;
     box-shadow: none !important;
     border: 0 !important;
     border-radius: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
   body.printing-agreement .agreement-print,
   body.printing-agreement .agreement-content {
@@ -296,16 +302,44 @@
     height: auto !important;
     overflow: visible !important;
     padding: 0 !important;
+    margin: 0 !important;
+    background: #fff !important;
+    color: #1f2937 !important;
   }
+  /* Reset dark-mode backgrounds when printing so the PDF is readable. */
   body.printing-agreement .agreement-doc,
-  body.printing-agreement .collateral-card,
-  body.printing-agreement .summary {
-    break-inside: auto;
-    page-break-inside: auto;
-  }
+  body.printing-agreement .agreement-doc * { color: #1f2937 !important; }
+  body.printing-agreement .agr-header,
+  body.printing-agreement .party-lender,
+  body.printing-agreement .party-borrower,
+  body.printing-agreement .summary,
+  body.printing-agreement .lender-brand-panel,
+  body.printing-agreement .end-note,
+  body.printing-agreement .collateral-card { background: #F8FAFC !important; }
+  /* Ensure images fit within the printable width and don't get cut. */
   body.printing-agreement .agreement-media {
+    max-width: 100% !important;
+    max-height: 180px !important;
     break-inside: avoid;
     page-break-inside: avoid;
+  }
+  body.printing-agreement .agr-logo,
+  body.printing-agreement .exec-logo { max-height: 44px !important; }
+  /* Headings stay with their following content. */
+  body.printing-agreement .agr-h2,
+  body.printing-agreement .agr-h3 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  body.printing-agreement .agr-p,
+  body.printing-agreement .pn-line,
+  body.printing-agreement .sr-row { page-break-inside: avoid; }
+  /* The execution grid should not be split awkwardly. */
+  body.printing-agreement .exec-lender,
+  body.printing-agreement .exec-borrower,
+  body.printing-agreement .exec-witness {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
   body.printing-agreement .page-break {
     break-before: page;

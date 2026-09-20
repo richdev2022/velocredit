@@ -540,7 +540,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   }
 
   return (
-    <div className="space-y-6 animate-fade-in rounded-2xl text-slate-800 dark:text-slate-200 [&_.bg-white]:bg-slate-900 [&_.bg-slate-50]:bg-slate-950 [&_.border-slate-100]:border-slate-800 [&_.border-slate-200]:border-slate-700 [&_.text-slate-700]:text-slate-200 [&_.text-slate-600]:text-slate-300">
+    <div className="space-y-6 animate-fade-in">
       {showConfig && (
       <>
       {/* Header */}
@@ -1497,13 +1497,13 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
 function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl border-0">
+    <div className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl dark:bg-slate-900 dark:border-slate-800">
       <div className="mb-4">
         <div className="flex items-center gap-2">
-          {icon && <span className="inline-flex text-velo-600 leading-none">{icon}</span>}
-          <h3 className="font-extrabold text-velo-900 text-base">{title}</h3>
+          {icon && <span className="inline-flex text-velo-600 dark:text-velo-400 leading-none">{icon}</span>}
+          <h3 className="font-extrabold text-velo-900 dark:text-white text-base">{title}</h3>
         </div>
-        {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+        {subtitle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{subtitle}</p>}
       </div>
       {children}
     </div>
@@ -1513,7 +1513,7 @@ function Section({ title, subtitle, icon, children }: { title: string; subtitle?
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="block text-xs font-bold text-velo-900 mb-1.5">{label}</span>
+      <span className="block text-xs font-bold text-velo-900 dark:text-white mb-1.5">{label}</span>
       {children}
     </label>
   );
