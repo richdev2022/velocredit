@@ -388,6 +388,20 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }));
   }
 
+  async function withSaveTimeout<T>(operation: Promise<T>, timeoutMs = 20000): Promise<T> {
+    let timeoutId: number | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<T>((_, reject) => {
+          timeoutId = window.setTimeout(() => reject(new Error("Saving configuration timed out. Please try again.")), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    }
+  }
+
   async function handleSave() {
     const overrides: AdminConfigOverride = {
       loanLimits: {
@@ -423,6 +437,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     if (overrides.loanLimits && Object.keys(overrides.loanLimits).length === 0) overrides.loanLimits = undefined;
 
     setSaving(true);
+    setSaved(false);
     setSaveError("");
     try {
       const activePrograms = Object.fromEntries(
@@ -441,23 +456,25 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       refreshConfig(overrides);
       // Refresh the in-memory form source immediately so calculator consumers
       // see the same limits and tenures after saving, without a reload.
-      const products = (await adminListLoanProducts()).products;
-      for (const [type, program] of Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>) {
-        const existing = products.find((product: any) => String(product.name).toUpperCase().includes(type));
-        const productInput = {
-          name: `${type === "PERSONAL" ? "Personal" : "Business"} Loan`,
-          minAmountNaira: program.loanLimits.min,
-          maxAmountNaira: program.loanLimits.max,
-          defaultTenureDays: program.tenures[0]?.value || 30,
-          interestRatePercent: program.fees.interest.value,
-          interestType: "ANNUALIZED" as const,
-          processingFeePercent: program.fees.processingFee.type === "percentage" ? program.fees.processingFee.value : 0,
-          lateFeePercent: program.fees.lateFee.type === "percentage" ? program.fees.lateFee.value : 0,
-          isActive: existing?.isActive ?? true,
-        };
-        if (existing) await adminPatchLoanProduct(existing.id, productInput);
-        else await adminCreateLoanProduct(productInput);
-      }
+      await withSaveTimeout((async () => {
+        const products = (await adminListLoanProducts()).products;
+        for (const [type, program] of Object.entries(activePrograms) as Array<[LoanProgramKey, LoanProgramConfig]>) {
+          const existing = products.find((product: any) => String(product.name).toUpperCase().includes(type));
+          const productInput = {
+            name: `${type === "PERSONAL" ? "Personal" : "Business"} Loan`,
+            minAmountNaira: program.loanLimits.min,
+            maxAmountNaira: program.loanLimits.max,
+            defaultTenureDays: program.tenures[0]?.value || 30,
+            interestRatePercent: program.fees.interest.value,
+            interestType: "ANNUALIZED" as const,
+            processingFeePercent: program.fees.processingFee.type === "percentage" ? program.fees.processingFee.value : 0,
+            lateFeePercent: program.fees.lateFee.type === "percentage" ? program.fees.lateFee.value : 0,
+            isActive: existing?.isActive ?? true,
+          };
+          if (existing) await adminPatchLoanProduct(existing.id, productInput);
+          else await adminCreateLoanProduct(productInput);
+        }
+      })());
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (error) {
