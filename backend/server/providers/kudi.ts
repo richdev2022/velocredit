@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { env } from "../config.js";
 
 /* =========================================================================
@@ -211,10 +212,26 @@ export function formatOtpMessage(otp: string, action: string, ttlMinutes: number
 }
 
 /* =========================================================================
-   Webhook signature verification (kept for Kudi inbound delivery webhooks).
-   Without a shared webhook secret it simply passes through so endpoints can
-   rely on server-authenticated OTP challenges instead.
+   Webhook signature verification for Kudi inbound delivery webhooks.
+   If a shared `KUDI_WEBHOOK_SECRET` is configured, the inbound request must
+   carry it in the `X-Kudi-Signature` header (a constant-time-equal match).
+   Without the shared secret the verifier passes through so the endpoint
+   remains usable for OTP delivery only — but production deployments should
+   set `KUDI_WEBHOOK_SECRET` to close this unauthenticated public endpoint.
    ========================================================================= */
-export function verifyKudiSignature(_signature: string | undefined, _rawBody: string): boolean {
-  return true;
+export function verifyKudiSignature(signature: string | undefined, _rawBody: string): boolean {
+  const secret = env.KUDI_WEBHOOK_SECRET;
+  if (!secret) {
+    // Soft-permit in dev/staging when the secret is not configured.
+    return true;
+  }
+  if (!signature) return false;
+  try {
+    const a = Buffer.from(String(signature).trim());
+    const b = Buffer.from(secret);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
 }

@@ -27,6 +27,7 @@ import {
   type KycResetCategory,
   type LoanDisbursement,
 } from "../../services/adminApi";
+import { LineChart, DonutChart, BarChart, type LineSeries, type DonutSlice, type BarGroup } from "./Charts";
 
 export type AdminSection = "overview" | "borrowers" | "investors" | "kyc" | "payouts" | "loans" | "reconciliation" | "audit";
 
@@ -44,7 +45,7 @@ export default function AdminWorkspace({ section, onSelectBorrower, onSelectLoan
   return <Audit />;
 }
 
-function Panel({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) { return <section className="velo-card overflow-hidden dark:bg-slate-900 dark:border-slate-800 rounded-2xl"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 px-5 py-4"><h2 className="font-semibold text-velo-900 dark:text-white">{title}</h2>{action}</div><div className="p-5">{children}</div></section>; }
+function Panel({ title, subtitle, children, action }: { title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode }) { return <section className="velo-card overflow-hidden dark:bg-slate-900 dark:border-slate-800 rounded-2xl"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 px-5 py-4"><div><h2 className="font-semibold text-velo-900 dark:text-white">{title}</h2>{subtitle && <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{subtitle}</p>}</div>{action}</div><div className="p-5">{children}</div></section>; }
 function Empty({ text = "No records found." }: { text?: string }) { return <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">{text}</div>; }
 function ErrorBox({ message }: { message: string }) { return <div className="rounded-lg border border-red-100 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-400">{message}</div>; }
 function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) { return <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b border-slate-100 dark:border-slate-800 text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{headers.map((header) => <th key={header} className="whitespace-nowrap px-3 py-3">{header}</th>)}</tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{children}</tbody></table></div>; }
@@ -88,24 +89,163 @@ function Overview() {
   useEffect(() => { getAdminSummary().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load summary")); }, []);
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Panel title="Portfolio overview"><div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading dashboard overview…</div></Panel>;
+
   const totals = data.totals || {};
-  const statusData = [
-    ["Approved", Number(totals.approvedLoans || 0), "bg-emerald-500"],
-    ["Outstanding", Number(totals.outstandingPrincipal || 0), "bg-amber-500"],
-    ["Pending payments", Number(totals.pendingPayments || 0), "bg-sky-500"],
-    ["KYC pending", Number(totals.kycPending || 0), "bg-violet-500"],
-  ] as const;
-  const maxStatus = Math.max(1, ...statusData.map(([, value]) => value));
   const trend = data.trends || [];
-  const maxTrend = Math.max(1, ...trend.map((item) => Math.max(Number(item.applications || 0), Number(item.disbursements || 0), Number(item.repayments || 0))));
-  return <div className="space-y-5">
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">{Object.entries(totals).map(([key, value]) => <div key={key} className={`rounded-2xl border p-4 shadow-sm ${Number(value) > 0 && ["kycPending", "pendingPayouts", "failedPayouts", "reconciliationItems"].includes(key) ? "border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20" : "border-slate-100 bg-white dark:border-slate-800 dark:bg-slate-900/50"}`}><div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{labels[key] || key}</div><div className="mt-2 text-xl font-bold text-velo-900 dark:text-white">{moneyKeys.has(key) ? formatNaira(Number(value)) : Number(value).toLocaleString()}</div></div>)}</div>
-    <div className="grid gap-5 lg:grid-cols-5">
-      <Panel title="Loan activity trend"><div className="flex h-52 items-end gap-2">{trend.length ? trend.map((item) => <div key={item.date} className="flex min-w-0 flex-1 items-end gap-1" title={`${item.date}: ${item.applications} applications, ${item.disbursements} disbursements`}><div className="w-full rounded-t bg-velo-300" style={{ height: `${Math.max(8, Number(item.applications || 0) / maxTrend * 100)}%` }} /><div className="w-full rounded-t bg-emerald-500" style={{ height: `${Math.max(8, Number(item.disbursements || 0) / maxTrend * 100)}%` }} /><div className="w-full rounded-t bg-amber-400" style={{ height: `${Math.max(8, Number(item.repayments || 0) / maxTrend * 100)}%` }} /></div>) : <div className="flex w-full items-center justify-center text-sm text-slate-500">Trend data will appear as activity accumulates.</div>}</div><div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-500"><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-velo-300" />Applications</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-500" />Disbursements</span><span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400" />Repayments</span></div></Panel>
-      <Panel title="Portfolio mix"><div className="space-y-5">{statusData.map(([label, value, color]) => <div key={label}><div className="mb-1 flex justify-between text-xs text-slate-500"><span>{label}</span><strong className="text-velo-900 dark:text-white">{moneyKeys.has(label === "Outstanding" ? "outstandingPrincipal" : "") ? formatNaira(value) : value.toLocaleString()}</strong></div><div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800"><div className={`h-3 rounded-full ${color}`} style={{ width: `${Math.max(4, value / maxStatus * 100)}%` }} /></div></div>)}</div></Panel>
+
+  // ----- KPI strip (top 4 + an alerts tile) -----
+  const kpis: Array<{ label: string; value: string; sub?: string; tone: "default" | "warning" | "danger" }> = [
+    { label: "Total users", value: Number(totals.users || 0).toLocaleString(), sub: `${Number(totals.borrowers || 0)} borrowers · ${Number(totals.investors || 0)} investors`, tone: "default" },
+    { label: "Disbursed principal", value: formatNaira(Number(totals.disbursedPrincipal || 0)), sub: `${Number(totals.approvedLoans || 0)} approved loans`, tone: "default" },
+    { label: "Outstanding principal", value: formatNaira(Number(totals.outstandingPrincipal || 0)), sub: `${Number(totals.loans || 0)} applications total`, tone: "default" },
+    { label: "Active investments", value: formatNaira(Number(totals.activeInvestmentPrincipal || 0)), sub: `${Number(totals.investments || 0)} investments`, tone: "default" },
+  ];
+
+  const alerts: Array<{ label: string; value: number; severity: "warning" | "danger" }> = [
+    { label: "KYC pending", value: Number(totals.kycPending || 0), severity: "warning" },
+    { label: "Pending payouts", value: Number(totals.pendingPayouts || 0), severity: "warning" },
+    { label: "Failed payouts", value: Number(totals.failedPayouts || 0), severity: "danger" },
+    { label: "Reconciliation items", value: Number(totals.reconciliationItems || 0), severity: "danger" },
+  ];
+  const totalAlerts = alerts.reduce((s, a) => s + a.value, 0);
+
+  // ----- Loan activity trend (line chart) -----
+  const trendLabels = trend.map((t) => {
+    const d = new Date(t.date);
+    return `${d.getDate()}/${d.getMonth() + 1}`;
+  });
+  const trendSeries: LineSeries[] = [
+    { label: "Applications", color: "#10B981", values: trend.map((t) => Number(t.applications || 0)) },
+    { label: "Disbursements", color: "#0EA5E9", values: trend.map((t) => Number(t.disbursements || 0)) },
+    { label: "Repayments", color: "#F59E0B", values: trend.map((t) => Number(t.repayments || 0)) },
+  ];
+
+  // ----- Portfolio mix (donut) -----
+  const portfolioSlices: DonutSlice[] = [
+    { label: "Approved loans", value: Number(totals.approvedLoans || 0), color: "#10B981" },
+    { label: "Pending payments", value: Number(totals.pendingPayments || 0), color: "#F59E0B" },
+    { label: "Pending payouts", value: Number(totals.pendingPayouts || 0), color: "#0EA5E9" },
+    { label: "KYC pending", value: Number(totals.kycPending || 0), color: "#8B5CF6" },
+    { label: "Failed payouts", value: Number(totals.failedPayouts || 0), color: "#EF4444" },
+  ];
+
+  // ----- Applications by status (bar chart) -----
+  // Pulled from recentActivity + totals where possible.
+  const statusGroups: BarGroup[] = [
+    {
+      label: "Loans",
+      bars: [
+        { value: Number(totals.loans || 0), color: "#10B981" },
+        { value: Number(totals.approvedLoans || 0), color: "#0EA5E9" },
+      ],
+    },
+    {
+      label: "Investments",
+      bars: [
+        { value: Number(totals.investments || 0), color: "#F59E0B" },
+      ],
+    },
+    {
+      label: "Payouts",
+      bars: [
+        { value: Number(totals.pendingPayouts || 0), color: "#8B5CF6" },
+        { value: Number(totals.failedPayouts || 0), color: "#EF4444" },
+      ],
+    },
+    {
+      label: "Reconciliation",
+      bars: [
+        { value: Number(totals.reconciliationItems || 0), color: "#F97316" },
+      ],
+    },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {/* KPI strip */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {kpis.map((k) => (
+          <div key={k.label} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/50">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{k.label}</div>
+            <div className="mt-1.5 text-2xl font-bold text-velo-900 dark:text-white">{k.value}</div>
+            {k.sub && <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{k.sub}</div>}
+          </div>
+        ))}
+      </div>
+
+      {/* Alerts strip */}
+      <div className={`rounded-2xl border p-4 ${totalAlerts > 0 ? "border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20" : "border-emerald-200 bg-emerald-50 dark:border-emerald-900/40 dark:bg-emerald-900/20"}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block h-2 w-2 rounded-full ${totalAlerts > 0 ? "bg-amber-500" : "bg-emerald-500"}`} />
+            <h3 className="text-sm font-bold text-velo-900 dark:text-white">
+              {totalAlerts > 0 ? `${totalAlerts} item${totalAlerts === 1 ? "" : "s"} need attention` : "All clear — no pending alerts"}
+            </h3>
+          </div>
+          <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
+            {alerts.map((a) => (
+              <span key={a.label} className="inline-flex items-center gap-1.5">
+                <span className={`inline-block h-2 w-2 rounded-full ${a.severity === "danger" ? "bg-red-500" : "bg-amber-500"}`} />
+                <span className="text-slate-600 dark:text-slate-300">{a.label}:</span>
+                <strong className={a.value > 0 ? (a.severity === "danger" ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300") : "text-slate-500 dark:text-slate-400"}>{a.value}</strong>
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Charts row 1: loan activity trend (left) + portfolio mix (right) */}
+      <div className="grid gap-5 lg:grid-cols-5">
+        <div className="lg:col-span-3">
+          <Panel title="Loan activity trend" subtitle="Applications, disbursements, and repayments over the last 7 days">
+            {trend.length > 0 ? (
+              <LineChart series={trendSeries} labels={trendLabels} height={240} />
+            ) : (
+              <div className="flex h-52 items-center justify-center text-sm text-slate-500 dark:text-slate-400">Trend data will appear as activity accumulates.</div>
+            )}
+          </Panel>
+        </div>
+        <div className="lg:col-span-2">
+          <Panel title="Portfolio mix" subtitle="Where attention is needed across the platform">
+            <DonutChart slices={portfolioSlices} size={180} />
+          </Panel>
+        </div>
+      </div>
+
+      {/* Charts row 2: bar chart (left) + recent activity (right) */}
+      <div className="grid gap-5 lg:grid-cols-5">
+        <div className="lg:col-span-3">
+          <Panel title="Platform volumes" subtitle="Loans, investments, payouts, and reconciliation items at a glance">
+            <BarChart groups={statusGroups} height={220} />
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+              <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm bg-emerald-500" />Total / healthy</span>
+              <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm bg-sky-500" />Approved / pending payout</span>
+              <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm bg-amber-500" />Investments</span>
+              <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm bg-violet-500" />Pending</span>
+              <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm bg-red-500" />Failed</span>
+              <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm bg-orange-500" />Reconciliation</span>
+            </div>
+          </Panel>
+        </div>
+        <div className="lg:col-span-2">
+          <Panel title="Recent activity">
+            <div className="space-y-2">
+              {data.recentActivity?.length ? (
+                data.recentActivity.slice(0, 6).map((activity: any, index: number) => (
+                  <div key={activity.id || index} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 text-sm dark:bg-slate-950">
+                    <span className="font-medium text-slate-700 dark:text-slate-200 truncate pr-2">{activity.action || activity.eventType || "Platform activity"}</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 shrink-0">{activity.createdAt ? new Date(activity.createdAt).toLocaleString("en-NG") : "Recently"}</span>
+                  </div>
+                ))
+              ) : (
+                <Empty text="No recent admin activity yet." />
+              )}
+            </div>
+          </Panel>
+        </div>
+      </div>
     </div>
-    <Panel title="Recent activity"><div className="space-y-3">{data.recentActivity?.length ? data.recentActivity.slice(0, 6).map((activity: any, index: number) => <div key={activity.id || index} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-3 text-sm dark:bg-slate-950"><span className="font-medium text-slate-700 dark:text-slate-200">{activity.action || activity.eventType || "Platform activity"}</span><span className="text-xs text-slate-500">{activity.createdAt ? new Date(activity.createdAt).toLocaleString("en-NG") : "Recently"}</span></div>) : <Empty text="No recent admin activity yet." />}</div></Panel>
-  </div>;
+  );
 }
 function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title: string; onSelect?: (user: any) => void }) {
   const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const size = 20;

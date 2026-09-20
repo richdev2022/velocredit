@@ -51,9 +51,11 @@ import {
   notifications,
   consents,
   auditLogs,
+  otpChallenges,
   type KycStatus,
   type Role,
   type CreditReport,
+  type LoanStatus,
   ADMIN_PERMISSIONS,
   getAdminLedgerBalanceMinor,
   adminLedger,
@@ -948,12 +950,16 @@ router.post("/auth/admin/password-reset/request", async (req, res) => {
   let admin = findUserByEmail(parsed.data.email);
   if (!admin) {
     const now = new Date().toISOString();
+    // Cache the bcrypt hash so repeated reset requests don't re-hash the env
+    // password on every call (avoids CPU DoS via repeated hits to this endpoint).
+    // The hash is computed once and stored on the env-admin user record.
+    const cachedHash = env.ADMIN_PASSWORD_HASH ?? await bcrypt.hash(env.ADMIN_PASSWORD!, 12);
     admin = {
       id: "env-admin",
       email: env.ADMIN_EMAIL.toLowerCase(),
       phone: "",
       fullName: "Velo Administrator",
-      passwordHash: env.ADMIN_PASSWORD_HASH ?? await bcrypt.hash(env.ADMIN_PASSWORD!, 12),
+      passwordHash: cachedHash,
       roles: ["ADMIN"],
       kycStatus: "VERIFIED",
       createdAt: now,
@@ -962,6 +968,22 @@ router.post("/auth/admin/password-reset/request", async (req, res) => {
       otpLoginEnabled: false,
     };
     users.push(admin);
+  }
+  // Rate-limit OTP creation per admin user: max 1 reset OTP per minute.
+  const oneMinuteAgo = new Date(Date.now() - 60_000).toISOString();
+  const recentChallenge = otpChallenges.find(
+    (c) => c.userId === admin!.id && c.action === "PASSWORD_RESET" && c.createdAt >= oneMinuteAgo && !c.consumedAt,
+  );
+  if (recentChallenge) {
+    const resendAvailableAt = new Date(new Date(recentChallenge.createdAt).getTime() + 60_000).toISOString();
+    const resendSecondsRemaining = Math.max(0, Math.ceil((new Date(resendAvailableAt).getTime() - Date.now()) / 1000));
+    res.status(429).json({
+      ok: false,
+      error: "Please wait before requesting another reset OTP.",
+      resendAvailableAt,
+      resendSecondsRemaining,
+    });
+    return;
   }
   const challenge = await createOtpChallenge(admin.id, "PASSWORD_RESET", "", admin.email, parsed.data.channel);
   if (!(await persistMutation(res))) return;
@@ -2504,7 +2526,7 @@ router.get("/investor/transactions", requireAuth, requireRole("INVESTOR"), (req:
   });
 });
 
-function synchronizeLoanApplicationStatus(application: (typeof loanApplications)[number]): boolean {
+export function synchronizeLoanApplicationStatus(application: (typeof loanApplications)[number]): boolean {
   const loan = loans.find((item) => item.applicationId === application.id || item.applicationId === application.applicationId);
   if (!loan) return false;
   const successfulDisbursement = loanDisbursements.some((item) => item.loanId === loan.id && item.status === "SUCCESSFUL");
@@ -2515,7 +2537,20 @@ function synchronizeLoanApplicationStatus(application: (typeof loanApplications)
     loan.updatedAt = new Date().toISOString();
     loanChanged = true;
   }
-  const nextStatus = loan.status === "REPAID" ? "REPAID" : loan.status === "ACTIVE" ? "ACTIVE" : ["DISBURSED", "PAST_DUE", "DEFAULTED", "WRITTEN_OFF"].includes(loan.status) ? loan.status : loan.status === "DISBURSEMENT_PENDING" ? "APPROVED" : application.status;
+  // Application-status semantics:
+  //   REPAID   -> loan fully repaid
+  //   ACTIVE   -> loan money has been disbursed and is now in repayment
+  //                (covers ACTIVE, DISBURSED, PAST_DUE, DEFAULTED, WRITTEN_OFF)
+  //   APPROVED  -> admin approved, awaiting disbursement
+  //   (others)  -> fall through to current application status
+  // We map ACTIVE loans to the "ACTIVE" application status so the borrower
+  // and admin UIs reflect that the loan has been disbursed and is now active
+  // in its repayment lifecycle.
+  const activeLikeStatuses: LoanStatus[] = ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "WRITTEN_OFF"];
+  const nextStatus: string = loan.status === "REPAID" ? "REPAID"
+                  : activeLikeStatuses.includes(loan.status as LoanStatus) ? "ACTIVE"
+                  : loan.status === "DISBURSEMENT_PENDING" ? "APPROVED"
+                  : application.status;
   if (application.status === nextStatus) return loanChanged;
   application.status = nextStatus as typeof application.status;
   application.updatedAt = new Date().toISOString();
@@ -3243,6 +3278,42 @@ router.get("/admin/application-drafts", requireAuth, requireRole("ADMIN"), (_req
   const limit = Math.max(1, Math.min(100, Number(_req.query.limit ?? 20)));
   const offset = Math.max(0, Number(_req.query.offset ?? 0));
   res.json({ ok: true, drafts: drafts.slice(offset, offset + limit), total: drafts.length });
+});
+
+// Admin: fetch the full saved draft data for a single in-progress application.
+// Used by the admin loan detail page to show the borrower's saved progress
+// (sections, fields) before the application has been formally submitted.
+router.get("/admin/application-drafts/:applicationId", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const applicationId = String(req.params.applicationId ?? "").trim();
+  if (!applicationId) {
+    res.status(400).json({ ok: false, error: "applicationId is required" });
+    return;
+  }
+  const draft = applicationDrafts.find((d) => d.applicationId === applicationId);
+  if (!draft) {
+    res.status(404).json({ ok: false, error: "Draft not found for this applicationId" });
+    return;
+  }
+  const borrower = users.find((user) => user.id === draft.userId);
+  const data = draft.data as Record<string, any>;
+  const totalSections = draft.applicantType === "BUSINESS" ? 9 : 8;
+  const currentSection = Math.min(totalSections - 1, Math.max(0, draft.lastSectionIndex));
+  res.json({
+    ok: true,
+    draft: {
+      applicationId: draft.applicationId,
+      applicantType: draft.applicantType,
+      status: data.status === "IN_PROGRESS" ? "IN_PROGRESS" : "DRAFT",
+      borrower: borrower ? { id: borrower.id, fullName: borrower.fullName, email: borrower.email, phone: borrower.phone } : null,
+      data,
+      lastSectionIndex: draft.lastSectionIndex,
+      currentSection,
+      totalSections,
+      progressPercent: Math.round(((currentSection + 1) / totalSections) * 100),
+      createdAt: draft.createdAt,
+      updatedAt: draft.updatedAt,
+    },
+  });
 });
 
 router.get("/admin/summary", requireAuth, requireRole("ADMIN"), (_req, res) => {
@@ -4117,6 +4188,10 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       loan.disbursedAt = settledAt;
       loan.updatedAt = settledAt;
       if (application) {
+        // Use "ACTIVE" for the application status so the borrower and admin
+        // UIs reflect that the loan has been disbursed and is now in its
+        // repayment lifecycle. (Previously this was "DISBURSED" but the
+        // canonical post-disbursement lifecycle status is "ACTIVE".)
         application.status = "ACTIVE";
         application.updatedAt = settledAt;
       }

@@ -42,6 +42,7 @@ const envSchema = z.object({
   KUDI_BASE_URL: z.string().url().default("https://my.kudisms.net/api"),
   KUDI_API_KEY: z.string().optional(),
   KUDI_SENDER_ID: z.string().optional(),
+  KUDI_WEBHOOK_SECRET: z.string().optional(),
   META_GRAPH_API_VERSION: z.string().default("v21.0"),
   META_WHATSAPP_ACCESS_TOKEN: z.string().optional(),
   META_WHATSAPP_APP_SECRET: z.string().optional(),

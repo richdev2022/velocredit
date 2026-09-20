@@ -60,8 +60,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const [max, setMax] = useState(currentConfig.loanLimits.max);
   const [defaultAmount, setDefaultAmount] = useState(currentConfig.loanLimits.defaultAmount);
   const [globalLimitsEnabled, setGlobalLimitsEnabled] = useState(currentConfig.globalLimitsEnabled);
-  const [globalFeesEnabled, setGlobalFeesEnabled] = useState(currentConfig.globalFeesEnabled);
-  const [globalInterestEnabled, setGlobalInterestEnabled] = useState(currentConfig.globalInterestEnabled);
+  // Unified single toggle: when ON, the four global fees (interest, serviceFee,
+  // processingFee, lateFee) override every program. When OFF, each program uses
+  // its own per-program fee configuration. We still persist both legacy flags
+  // (globalFeesEnabled / globalInterestEnabled) for backward compatibility,
+  // but they are always written with the same value.
+  const [globalTransactionsEnabled, setGlobalTransactionsEnabled] = useState(
+    Boolean(currentConfig.globalFeesEnabled) && Boolean(currentConfig.globalInterestEnabled),
+  );
   const [selectedTenures, setSelectedTenures] = useState<number[]>(() => currentConfig.tenures.map((t) => t.value));
   const [companyName, setCompanyName] = useState(currentConfig.companyName);
   const [companyWebsite, setCompanyWebsite] = useState(currentConfig.companyWebsite);
@@ -423,8 +429,8 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       loanManagerEmails: loanManagerEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
       adminEmails: adminEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
       globalLimitsEnabled,
-      globalFeesEnabled,
-      globalInterestEnabled,
+      globalFeesEnabled: globalTransactionsEnabled,
+      globalInterestEnabled: globalTransactionsEnabled,
     };
     (Object.keys(fees) as FeeKey[]).forEach((k) => {
       const b = baseConfig.fees[k];
@@ -444,11 +450,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         (Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>).map(([type, program]) => [type, {
           ...program,
           loanLimits: globalLimitsEnabled ? { min, max, defaultAmount } : program.loanLimits,
-          fees: {
-            ...program.fees,
-            ...(globalFeesEnabled ? { ...fees, interest: globalInterestEnabled ? fees.interest : program.fees.interest } : {}),
-            ...(globalInterestEnabled ? { interest: fees.interest } : {}),
-          },
+          fees: globalTransactionsEnabled
+            ? { ...program.fees, ...fees }
+            : { ...program.fees },
         }]),
       ) as Record<LoanProgramKey, LoanProgramConfig>;
       overrides.loanPrograms = activePrograms;
@@ -494,8 +498,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     setMax(currentConfig.loanLimits.max);
     setDefaultAmount(currentConfig.loanLimits.defaultAmount);
     setGlobalLimitsEnabled(true);
-    setGlobalFeesEnabled(true);
-    setGlobalInterestEnabled(true);
+    setGlobalTransactionsEnabled(true);
     setSelectedTenures(baseConfig.tenures.map((t) => t.value));
     setCompanyName(baseConfig.companyName);
     setCompanyWebsite(baseConfig.companyWebsite);
@@ -663,8 +666,24 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           </Section>
 
           <Section title="Fees Configuration (Global)" subtitle="Activate global fees for all programs, or deactivate to use each program's separate fee configuration." icon={<Icon name="money" size={20} />}>
-            <div className="mb-4 grid gap-3 sm:grid-cols-2">
-              {[["Global fees", globalFeesEnabled, setGlobalFeesEnabled], ["Global interest", globalInterestEnabled, setGlobalInterestEnabled]].map(([label, enabled, setter]) => <div key={String(label)} className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950"><span className="text-sm font-bold">{String(label)}</span><button type="button" role="switch" aria-checked={Boolean(enabled)} onClick={() => (setter as (value: boolean) => void)(!Boolean(enabled))} className={`relative h-6 w-11 rounded-full transition ${enabled ? "bg-velo-500" : "bg-slate-300 dark:bg-slate-700"}`}><span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${enabled ? "left-6" : "left-1"}`} /></button></div>)}
+            <div className="mb-4">
+              <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-950">
+                <div className="pr-4">
+                  <div className="text-sm font-bold text-velo-900 dark:text-velo-100">Global transactions</div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    When ON, the four fees below override every loan program (interest, service fee, processing fee, late fee). When OFF, each program uses its own per-program fees.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={globalTransactionsEnabled}
+                  onClick={() => setGlobalTransactionsEnabled((v) => !v)}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition ${globalTransactionsEnabled ? "bg-velo-500" : "bg-slate-300 dark:bg-slate-700"}`}
+                >
+                  <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${globalTransactionsEnabled ? "left-6" : "left-1"}`} />
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (

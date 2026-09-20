@@ -71,6 +71,20 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       adminPermissions?: AdminPermission[];
       kycStatus?: string;
     };
+    // ---- JWT revocation check ----------------------------------------------
+    // Re-verify the user against the in-memory store on every request so that
+    // deactivating a user (PATCH /admin/users/:id/status isActive=false) or
+    // deleting them takes effect immediately, instead of waiting up to 2h for
+    // the JWT to expire.
+    const liveUser = users.find((u) => u.id === payload.sub);
+    if (!liveUser) {
+      res.status(401).json({ ok: false, error: "Account no longer exists" });
+      return;
+    }
+    if (liveUser.isActive === false) {
+      res.status(403).json({ ok: false, error: "Account has been deactivated" });
+      return;
+    }
     req.user = {
       id: payload.sub,
       email: payload.email,

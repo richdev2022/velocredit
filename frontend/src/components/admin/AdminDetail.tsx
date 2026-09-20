@@ -4,12 +4,14 @@
 // open uploaded documents in Google Drive, and update the status.
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   adminDisburseLoan,
   adminGetApplication,
+  adminGetApplicationDraft,
   adminUpdateStatus,
   type AdminApplicationDetail,
+  type AdminApplicationDraftDetail,
 } from "../../services/adminApi";
 import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
 import { documentDownloadUrl, documentPreviewUrl } from "../../utils/documentLinks";
@@ -24,6 +26,7 @@ interface AdminDetailProps {
 
 export default function AdminDetail({ applicationId, onBack }: AdminDetailProps) {
   const [app, setApp] = useState<AdminApplicationDetail | null>(null);
+  const [draft, setDraft] = useState<AdminApplicationDraftDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newStatus, setNewStatus] = useState("");
@@ -34,15 +37,23 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     let cancelled = false;
     setLoading(true);
     setError(null);
-    adminGetApplication(applicationId)
-      .then((data) => {
+    Promise.all([
+      adminGetApplication(applicationId).catch((err) => {
+        // Application might not exist yet (e.g. still in DRAFT state with no
+        // loanApplications row). Return null so we can fall back to the draft.
+        return null as AdminApplicationDetail | null;
+      }),
+      adminGetApplicationDraft(applicationId).catch(() => null as AdminApplicationDraftDetail | null),
+    ])
+      .then(([data, draftData]) => {
         if (cancelled) return;
+        if (!data && !draftData) {
+          setError("Application not found and no saved draft exists for this ID.");
+          return;
+        }
         setApp(data);
+        setDraft(draftData);
         setNewStatus("");
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err?.message || "Failed to load application.");
       })
       .finally(() => {
         if (cancelled) return;
@@ -116,6 +127,15 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     );
   }
 
+  if (!app && !draft) return null;
+
+  // Draft-only view: when the application hasn't been formally submitted yet,
+  // we still want to show admin the borrower's saved progress.
+  if (!app && draft) {
+    return <DraftDetailView draft={draft} onBack={onBack} />;
+  }
+
+  // From this point on, `app` is non-null.
   if (!app) return null;
 
   const isPersonal = app.applicantType === "PERSONAL";
@@ -174,6 +194,9 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         </svg>
         Back to list
       </button>
+
+      {/* Saved draft progress panel (shown when a draft exists alongside the application) */}
+      {draft && <DraftProgressPanel draft={draft} />}
 
       {/* Header card */}
       <div className="velo-card p-4 sm:p-5 lg:p-6">
@@ -504,3 +527,216 @@ function DocLink({ label, url }: { label: string; url?: string }) {
     </a>
   );
 }
+
+// ============================================================================
+// DraftProgressPanel — shown when a borrower has saved draft progress that
+// admin should be able to see (e.g. IN_PROGRESS applications). Renders a
+// compact summary card with progress bar + last-saved timestamp.
+// ============================================================================
+
+function DraftProgressPanel({ draft }: { draft: AdminApplicationDraftDetail }) {
+  const updated = draft.updatedAt ? new Date(draft.updatedAt) : null;
+  return (
+    <div className="velo-card p-4 sm:p-5 border-l-4 border-l-velo-500">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-bold text-velo-900 dark:text-white">Borrower's saved progress</h3>
+            <span className="badge bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">{draft.status.replace(/_/g, " ")}</span>
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            {updated ? `Last saved ${updated.toLocaleString("en-NG")}` : "No save timestamp"}
+            {" · "}
+            Section {draft.currentSection + 1} of {draft.totalSections}
+            {" · "}
+            {draft.applicantType === "BUSINESS" ? "Business loan" : "Personal loan"}
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-bold text-velo-900 dark:text-white">{draft.progressPercent}%</div>
+          <div className="text-[11px] text-slate-500 dark:text-slate-400">complete</div>
+        </div>
+      </div>
+      <div className="mt-3 h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+        <div className="h-2 rounded-full bg-velo-500 transition-all" style={{ width: `${draft.progressPercent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// DraftDetailView — full draft detail view, shown when the application row
+// doesn't exist yet (still in DRAFT state with no loanApplications entry).
+// Renders the saved sections in read-only form.
+// ============================================================================
+
+function DraftDetailView({ draft, onBack }: { draft: AdminApplicationDraftDetail; onBack: () => void }) {
+  const data = draft.data || {};
+  const personalInfo = data.personalInfo || {};
+  const businessInfo = data.businessInfo || {};
+  const businessRep = data.businessRep || {};
+  const personalFinancial = data.personalFinancial || {};
+  const businessFinancial = data.businessFinancial || {};
+  const kyc = data.kyc || {};
+  const loanRequest = data.loanRequest || {};
+  const collateral = data.collateral || {};
+  const witness = data.witness || {};
+  const disbursementAccount = data.disbursementAccount || {};
+  const updated = draft.updatedAt ? new Date(draft.updatedAt) : null;
+
+  return (
+    <div className="space-y-5 animate-fade-in">
+      <button type="button" onClick={onBack} className="btn-ghost text-xs">
+        <Icon name="arrowLeft" size={14} />
+        Back to list
+      </button>
+
+      {/* Header */}
+      <div className="velo-card p-4 sm:p-5 lg:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-bold text-velo-900 dark:text-white">
+                {draft.applicantType === "PERSONAL" ? personalInfo.fullName : businessInfo.businessName || draft.borrower?.fullName || "Borrower"}
+              </h1>
+              <span className={`badge ${draft.applicantType === "PERSONAL" ? "bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-300" : "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"}`}>
+                {draft.applicantType === "PERSONAL" ? "Personal" : "Business"}
+              </span>
+              <span className="badge bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">{draft.status.replace(/_/g, " ")}</span>
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Application ID: <span className="font-mono">{draft.applicationId}</span>
+            </p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              {updated ? `Last saved ${updated.toLocaleString("en-NG")}` : "No save timestamp"}
+              {" · "}Section {draft.currentSection + 1} of {draft.totalSections} · {draft.progressPercent}% complete
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+          <div className="h-2 rounded-full bg-velo-500" style={{ width: `${draft.progressPercent}%` }} />
+        </div>
+      </div>
+
+      {/* Loan request (if saved) */}
+      {loanRequest && (loanRequest.amount || loanRequest.tenure || loanRequest.purpose) ? (
+        <DetailCard title="Loan request">
+          <DetailRow label="Amount" value={loanRequest.amount ? formatNaira(Number(loanRequest.amount)) : "—"} />
+          <DetailRow label="Tenure" value={loanRequest.tenure ? `${loanRequest.tenure} days` : "—"} />
+          <DetailRow label="Purpose" value={loanRequest.purpose || "—"} />
+        </DetailCard>
+      ) : null}
+
+      {/* Personal info */}
+      {personalInfo && Object.keys(personalInfo).length > 0 ? (
+        <DetailCard title="Personal information">
+          <DetailRow label="Full name" value={personalInfo.fullName} />
+          <DetailRow label="Phone" value={personalInfo.phone} />
+          <DetailRow label="Email" value={personalInfo.email} />
+          <DetailRow label="Date of birth" value={personalInfo.dateOfBirth} />
+          <DetailRow label="Residential address" value={personalInfo.residentialAddress} />
+          <DetailRow label="State" value={personalInfo.state} />
+          <DetailRow label="LGA" value={personalInfo.lga} />
+        </DetailCard>
+      ) : null}
+
+      {/* Business info */}
+      {draft.applicantType === "BUSINESS" && businessInfo && Object.keys(businessInfo).length > 0 ? (
+        <DetailCard title="Business information">
+          <DetailRow label="Business name" value={businessInfo.businessName} />
+          <DetailRow label="Registration number" value={businessInfo.businessRegistrationNumber} />
+          <DetailRow label="Business type" value={businessInfo.businessType} />
+          <DetailRow label="Industry" value={businessInfo.businessIndustry} />
+          <DetailRow label="Address" value={businessInfo.businessAddress} />
+          <DetailRow label="Years in business" value={businessInfo.yearsInBusiness} />
+        </DetailCard>
+      ) : null}
+
+      {/* Business representative */}
+      {draft.applicantType === "BUSINESS" && businessRep && Object.keys(businessRep).length > 0 ? (
+        <DetailCard title="Business representative">
+          <DetailRow label="Full name" value={businessRep.fullName} />
+          <DetailRow label="Position" value={businessRep.position} />
+          <DetailRow label="Phone" value={businessRep.phone} />
+          <DetailRow label="Email" value={businessRep.email} />
+        </DetailCard>
+      ) : null}
+
+      {/* KYC */}
+      {kyc && Object.keys(kyc).length > 0 ? (
+        <DetailCard title="KYC">
+          <DetailRow label="BVN" value={kyc.bvn} />
+          <DetailRow label="NIN" value={kyc.nin} />
+          <DetailRow label="ID type" value={kyc.identificationType} />
+          <DetailRow label="ID number" value={kyc.identificationNumber} />
+        </DetailCard>
+      ) : null}
+
+      {/* Financial */}
+      {draft.applicantType === "PERSONAL" && personalFinancial && Object.keys(personalFinancial).length > 0 ? (
+        <DetailCard title="Personal financial">
+          <DetailRow label="Employment status" value={personalFinancial.employmentStatus} />
+          <DetailRow label="Employer" value={personalFinancial.employerBusinessName} />
+          <DetailRow label="Monthly income" value={personalFinancial.monthlyIncome ? formatNaira(Number(personalFinancial.monthlyIncome)) : "—"} />
+          <DetailRow label="Monthly expenses" value={personalFinancial.monthlyExpenses ? formatNaira(Number(personalFinancial.monthlyExpenses)) : "—"} />
+          <DetailRow label="Existing loan obligations" value={personalFinancial.existingLoanObligations} />
+          <DetailRow label="Expected repayment source" value={personalFinancial.expectedRepaymentSource} />
+        </DetailCard>
+      ) : null}
+
+      {draft.applicantType === "BUSINESS" && businessFinancial && Object.keys(businessFinancial).length > 0 ? (
+        <DetailCard title="Business financial">
+          <DetailRow label="Monthly revenue" value={businessFinancial.monthlyRevenue ? formatNaira(Number(businessFinancial.monthlyRevenue)) : "—"} />
+          <DetailRow label="Monthly expenses" value={businessFinancial.monthlyExpenses ? formatNaira(Number(businessFinancial.monthlyExpenses)) : "—"} />
+          <DetailRow label="Existing loan obligations" value={businessFinancial.existingLoanObligations} />
+          <DetailRow label="Expected repayment source" value={businessFinancial.expectedRepaymentSource} />
+        </DetailCard>
+      ) : null}
+
+      {/* Disbursement account */}
+      {disbursementAccount && Object.keys(disbursementAccount).length > 0 ? (
+        <DetailCard title="Disbursement account">
+          <DetailRow label="Account name" value={disbursementAccount.accountName} />
+          <DetailRow label="Bank name" value={disbursementAccount.bankName} />
+          <DetailRow label="Account number" value={disbursementAccount.accountNumber} />
+        </DetailCard>
+      ) : null}
+
+      {/* Collateral + witness */}
+      {collateral && Object.keys(collateral).length > 0 ? (
+        <DetailCard title="Collateral">
+          <DetailRow label="Type" value={collateral.type} />
+          <DetailRow label="Description" value={collateral.description} />
+          <DetailRow label="Estimated value" value={collateral.estimatedValue ? formatNaira(Number(collateral.estimatedValue)) : "—"} />
+        </DetailCard>
+      ) : null}
+
+      {witness && (witness.fullName || witness.phone) ? (
+        <DetailCard title="Witness">
+          <DetailRow label="Full name" value={witness.fullName} />
+          <DetailRow label="Phone" value={witness.phone} />
+        </DetailCard>
+      ) : null}
+    </div>
+  );
+}
+
+function DetailCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="velo-card p-5">
+      <h3 className="text-sm font-bold text-velo-900 dark:text-white mb-3">{title}</h3>
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">{children}</dl>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: any }) {
+  const display = value === undefined || value === null || value === "" ? "—" : String(value);
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-2 py-1 border-b border-slate-100 dark:border-slate-800 last:border-0">
+      <dt className="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</dt>
+      <dd className="font-medium text-velo-900 dark:text-white sm:text-right">{display}</dd>
+    </div>
+  );
+}
+
