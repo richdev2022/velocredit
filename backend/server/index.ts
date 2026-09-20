@@ -315,10 +315,10 @@ app.post(
           disbursementLoan.status = "ACTIVE";
           const application = loanApplications.find((item) => item.id === disbursementLoan.applicationId || item.applicationId === disbursementLoan.applicationId);
           if (application) {
-            // Mirror the disbursement route: use "DISBURSED" for the application
-            // status so the borrower and admin UIs can show "Disbursed" instead
-            // of the internal "Active" lifecycle label.
-            application.status = "DISBURSED";
+            // Mirror the disbursement route: use "ACTIVE" for the application
+            // status so the borrower and admin UIs reflect that the loan has
+            // been disbursed and is now in its repayment lifecycle.
+            application.status = "ACTIVE";
             application.updatedAt = new Date().toISOString();
           }
           disbursementLoan.providerReference = String(transfer.id ?? transfer.flw_ref ?? transferRef);

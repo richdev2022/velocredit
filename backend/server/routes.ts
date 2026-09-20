@@ -2538,17 +2538,17 @@ export function synchronizeLoanApplicationStatus(application: (typeof loanApplic
     loanChanged = true;
   }
   // Application-status semantics:
-  //   REPAID    -> loan fully repaid
-  //   DISBURSED -> loan money has been sent to the borrower's bank account
+  //   REPAID   -> loan fully repaid
+  //   ACTIVE   -> loan money has been disbursed and is now in repayment
   //                (covers ACTIVE, DISBURSED, PAST_DUE, DEFAULTED, WRITTEN_OFF)
   //   APPROVED  -> admin approved, awaiting disbursement
   //   (others)  -> fall through to current application status
-  // We deliberately map ACTIVE loans to the "DISBURSED" application status
-  // so the borrower and admin UIs can show "Disbursed" instead of the
-  // internal "Active" lifecycle label.
-  const disbursedLikeStatuses: LoanStatus[] = ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "WRITTEN_OFF"];
+  // We map ACTIVE loans to the "ACTIVE" application status so the borrower
+  // and admin UIs reflect that the loan has been disbursed and is now active
+  // in its repayment lifecycle.
+  const activeLikeStatuses: LoanStatus[] = ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "WRITTEN_OFF"];
   const nextStatus: string = loan.status === "REPAID" ? "REPAID"
-                  : disbursedLikeStatuses.includes(loan.status as LoanStatus) ? "DISBURSED"
+                  : activeLikeStatuses.includes(loan.status as LoanStatus) ? "ACTIVE"
                   : loan.status === "DISBURSEMENT_PENDING" ? "APPROVED"
                   : application.status;
   if (application.status === nextStatus) return loanChanged;
@@ -4188,9 +4188,11 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       loan.disbursedAt = settledAt;
       loan.updatedAt = settledAt;
       if (application) {
-        // Use "DISBURSED" (not "ACTIVE") so the borrower and admin UIs can
-        // distinguish "money sent" from the internal loan "Active" lifecycle.
-        application.status = "DISBURSED";
+        // Use "ACTIVE" for the application status so the borrower and admin
+        // UIs reflect that the loan has been disbursed and is now in its
+        // repayment lifecycle. (Previously this was "DISBURSED" but the
+        // canonical post-disbursement lifecycle status is "ACTIVE".)
+        application.status = "ACTIVE";
         application.updatedAt = settledAt;
       }
       loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);

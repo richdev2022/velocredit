@@ -64,11 +64,11 @@ export default function SectionShell({
     <div className="space-y-5 animate-fade-in">
       <ProgressSteps sections={sections} currentIndex={currentIndex} />
 
-      <div className="velo-card p-5 sm:p-7">
+      <div className="velo-card p-5 sm:p-7 dark:bg-slate-900 dark:border-slate-800">
         <div className="flex min-w-0 flex-col gap-2 mb-1 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <h1 className="section-heading">{title}</h1>
-            {description && <p className="section-subheading">{description}</p>}
+            <h1 className="section-heading text-velo-900 dark:text-white">{title}</h1>
+            {description && <p className="section-subheading text-slate-500 dark:text-slate-400">{description}</p>}
           </div>
         </div>
 
@@ -76,7 +76,7 @@ export default function SectionShell({
           {children}
         </div>
 
-        <div className="mt-7 pt-5 border-t border-slate-100 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+        <div className="mt-7 pt-5 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
           <div className="flex w-full flex-col gap-2 sm:order-2 sm:w-auto sm:flex-row">
             {skippable && (
               <button type="button" onClick={handleSkip} className="btn-ghost">

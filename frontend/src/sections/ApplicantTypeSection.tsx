@@ -154,15 +154,15 @@ export default function ApplicantTypeSection() {
     >
       <ApplicantTypeSelector value={selected} onChange={handleSelect} />
 
-      <div className="mt-5 rounded-xl bg-slate-50 border border-slate-100 p-4 flex items-start gap-3">
-        <svg className="text-slate-400 shrink-0 mt-0.5" width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <div className="mt-5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700 p-4 flex items-start gap-3">
+        <svg className="text-slate-400 dark:text-slate-500 shrink-0 mt-0.5" width="18" height="18" viewBox="0 0 24 24" fill="none">
           <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8"/>
           <path d="M12 8v4M12 16h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
         </svg>
-        <p className="text-xs text-slate-600 leading-relaxed">
+        <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
           Your selection determines which sections of the form you'll need to complete. You can save and resume at any time.
           {isReturningToSameType && sections.length > 0 ? (
-            <span className="mt-2 flex items-start gap-1.5 font-semibold text-emerald-700">
+            <span className="mt-2 flex items-start gap-1.5 font-semibold text-emerald-700 dark:text-emerald-400">
               <Icon name="check" size={14} className="mt-0.5 shrink-0" />We detected a saved {selected === "PERSONAL" ? "personal" : "business"} draft — continuing will take you straight to the next section you need to complete.
             </span>
           ) : null}
