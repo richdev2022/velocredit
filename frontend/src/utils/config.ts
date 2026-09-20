@@ -327,6 +327,10 @@ export function applyLoanProducts(products: Array<{
   processingFeePercent: number;
   lateFeePercent: number;
 }>): void {
+  // Track whether we successfully applied at least one product so we don't
+  // clobber the env-default config.loanLimits with stale/seeded backend values
+  // when the backend response is empty or all products fail validation.
+  let appliedAny = false;
   for (const product of products) {
     const type: LoanProgramKey | null = /business/i.test(product.name)
       ? "BUSINESS"
@@ -340,7 +344,11 @@ export function applyLoanProducts(products: Array<{
       max: Number(product.maxAmountNaira),
       defaultAmount: Math.min(Number(product.maxAmountNaira), Math.max(Number(product.minAmountNaira), program.loanLimits.defaultAmount)),
     };
-    if (!Number.isFinite(limits.min) || !Number.isFinite(limits.max) || limits.min >= limits.max) continue;
+    // Validate: min < max, both finite, min >= 0. Skip invalid products
+    // rather than clobbering good config with bad data.
+    if (!Number.isFinite(limits.min) || !Number.isFinite(limits.max) || limits.min >= limits.max || limits.min < 0) {
+      continue;
+    }
     config.loanPrograms[type] = {
       ...program,
       loanLimits: limits,
@@ -355,10 +363,17 @@ export function applyLoanProducts(products: Array<{
         lateFee: { ...program.fees.lateFee, type: "percentage", value: Number(product.lateFeePercent) },
       },
     };
+    appliedAny = true;
   }
-  const personal = config.loanPrograms.PERSONAL;
-  config.loanLimits = { ...personal.loanLimits };
-  config.tenures = personal.tenures.slice();
+  // Only overwrite the global config.loanLimits if we actually applied a
+  // PERSONAL product. Otherwise leave the env-default / localStorage-overridden
+  // values intact so the borrower doesn't see a stale seeded ₦50,000 from
+  // the backend when the admin has set a different value.
+  if (appliedAny) {
+    const personal = config.loanPrograms.PERSONAL;
+    config.loanLimits = { ...personal.loanLimits };
+    config.tenures = personal.tenures.slice();
+  }
 }
 
 // Re-export base for the admin UI (to show env-default values)

@@ -394,13 +394,13 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }));
   }
 
-  async function withSaveTimeout<T>(operation: Promise<T>, timeoutMs = 20000): Promise<T> {
+  async function withSaveTimeout<T>(operation: Promise<T>, timeoutMs = 60000): Promise<T> {
     let timeoutId: number | undefined;
     try {
       return await Promise.race([
         operation,
         new Promise<T>((_, reject) => {
-          timeoutId = window.setTimeout(() => reject(new Error("Saving configuration timed out. Please try again.")), timeoutMs);
+          timeoutId = window.setTimeout(() => reject(new Error("Saving configuration timed out. The backend may be cold-starting — please try again in a moment.")), timeoutMs);
         }),
       ]);
     } finally {
@@ -456,14 +456,25 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         }]),
       ) as Record<LoanProgramKey, LoanProgramConfig>;
       overrides.loanPrograms = activePrograms;
-      saveAdminOverrides(overrides);
-      refreshConfig(overrides);
-      // Refresh the in-memory form source immediately so calculator consumers
-      // see the same limits and tenures after saving, without a reload.
+
+      // ===== Push to backend FIRST, then write to localStorage only on success =====
+      // This ensures the admin's localStorage doesn't get out of sync with the
+      // backend. If the backend PATCH fails (timeout, 404, 503, etc.), we
+      // surface the error and DON'T write to localStorage — so the admin
+      // knows the save didn't land and can retry.
+      const patchErrors: string[] = [];
       await withSaveTimeout((async () => {
         const products = (await adminListLoanProducts()).products;
         for (const [type, program] of Object.entries(activePrograms) as Array<[LoanProgramKey, LoanProgramConfig]>) {
-          const existing = products.find((product: any) => String(product.name).toUpperCase().includes(type));
+          // Match by name containing the type OR by a type tag. The seed
+          // products are named "Velo Personal Quick" / "Velo Business Boost"
+          // and the admin saves as "Personal Loan" / "Business Loan" — both
+          // contain the type keyword, so this match works for both.
+          const existing = products.find((product: any) =>
+            String(product.name).toUpperCase().includes(type)
+            || (type === "PERSONAL" && /personal/i.test(product.name))
+            || (type === "BUSINESS" && /business/i.test(product.name))
+          );
           const productInput = {
             name: `${type === "PERSONAL" ? "Personal" : "Business"} Loan`,
             minAmountNaira: program.loanLimits.min,
@@ -475,10 +486,22 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             lateFeePercent: program.fees.lateFee.type === "percentage" ? program.fees.lateFee.value : 0,
             isActive: existing?.isActive ?? true,
           };
-          if (existing) await adminPatchLoanProduct(existing.id, productInput);
-          else await adminCreateLoanProduct(productInput);
+          try {
+            if (existing) await adminPatchLoanProduct(existing.id, productInput);
+            else await adminCreateLoanProduct(productInput);
+          } catch (err) {
+            patchErrors.push(`${type}: ${err instanceof Error ? err.message : "unknown error"}`);
+          }
         }
       })());
+
+      if (patchErrors.length > 0) {
+        throw new Error(`Backend save failed for: ${patchErrors.join("; ")}. Local settings were NOT saved — please retry.`);
+      }
+
+      // Only write to localStorage + refreshConfig AFTER the backend succeeded.
+      saveAdminOverrides(overrides);
+      refreshConfig(overrides);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (error) {
