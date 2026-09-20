@@ -31,6 +31,8 @@ export type FeeKey =
 export interface FeeConfig {
   type: FeeType;
   value: number;
+  /** Whether this fee is active globally */
+  enabled?: boolean;
   /** Whether this fee should be included in the initial repayment total */
   includeUpfront: boolean;
 }
