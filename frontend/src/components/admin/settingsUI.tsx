@@ -167,7 +167,7 @@ export function NairaField({
         <input
           type="text"
           inputMode="numeric"
-          value={value.toLocaleString("en-NG")}
+          value={Number.isFinite(Number(value)) ? Number(value).toLocaleString("en-NG") : "0"}
           onChange={(e) => {
             const n = Number(e.target.value.replace(/[^0-9]/g, ""));
             onChange(Number.isFinite(n) ? n : 0);

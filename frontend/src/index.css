@@ -269,6 +269,84 @@
   }
 }
 
+/* =============================================================
+   Landing page motion system (scroll reveal + cinematic motion)
+   ============================================================= */
+@layer utilities {
+  .reveal {
+    opacity: 0;
+    transform: translateY(30px);
+    transition:
+      opacity 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+      transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: opacity, transform;
+  }
+  .reveal-left { transform: translateX(-36px); }
+  .reveal-right { transform: translateX(36px); }
+  .reveal-scale { transform: scale(0.94); }
+  .reveal-zoom-out { transform: scale(1.06); }
+  .reveal.reveal-visible {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Cinematic slow-zoom (Ken Burns) for photography */
+  @keyframes kenburns {
+    0% { transform: scale(1.02) translate(0, 0); }
+    100% { transform: scale(1.14) translate(-1.5%, -2%); }
+  }
+  .animate-kenburns {
+    animation: kenburns 18s ease-in-out infinite alternate;
+  }
+  .animate-kenburns-fast {
+    animation: kenburns 11s ease-in-out infinite alternate;
+  }
+
+  /* Slow spin for decorative rings */
+  @keyframes spinSlow360 {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .animate-spin-slower { animation: spinSlow360 28s linear infinite; }
+
+  /* Animated vertical ticker line (hero scroll hint) */
+  @keyframes scrollHint {
+    0% { transform: translateY(-100%); }
+    60%, 100% { transform: translateY(220%); }
+  }
+  .animate-scroll-hint { animation: scrollHint 2.2s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
+
+  /* Accordion smooth open/close */
+  .accordion-panel {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .accordion-panel.open { grid-template-rows: 1fr; }
+  .accordion-panel > div { overflow: hidden; }
+
+  /* Respect users who prefer reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .reveal {
+      opacity: 1 !important;
+      transform: none !important;
+      transition: none !important;
+    }
+    .animate-kenburns,
+    .animate-kenburns-fast,
+    .animate-float,
+    .animate-float-slow,
+    .animate-marquee,
+    .animate-bounce-subtle,
+    .animate-pulse-glow,
+    .animate-spin-slower,
+    .animate-scroll-hint {
+      animation: none !important;
+    }
+    html { scroll-behavior: auto; }
+  }
+}
+
 /* Print-friendly styles for the loan agreement */
 @media print {
   @page {

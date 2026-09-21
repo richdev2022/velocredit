@@ -131,6 +131,43 @@ export interface AppConfig {
 }
 
 /**
+ * Coerce possibly-corrupt loan-limit values (null / undefined / NaN / negative,
+ * e.g. written to localStorage by an older buggy build or returned by a bad API
+ * response) into finite, ordered numbers with env-default fallbacks.
+ *
+ * Every consumer of `config.loanLimits` — admin console, borrower calculator,
+ * loan application — goes through this, so a single corrupt key can no longer
+ * crash the Admin page (TypeError: Cannot read properties of undefined reading
+ * 'toLocaleString') or render ₦NaN on the borrower side.
+ */
+export function sanitizeLoanLimits(limits: Partial<LoanLimits> | null | undefined): LoanLimits {
+  const fb = baseConfig.loanLimits;
+  const num = (v: unknown, fallback: number): number => {
+    // null/undefined/"" are "missing" — Number(null) is 0, which would
+    // otherwise sneak past the finite check as a bogus ₦0 limit.
+    if (v === null || v === undefined || v === "") return fallback;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  };
+  const rawMin = num(limits?.min, fb.min);
+  const rawMax = num(limits?.max, fb.max);
+  // Enforce ordering invariants: min <= max
+  const min = Math.min(rawMin, rawMax);
+  const max = Math.max(rawMin, rawMax);
+  let defaultAmount = num(limits?.defaultAmount, fb.defaultAmount);
+  if (defaultAmount < min) defaultAmount = min;
+  if (defaultAmount > max) defaultAmount = max;
+  return { min, max, defaultAmount };
+}
+
+/** Safe naira formatter — never throws, falls back to a dash for bad input. */
+export function safeNaira(v: unknown): string {
+  if (v === null || v === undefined) return "—";
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString() : "—";
+}
+
+/**
  * Resolve the effective FeeConfiguration for a given tenure (in days).
  * Merges global fees with any per-tenure overrides.
  */
@@ -227,7 +264,9 @@ function mergeTenureFees(base: TenureFeeOverrides, overrides?: TenureFeeOverride
 function buildProgram(base: LoanProgramConfig, override?: Partial<LoanProgramConfig>, globalLimits?: LoanLimits): LoanProgramConfig {
   return {
     ...base,
-    loanLimits: globalLimits ?? { ...base.loanLimits, ...(override?.loanLimits || {}) },
+    loanLimits: globalLimits
+      ? sanitizeLoanLimits(globalLimits)
+      : sanitizeLoanLimits({ ...base.loanLimits, ...(override?.loanLimits || {}) }),
     tenures: override?.tenures && override.tenures.length > 0 ? override.tenures : base.tenures,
     fees: {
       interest: { ...base.fees.interest, ...(override?.fees?.interest || {}) },
@@ -276,7 +315,7 @@ const basePrograms: Record<LoanProgramKey, LoanProgramConfig> = {
 baseConfig.loanPrograms = basePrograms;
 
 export function getEffectiveConfig(overrides: AdminConfigOverride = loadAdminOverrides()): AppConfig {
-  const loanLimits = { ...baseConfig.loanLimits, ...(overrides.loanLimits || {}) };
+  const loanLimits = sanitizeLoanLimits({ ...baseConfig.loanLimits, ...(overrides.loanLimits || {}) });
   const eff: AppConfig = {
     ...baseConfig,
     loanLimits,
@@ -351,7 +390,7 @@ export function applyLoanProducts(products: Array<{
     }
     config.loanPrograms[type] = {
       ...program,
-      loanLimits: limits,
+      loanLimits: sanitizeLoanLimits(limits),
       // Products expose a default tenure, not the complete admin-configured
       // tenor list. Keep the configured list so calculator options and
       // validation remain consistent with admin settings.
@@ -371,7 +410,7 @@ export function applyLoanProducts(products: Array<{
   // the backend when the admin has set a different value.
   if (appliedAny) {
     const personal = config.loanPrograms.PERSONAL;
-    config.loanLimits = { ...personal.loanLimits };
+    config.loanLimits = sanitizeLoanLimits(personal.loanLimits);
     config.tenures = personal.tenures.slice();
   }
 }
@@ -386,7 +425,7 @@ export { baseConfig };
 export function refreshConfig(overrides: AdminConfigOverride = loadAdminOverrides()): void {
   const fresh = getEffectiveConfig(overrides);
   Object.assign(config, fresh);
-  config.loanLimits = { ...fresh.loanLimits };
+  config.loanLimits = sanitizeLoanLimits(fresh.loanLimits);
   config.tenures = fresh.tenures.slice();
   config.fees = { ...fresh.fees };
   config.tenureFees = { ...fresh.tenureFees };
@@ -412,18 +451,21 @@ export function validateConfig(): ConfigError[] {
   const { loanLimits, fees, tenures } = config;
 
 
-  if (!(loanLimits.min < loanLimits.max)) {
+  const nMin = Number(loanLimits?.min);
+  const nMax = Number(loanLimits?.max);
+  const nDefault = Number(loanLimits?.defaultAmount);
+  if (!Number.isFinite(nMin) || !Number.isFinite(nMax) || !(nMin < nMax)) {
     errors.push({
       key: "LOAN_LIMITS",
-      message: `Minimum loan amount (₦${loanLimits.min.toLocaleString()}) must be less than maximum loan amount (₦${loanLimits.max.toLocaleString()}).`,
+      message: `Minimum loan amount (₦${safeNaira(nMin)}) must be less than maximum loan amount (₦${safeNaira(nMax)}).`,
       severity: "error",
     });
   }
 
-  if (loanLimits.defaultAmount < loanLimits.min || loanLimits.defaultAmount > loanLimits.max) {
+  if (Number.isFinite(nMin) && Number.isFinite(nMax) && Number.isFinite(nDefault) && (nDefault < nMin || nDefault > nMax)) {
     errors.push({
       key: "LOAN_DEFAULT",
-      message: `Default loan amount (₦${loanLimits.defaultAmount.toLocaleString()}) must be between min (₦${loanLimits.min.toLocaleString()}) and max (₦${loanLimits.max.toLocaleString()}).`,
+      message: `Default loan amount (₦${safeNaira(nDefault)}) must be between min (₦${safeNaira(nMin)}) and max (₦${safeNaira(nMax)}).`,
       severity: "error",
     });
   }
