@@ -17,6 +17,12 @@ export interface LoanProgramConfig {
   fees: FeeConfiguration;
   tenureFees: TenureFeeOverrides;
   collateral: CollateralConfig;
+  /**
+   * Name of the backend loan product whose terms are currently applied to
+   * this program (set by applyLoanProducts). Lets the borrower UI show WHICH
+   * product drives the amounts/fees instead of an anonymous mix.
+   */
+  productName?: string;
 }
 
 export type LoanProgramOverrides = Partial<Record<LoanProgramKey, Partial<LoanProgramConfig>>>;

@@ -67,6 +67,47 @@ describe("applyLoanProducts (admin-set limits reaching the borrower)", () => {
     ]);
     expect(config.loanLimits).toEqual(before);
   });
+
+  it("duplicate rows with the same id must not resurrect stale seed values (production ₦200-vs-₦50,000 regression)", () => {
+    refreshTestConfig();
+    // Exactly what production once served: the admin-renamed product (v2) AND
+    // a stale pre-rename copy with the SAME id and OLD seed terms (v1), listed
+    // AFTER the admin row. The stale copy must never win.
+    applyLoanProducts([
+      { id: "prod-1", name: "Personal Loan", minAmountNaira: 200, maxAmountNaira: 30_000_000, interestRatePercent: 0.9, processingFeePercent: 0, lateFeePercent: 1, version: 2, updatedAt: "2026-09-21T07:36:48.403Z", isActive: true },
+      { id: "prod-1", name: "Velo Personal Quick", minAmountNaira: 50_000, maxAmountNaira: 2_000_000, interestRatePercent: 18, processingFeePercent: 2, lateFeePercent: 1, version: 1, updatedAt: "2026-09-13T11:11:53.558Z", isActive: true },
+      { id: "prod-2", name: "Business Loan", minAmountNaira: 200, maxAmountNaira: 30_000_000, interestRatePercent: 0.9, processingFeePercent: 0, lateFeePercent: 1, version: 2, updatedAt: "2026-09-21T07:36:50.940Z", isActive: true },
+      { id: "prod-2", name: "Velo Business Boost", minAmountNaira: 500_000, maxAmountNaira: 10_000_000, interestRatePercent: 22, processingFeePercent: 3, lateFeePercent: 0.5, version: 1, updatedAt: "2026-09-13T11:11:53.558Z", isActive: true },
+    ]);
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(200);
+    expect(config.loanPrograms.PERSONAL.loanLimits.max).toBe(30_000_000);
+    expect(config.loanPrograms.PERSONAL.fees.interest.value).toBe(0.9);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Personal Loan");
+    expect(config.loanPrograms.BUSINESS.loanLimits.min).toBe(200);
+    expect(config.loanPrograms.BUSINESS.fees.interest.value).toBe(0.9);
+    expect(config.loanLimits.min).toBe(200);
+  });
+
+  it("distinct products for the same type resolve to the highest version / newest updatedAt", () => {
+    refreshTestConfig();
+    applyLoanProducts([
+      { id: "a", name: "Personal Loan", minAmountNaira: 1_000, maxAmountNaira: 5_000, interestRatePercent: 5, processingFeePercent: 1, lateFeePercent: 1, version: 2, updatedAt: "2026-01-01T00:00:00.000Z", isActive: true },
+      { id: "b", name: "Velo Personal Quick", minAmountNaira: 2_000, maxAmountNaira: 9_000, interestRatePercent: 8, processingFeePercent: 1, lateFeePercent: 1, version: 3, updatedAt: "2026-02-01T00:00:00.000Z", isActive: true },
+    ]);
+    // Higher version (3) beats the other product even though it is listed last.
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(2_000);
+    expect(config.loanPrograms.PERSONAL.loanLimits.max).toBe(9_000);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Velo Personal Quick");
+  });
+
+  it("inactive products are never applied", () => {
+    refreshTestConfig();
+    const before = { ...config.loanPrograms.PERSONAL.loanLimits };
+    applyLoanProducts([
+      { id: "x", name: "Personal Loan", minAmountNaira: 123, maxAmountNaira: 4_567, interestRatePercent: 3, processingFeePercent: 1, lateFeePercent: 1, version: 9, isActive: false },
+    ]);
+    expect(config.loanPrograms.PERSONAL.loanLimits).toEqual(before);
+  });
 });
 
 describe("sanitizeLoanLimits (Admin toLocaleString crash regression)", () => {
