@@ -799,8 +799,38 @@ export function rebuildIndexes(): void {
   for (const acr of accountChangeRequests) appendToMultiIndex(indexes.accountChangeRequestsByUserId, acr.userId, acr);
 }
 
-function syncAfterMutation<T>(key: StoreKey, _values: T[]): void {
+const lastIndexedIndex = {} as Record<StoreKey, number | undefined>;
+
+function syncAfterMutation<T>(key: StoreKey, _values: T[], property?: string | symbol, priorLength?: number): void {
   if (hydrating) return;
+  // Hot path: appending a brand-new tail element (arr.push(x), arr[arr.length] = x).
+  // Index just the new item instead of rebuilding every index across every
+  // collection — the old full rebuild per push made every mutation O(total rows).
+  if (
+    typeof property === "string" &&
+    /^\d+$/.test(property) &&
+    priorLength !== undefined &&
+    Number(property) === priorLength
+  ) {
+    const arr = rawState[key] as T[];
+    const item = arr[Number(property)];
+    if (item !== undefined) {
+      indexSingleItem(key, item);
+      lastIndexedIndex[key] = Number(property);
+      requestPersist(key);
+      return;
+    }
+  }
+  // Length changes, replacements, deletes and bulk splices: do the safe full rebuild.
+  if (property === "length" && priorLength !== undefined) {
+    const arr = rawState[key] as unknown[];
+    const newLength = arr.length;
+    if (newLength === priorLength) return; // no-op (e.g. the trailing length set of push)
+    if (newLength === priorLength + 1 && lastIndexedIndex[key] === newLength - 1) {
+      return; // tail of a push — the item was already indexed above
+    }
+  }
+  lastIndexedIndex[key] = undefined;
   rebuildIndexes();
   requestPersist(key);
 }
@@ -828,6 +858,129 @@ function wrapNested<T>(value: T, key: StoreKey): T {
   return proxy as T;
 }
 
+// Mirrors the per-item work of rebuildIndexes() for a single appended element.
+function indexSingleItem<T>(key: StoreKey, item: T): void {
+  const wrapped = wrapNested(item, key);
+  switch (key) {
+    case "users": {
+      const u = wrapped as unknown as User;
+      const emailKey = u.email.toLowerCase();
+      if (!indexes.usersByEmail.has(emailKey)) indexes.usersByEmail.set(emailKey, u);
+      break;
+    }
+    case "wallets": {
+      const w = wrapped as unknown as Wallet;
+      if (!indexes.walletsByUserId.has(w.userId)) indexes.walletsByUserId.set(w.userId, w);
+      break;
+    }
+    case "kycCases": {
+      const k = wrapped as unknown as KycCase;
+      if (!indexes.kycCasesByUserId.has(k.userId)) indexes.kycCasesByUserId.set(k.userId, k);
+      break;
+    }
+    case "ledgerEntries":
+      appendToMultiIndex(indexes.ledgerEntriesByWalletId, (wrapped as unknown as LedgerEntry).walletId, wrapped as unknown as LedgerEntry);
+      break;
+    case "walletTransactions": {
+      const t = wrapped as unknown as WalletTransaction;
+      appendToMultiIndex(indexes.walletTransactionsByUserId, t.userId, t);
+      if (t.txRef) indexes.walletTransactionsByTxRef.set(t.txRef, t);
+      break;
+    }
+    case "identityVerificationEvents":
+      appendToMultiIndex(indexes.identityVerificationEventsByKycCaseId, (wrapped as unknown as IdentityVerificationEvent).kycCaseId, wrapped as unknown as IdentityVerificationEvent);
+      break;
+    case "documents":
+      appendToMultiIndex(indexes.documentsByUserId, (wrapped as unknown as Document).userId, wrapped as unknown as Document);
+      break;
+    case "payoutAccounts":
+      appendToMultiIndex(indexes.payoutAccountsByUserId, (wrapped as unknown as PayoutAccount).userId, wrapped as unknown as PayoutAccount);
+      break;
+    case "investments": {
+      const inv = wrapped as unknown as Investment;
+      appendToMultiIndex(indexes.investmentsByInvestorId, inv.investorId, inv);
+      if (inv.planId) appendToMultiIndex(indexes.investmentsByPlanId, inv.planId, inv);
+      break;
+    }
+    case "loanApplications":
+      appendToMultiIndex(indexes.loanApplicationsByBorrowerId, (wrapped as unknown as LoanApplication).borrowerId, wrapped as unknown as LoanApplication);
+      break;
+    case "loans": {
+      const ln = wrapped as unknown as Loan;
+      appendToMultiIndex(indexes.loansByBorrowerId, ln.borrowerId, ln);
+      appendToMultiIndex(indexes.loansByStatus, String(ln.status), ln);
+      indexes.loansByApplicationId.set(ln.applicationId, ln);
+      break;
+    }
+    case "loanSchedules":
+      appendToMultiIndex(indexes.loanSchedulesByLoanId, (wrapped as unknown as LoanSchedule).loanId, wrapped as unknown as LoanSchedule);
+      break;
+    case "repayments": {
+      const r = wrapped as unknown as Repayment;
+      appendToMultiIndex(indexes.repaymentsByLoanId, r.loanId, r);
+      appendToMultiIndex(indexes.repaymentsByBorrowerId, r.borrowerId, r);
+      break;
+    }
+    case "payouts": {
+      const p = wrapped as unknown as Payout;
+      appendToMultiIndex(indexes.payoutsByUserId, p.userId, p);
+      if (p.investmentId) indexes.payoutsByInvestmentId.set(p.investmentId, p);
+      break;
+    }
+    case "creditHistory":
+      appendToMultiIndex(indexes.creditHistoryByUserId, (wrapped as unknown as CreditHistoryEvent).userId, wrapped as unknown as CreditHistoryEvent);
+      break;
+    case "creditScores":
+      appendToMultiIndex(indexes.creditScoresByUserId, (wrapped as unknown as CreditScore).userId, wrapped as unknown as CreditScore);
+      break;
+    case "creditReports":
+      appendToMultiIndex(indexes.creditReportsByUserId, (wrapped as unknown as CreditReport).userId, wrapped as unknown as CreditReport);
+      break;
+    case "notifications": {
+      const n = wrapped as unknown as Notification;
+      appendToMultiIndex(indexes.notificationsByUserId, n.userId, n);
+      if (n.idempotencyKey) indexes.notificationsByIdempotencyKey.set(n.idempotencyKey, n);
+      break;
+    }
+    case "auditLogs": {
+      const a = wrapped as unknown as AuditLog;
+      if (a.userId) appendToMultiIndex(indexes.auditLogsByUserId, a.userId, a);
+      appendToMultiIndex(indexes.auditLogsByAction, a.action, a);
+      break;
+    }
+    case "adminLedger":
+      appendToMultiIndex(indexes.adminLedgerByEntryType, (wrapped as unknown as AdminLedgerEntry).entryType, wrapped as unknown as AdminLedgerEntry);
+      break;
+    case "investorWithdrawals":
+      appendToMultiIndex(indexes.investorWithdrawalsByInvestorId, (wrapped as unknown as InvestorWithdrawal).investorId, wrapped as unknown as InvestorWithdrawal);
+      break;
+    case "disbursementAccounts":
+      appendToMultiIndex(indexes.disbursementAccountsByBorrowerId, (wrapped as unknown as DisbursementAccount).borrowerId, wrapped as unknown as DisbursementAccount);
+      break;
+    case "loanDisbursements":
+      appendToMultiIndex(indexes.loanDisbursementsByLoanId, (wrapped as unknown as LoanDisbursement).loanId, wrapped as unknown as LoanDisbursement);
+      break;
+    case "consents":
+      appendToMultiIndex(indexes.consentsByUserId, (wrapped as unknown as Consent).userId, wrapped as unknown as Consent);
+      break;
+    case "otpChallenges":
+      appendToMultiIndex(indexes.otpChallengesByUserId, (wrapped as unknown as OtpChallenge).userId, wrapped as unknown as OtpChallenge);
+      break;
+    case "passwordResetTokens":
+      appendToMultiIndex(indexes.passwordResetTokensByUserId, (wrapped as unknown as PasswordResetToken).userId, wrapped as unknown as PasswordResetToken);
+      break;
+    case "providerEvents":
+      indexes.providerEventsByEventKey.set((wrapped as unknown as ProviderWebhookEvent).eventKey, wrapped as unknown as ProviderWebhookEvent);
+      break;
+    case "accountChangeRequests":
+      appendToMultiIndex(indexes.accountChangeRequestsByUserId, (wrapped as unknown as AccountChangeRequest).userId, wrapped as unknown as AccountChangeRequest);
+      break;
+    default:
+      // loanProducts, investmentPlans, platformSettings, applicationDrafts are not indexed.
+      break;
+  }
+}
+
 function createPersistentArray<T>(key: StoreKey): T[] {
   const target: T[] = [];
   rawState[key] = target;
@@ -836,13 +989,14 @@ function createPersistentArray<T>(key: StoreKey): T[] {
       return wrapNested(Reflect.get(array, property, receiver), key);
     },
     set(array, property, value, receiver) {
+      const priorLength = array.length;
       const result = Reflect.set(array, property, wrapNested(value, key), receiver);
-      syncAfterMutation(key, array);
+      syncAfterMutation(key, array, property, priorLength);
       return result;
     },
     deleteProperty(array, property) {
       const result = Reflect.deleteProperty(array, property);
-      syncAfterMutation(key, array);
+      syncAfterMutation(key, array, property);
       return result;
     },
   });
@@ -903,13 +1057,73 @@ async function persistStoreNow(): Promise<EntityCounts> {
   const snap = snapshotStore();
   const changedKeys = nestedDirty || dirtyKeys.size === 0 ? [...storeKeys] : [...dirtyKeys];
   const counts = await decomposeAndUpsertAll(sql, snap, changedKeys);
-  await sql.query(
-    "INSERT INTO runtime_state (id, state) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET state = EXCLUDED.state, updated_at = CURRENT_TIMESTAMP",
-    ["default", JSON.stringify(snap)]
-  );
   dirtyKeys.clear();
   nestedDirty = false;
+  // The full-state JSONB mirror in runtime_state is a boot FALLBACK only (the
+  // relational tables are the primary source). Serialising and shipping the
+  // entire store on every mutation made persists grow unboundedly with data
+  // volume — now it is written in the background at most once per minute.
+  scheduleStateSnapshot();
   return counts;
+}
+
+const STATE_SNAPSHOT_MIN_INTERVAL_MS = 60_000;
+let lastSnapshotAt = 0;
+let snapshotInFlight: Promise<void> | undefined;
+let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+
+function writeStateSnapshot(snap: Record<StoreKey, unknown[]>): Promise<void> {
+  if (!sql) return Promise.resolve();
+  return sql.query(
+    "INSERT INTO runtime_state (id, state) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET state = EXCLUDED.state, updated_at = CURRENT_TIMESTAMP",
+    ["default", JSON.stringify(snap)]
+  ).then(() => undefined);
+}
+
+function scheduleStateSnapshot(force = false): void {
+  if (!sql) return;
+  const elapsed = Date.now() - lastSnapshotAt;
+  if (!force && elapsed < STATE_SNAPSHOT_MIN_INTERVAL_MS) {
+    if (!snapshotTimer && snapshotInFlight === undefined) {
+      snapshotTimer = setTimeout(() => {
+        snapshotTimer = undefined;
+        scheduleStateSnapshot(true);
+      }, Math.max(1_000, STATE_SNAPSHOT_MIN_INTERVAL_MS - elapsed));
+      (snapshotTimer as unknown as { unref?: () => void }).unref?.();
+    }
+    return;
+  }
+  if (snapshotInFlight) return;
+  lastSnapshotAt = Date.now();
+  const snap = snapshotStore();
+  snapshotInFlight = writeStateSnapshot(snap).catch((error) => {
+    console.error("[store] runtime_state snapshot write failed (will retry on next persist):", error);
+  }).finally(() => {
+    snapshotInFlight = undefined;
+  });
+}
+
+// Safety net: if a persist failed or was skipped (e.g. the DB was unreachable),
+// retry in the background so in-memory state eventually converges to disk
+// without any request having to wait for it.
+let sweeperStarted = false;
+function startPersistSweeper(): void {
+  if (sweeperStarted || !sql) return;
+  sweeperStarted = true;
+  const dirtySweep = setInterval(() => {
+    if (hydrating) return;
+    if (dirtyKeys.size > 0 || nestedDirty) {
+      void persistStore().catch((error) => {
+        console.error("[store/sweeper] PostgreSQL persistence retry failed:", error);
+      });
+    }
+  }, 20_000);
+  (dirtySweep as unknown as { unref?: () => void }).unref?.();
+  const snapshotSweep = setInterval(() => {
+    if (hydrating) return;
+    scheduleStateSnapshot(true);
+  }, 120_000);
+  (snapshotSweep as unknown as { unref?: () => void }).unref?.();
 }
 
 export async function persistStore(): Promise<EntityCounts> {
@@ -1002,6 +1216,8 @@ async function doInitializeStore(): Promise<void> {
   } catch (e) {
     console.error("[store/initializeStore] post-load full decompose pass FAILED:", e);
   }
+
+  startPersistSweeper();
 
   dirtyKeys.clear();
   nestedDirty = false;

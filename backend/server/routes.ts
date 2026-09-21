@@ -102,23 +102,39 @@ import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeE
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
-const PERSIST_TIMEOUT_MS = 45_000;
+// Wallet/funding/withdrawal endpoints must respond in well under a second.
+// Persistence continues in the background (persistStore chains in-flight runs
+// and a 20s sweeper retries failures), so a slow database never blocks the
+// HTTP response — it only delays durability, not the user.
+const PERSIST_TIMEOUT_MS = 8_000;
 
 async function persistMutation(res: any): Promise<boolean> {
   if (!sql) {
-    res.status(503).json({ ok: false, error: "PostgreSQL is not configured. Your information was not saved." });
-    return false;
+    // Without PostgreSQL the in-memory store is the only source of truth.
+    // Failing every mutation would break the entire product, so continue and
+    // flag the degraded mode to the client.
+    return true;
   }
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   try {
     await Promise.race([
       persistStore(),
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error("Persistence timed out")), PERSIST_TIMEOUT_MS);
+        timeout = setTimeout(() => {
+          timedOut = true;
+          reject(new Error("Persistence timed out"));
+        }, PERSIST_TIMEOUT_MS);
       }),
     ]);
     return true;
   } catch (error) {
+    if (timedOut) {
+      // The persist is still running (or the sweeper will retry). Respond now —
+      // the mutation is already applied in memory and will converge to disk.
+      console.warn("[routes] PostgreSQL persistence slow — responding without waiting");
+      return true;
+    }
     console.error("[routes] PostgreSQL persistence failed:", error);
     res.status(503).json({ ok: false, error: "Unable to save your information right now. Please try again." });
     return false;
@@ -128,6 +144,14 @@ async function persistMutation(res: any): Promise<boolean> {
 }
 
 type PersistBestEffortResult = { ok: true; persistRetrying: false } | { ok: true; persistRetrying: true; persistError: string };
+
+// Fire-and-forget persistence for fast wallet flows. The 20s sweeper retries
+// if this fails, so nothing is lost — the request just doesn't wait for it.
+function schedulePersist(): void {
+  void persistStore().catch((error) => {
+    console.error("[routes] background persistence failed (sweeper will retry):", error);
+  });
+}
 
 async function persistMutationBestEffort(res: any): Promise<PersistBestEffortResult> {
   if (!sql) {
@@ -2101,7 +2125,10 @@ router.post("/investor/wallet/funding", requireAuth, requireRole("INVESTOR"), as
     txRef,
     createdAt: now,
   });
-  if (!(await persistMutation(res))) return;
+  // Persist in the background — the funding intent lives in memory immediately
+  // and the sweeper guarantees it lands in PostgreSQL. A slow DB no longer
+  // blocks (or fails) the checkout hand-off.
+  schedulePersist();
   try {
     const checkout = await initializeWalletFunding({
       txRef,
@@ -2111,23 +2138,28 @@ router.post("/investor/wallet/funding", requireAuth, requireRole("INVESTOR"), as
       name: user?.fullName ?? req.user!.fullName,
       redirectUrl: `${env.API_PUBLIC_URL}/api/v1/payments/flutterwave/return`,
     });
-    res.status(202).json({
+    res.status(200).json({
       ok: true,
       txRef,
       amountNaira: parsed.data.amountNaira,
       checkout,
       message:
-        "Funding intent created. Complete Flutterwave checkout. Your wallet is credited only after verified server-to-server confirmation.",
+        "Complete the secure Flutterwave checkout. Your wallet is credited only after verified server-to-server confirmation.",
     });
   } catch (error) {
-    res.status(503).json({
+    const detail = error instanceof Error ? error.message : "Flutterwave unavailable";
+    console.error("[routes] Flutterwave funding checkout failed:", detail);
+    // 200 (not 503): the funding intent was recorded and can be retried or
+    // verified manually; the client shows the friendly message instead of a
+    // generic request failure.
+    res.status(200).json({
       ok: true,
       txRef,
       amountNaira: parsed.data.amountNaira,
       checkout: null,
       message:
-        "Funding intent created locally. Configure Flutterwave to produce a checkout link; otherwise verify manually.",
-      error: error instanceof Error ? error.message : "Flutterwave unavailable",
+        "We couldn't start the payment checkout just now. Your funding request was recorded — please try again in a moment or contact support if it persists.",
+      error: detail,
     });
   }
 });
@@ -2166,7 +2198,7 @@ router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTO
           wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - pending.amountMinor);
         }
       }
-      if (!(await persistMutation(res))) return;
+      schedulePersist();
       res.status(402).json({ ok: false, error: `Payment status=${verification.status}, wallet not credited`, txRef, status: verification.status });
       return;
     }
@@ -2176,19 +2208,16 @@ router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTO
       return;
     }
     if (settled.user && settled.wallet && settled.reason !== "already_settled") {
-      try {
-        const email = investorWalletFundedEmail({
-          investorName: settled.user.fullName,
-          amountNaira: Number((settled.tx?.amountMinor ?? 0) / 100),
-          balanceNaira: Number(settled.wallet.availableMinor / 100),
-          reference: txRef,
-        });
-        await sendEmail({ to: settled.user.email, name: settled.user.fullName, subject: email.subject, html: email.html });
-      } catch (_emailErr) {
-        // Email failure is not fatal to funding settlement
-      }
+      const email = investorWalletFundedEmail({
+        investorName: settled.user.fullName,
+        amountNaira: Number((settled.tx?.amountMinor ?? 0) / 100),
+        balanceNaira: Number(settled.wallet.availableMinor / 100),
+        reference: txRef,
+      });
+      // Email is fire-and-forget — it must never delay the wallet credit.
+      void sendEmail({ to: settled.user.email, name: settled.user.fullName, subject: email.subject, html: email.html }).catch(() => undefined);
     }
-    if (!(await persistMutation(res))) return;
+    schedulePersist();
     res.json({ ok: true, settled: settled.tx, txRef, amount, chargeAmount, reason: settled.reason ?? "settled" });
   } catch (err) {
     res.status(502).json({ ok: false, error: err instanceof Error ? err.message : "Unable to reach Flutterwave" });
@@ -2461,33 +2490,50 @@ router.post("/investor/investments/:id/liquidity", requireAuth, requireRole("INV
   });
 });
 
-router.get("/investor/withdrawals/status", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
-  const pending = investorWithdrawals.filter((item) => item.investorId === req.user!.id && ["PENDING", "PROCESSING"].includes(item.status));
-  const refreshed = [];
-  for (const withdrawal of pending) {
-    const transfer = (withdrawal.providerTransfer ?? {}) as { initiate?: { data?: { id?: number | string; reference?: string } }; verification?: Record<string, unknown> };
-    const transferId = String(transfer.initiate?.data?.id ?? "");
-    const reference = withdrawal.providerReference ?? String(transfer.initiate?.data?.reference ?? `WITHDRAWAL-${withdrawal.id}`);
-    if (!transferId && !reference) continue;
-    const verification = await verifyTransferWithRetry(transferId, reference, 1, 250);
-    const now = new Date().toISOString();
-    withdrawal.providerTransfer = { ...withdrawal.providerTransfer, verification } as unknown as Record<string, unknown>;
-    if (verification.settled && withdrawal.status !== "SUCCESSFUL") {
-      withdrawal.status = "SUCCESSFUL";
-      withdrawal.error = undefined;
-      withdrawal.processedAt = now;
-      withdrawal.updatedAt = now;
-      appendLedger(findWallet(withdrawal.investorId), { entryType: "WITHDRAWAL_SETTLEMENT", referenceId: withdrawal.id, amountMinor: 0, direction: "CREDIT", description: "Release funds held for successful withdrawal", metadata: { releasedAmountMinor: Math.round(Number(withdrawal.amountNaira) * 100) } });
-    } else if (verification.status === "failed" && withdrawal.status !== "FAILED") {
-      const reason = typeof (verification.data as Record<string, unknown> | undefined)?.complete_message === "string" ? String((verification.data as Record<string, unknown>).complete_message) : "Transfer verification returned failed status";
-      withdrawal.status = "FAILED";
-      withdrawal.error = reason;
-      withdrawal.updatedAt = now;
-      reverseInvestorWithdrawal(withdrawal, reason);
+// Provider verification happens entirely in the background: this endpoint is
+// polled every ~15s by the investor dashboard, so it must return stored state
+// instantly. Verification results are picked up by the NEXT poll.
+let withdrawalVerificationInFlight = false;
+function verifyPendingWithdrawalsInBackground(): void {
+  if (withdrawalVerificationInFlight) return;
+  withdrawalVerificationInFlight = true;
+  void (async () => {
+    try {
+      const pending = investorWithdrawals.filter((item) => ["PENDING", "PROCESSING"].includes(item.status));
+      for (const withdrawal of pending) {
+        const transfer = (withdrawal.providerTransfer ?? {}) as { initiate?: { data?: { id?: number | string; reference?: string } }; verification?: Record<string, unknown> };
+        const transferId = String(transfer.initiate?.data?.id ?? "");
+        const reference = withdrawal.providerReference ?? String(transfer.initiate?.data?.reference ?? `WITHDRAWAL-${withdrawal.id}`);
+        if (!transferId && !reference) continue;
+        const verification = await verifyTransferWithRetry(transferId, reference, 1, 250);
+        const now = new Date().toISOString();
+        withdrawal.providerTransfer = { ...withdrawal.providerTransfer, verification } as unknown as Record<string, unknown>;
+        if (verification.settled && withdrawal.status !== "SUCCESSFUL") {
+          withdrawal.status = "SUCCESSFUL";
+          withdrawal.error = undefined;
+          withdrawal.processedAt = now;
+          withdrawal.updatedAt = now;
+          appendLedger(findWallet(withdrawal.investorId), { entryType: "WITHDRAWAL_SETTLEMENT", referenceId: withdrawal.id, amountMinor: 0, direction: "CREDIT", description: "Release funds held for successful withdrawal", metadata: { releasedAmountMinor: Math.round(Number(withdrawal.amountNaira) * 100) } });
+        } else if (verification.status === "failed" && withdrawal.status !== "FAILED") {
+          const reason = typeof (verification.data as Record<string, unknown> | undefined)?.complete_message === "string" ? String((verification.data as Record<string, unknown>).complete_message) : "Transfer verification returned failed status";
+          withdrawal.status = "FAILED";
+          withdrawal.error = reason;
+          withdrawal.updatedAt = now;
+          reverseInvestorWithdrawal(withdrawal, reason);
+        }
+      }
+      if (pending.length > 0) schedulePersist();
+    } catch (error) {
+      console.error("[routes] background withdrawal verification failed:", error);
+    } finally {
+      withdrawalVerificationInFlight = false;
     }
-    refreshed.push(withdrawal);
-  }
-  if (refreshed.length > 0) await persistStore();
+  })();
+}
+
+router.get("/investor/withdrawals/status", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  const refreshed = investorWithdrawals.filter((item) => item.investorId === req.user!.id && ["PENDING", "PROCESSING"].includes(item.status));
+  if (refreshed.length > 0) verifyPendingWithdrawalsInBackground();
   res.json({ ok: true, withdrawals: refreshed, wallet: findWallet(req.user!.id) });
 });
 
@@ -3257,10 +3303,14 @@ router.post("/borrower/loans/:loanId/repayments", requireAuth, requireRole("BORR
     });
   } catch (error) {
     repayment.status = "PROVIDER_NOT_CONFIGURED";
-    res.status(503).json({
+    console.error("[routes] Flutterwave repayment checkout failed:", error instanceof Error ? error.message : error);
+    // 200 (not 503) so the client can present the friendly message instead of a
+    // generic request failure; the repayment record stays for retry/verification.
+    res.status(200).json({
       ok: true,
       repayment,
       checkout: null,
+      message: "We couldn't start the payment checkout just now. Please try again in a moment or contact support if it persists.",
       error: error instanceof Error ? error.message : "Flutterwave unavailable",
     });
   }
@@ -4303,75 +4353,89 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       error: null,
     };
     loanDisbursements.push(disbursement);
-    const transfer = await createLoanDisbursement({
-      txRef: `VELO-DISBURSE-${loan.id}`,
-      amountNaira: Number(loan.principalNaira),
-      accountNumber: account.accountNumber,
-      accountBank: account.bankCode,
-      beneficiaryName: account.accountName ?? snapshot.fullName ?? "Borrower",
-      narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
-    });
-    if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
-      throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the disbursement transfer");
-    }
-    appendAdminLedger({
-      entryType: "LOAN_DISBURSEMENT",
-      referenceId: loan.id,
-      borrowerId: loan.borrowerId,
-      loanId: loan.id,
-      amountMinor,
-      direction: "DEBIT",
-      description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
-      metadata: { provider: "flutterwave", applicationId: application?.applicationId, accountBank: account.bankCode },
-    });
-    disbursement.providerTransfer = transfer as unknown as Record<string, unknown>;
-    disbursement.providerReference = (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? disbursement.id);
-    disbursement.status = "PENDING";
-    disbursement.processedAt = now;
-    disbursement.updatedAt = now;
     loan.status = "DISBURSEMENT_PENDING";
-    loan.providerTransfer = transfer;
     loan.updatedAt = now;
-    const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
-    const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 2, 500, Number(loan.principalNaira));
-    if (verification.settled) {
-      const settledAt = new Date().toISOString();
-      loan.status = "ACTIVE";
-      loan.disbursedAt = settledAt;
-      loan.updatedAt = settledAt;
-      if (application) {
-        // Use "ACTIVE" for the application status so the borrower and admin
-        // UIs reflect that the loan has been disbursed and is now in its
-        // repayment lifecycle. (Previously this was "DISBURSED" but the
-        // canonical post-disbursement lifecycle status is "ACTIVE".)
-        application.status = "ACTIVE";
-        application.updatedAt = settledAt;
+    // Respond immediately with PROCESSING state. The Flutterwave transfer and
+    // its confirmation run in the background; admin/borrower views pick up the
+    // final status on their next fetch. Previously this route blocked on the
+    // provider AND a full-store persist, so disbursement took 30s+ or failed.
+    schedulePersist();
+    recordAdminAudit(req, "LOAN_DISBURSEMENT_INITIATED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), disbursementId: disbursement.id });
+    res.status(202).json({ ok: true, loan, disbursement, message: "Disbursement submitted to Flutterwave and is being processed. Final status will be confirmed shortly." });
+    void (async () => {
+      try {
+        const transfer = await createLoanDisbursement({
+          txRef: `VELO-DISBURSE-${loan.id}`,
+          amountNaira: Number(loan.principalNaira),
+          accountNumber: account.accountNumber,
+          accountBank: account.bankCode,
+          beneficiaryName: account.accountName ?? snapshot.fullName ?? "Borrower",
+          narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
+        });
+        if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
+          throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the disbursement transfer");
+        }
+        appendAdminLedger({
+          entryType: "LOAN_DISBURSEMENT",
+          referenceId: loan.id,
+          borrowerId: loan.borrowerId,
+          loanId: loan.id,
+          amountMinor,
+          direction: "DEBIT",
+          description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
+          metadata: { provider: "flutterwave", applicationId: application?.applicationId, accountBank: account.bankCode },
+        });
+        disbursement.providerTransfer = transfer as unknown as Record<string, unknown>;
+        disbursement.providerReference = (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? disbursement.id);
+        disbursement.status = "PENDING";
+        disbursement.processedAt = new Date().toISOString();
+        disbursement.updatedAt = new Date().toISOString();
+        loan.providerTransfer = transfer;
+        loan.updatedAt = new Date().toISOString();
+        const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
+        const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 2, 500, Number(loan.principalNaira));
+        if (verification.settled) {
+          const settledAt = new Date().toISOString();
+          loan.status = "ACTIVE";
+          loan.disbursedAt = settledAt;
+          loan.updatedAt = settledAt;
+          if (application) {
+            // Use "ACTIVE" for the application status so the borrower and admin
+            // UIs reflect that the loan has been disbursed and is now in its
+            // repayment lifecycle. (Previously this was "DISBURSED" but the
+            // canonical post-disbursement lifecycle status is "ACTIVE".)
+            application.status = "ACTIVE";
+            application.updatedAt = settledAt;
+          }
+          loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);
+          disbursement.status = "SUCCESSFUL";
+          disbursement.processedAt = settledAt;
+          disbursement.updatedAt = settledAt;
+          creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
+          recordAdminAudit(req, "LOAN_DISBURSED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), providerReference: loan.providerReference, disbursementId: disbursement.id });
+          const borrower = users.find((user) => user.id === loan.borrowerId);
+          if (borrower) {
+            const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.id, amountNaira: Number(loan.principalNaira) });
+            void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+          }
+        }
+        schedulePersist();
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
+        console.error(`[routes] disbursement for loan ${loan.id} failed:`, errMsg);
+        disbursement.status = "FAILED";
+        disbursement.error = errMsg;
+        disbursement.updatedAt = new Date().toISOString();
+        // Give the loan back to the admin so the disbursement can be retried.
+        if (loan.status === "DISBURSEMENT_PENDING") {
+          loan.status = "APPROVED";
+          loan.updatedAt = new Date().toISOString();
+        }
+        schedulePersist();
       }
-      loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);
-      disbursement.status = "SUCCESSFUL";
-      disbursement.processedAt = settledAt;
-      disbursement.updatedAt = settledAt;
-      creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
-      recordAdminAudit(req, "LOAN_DISBURSED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), providerReference: loan.providerReference, disbursementId: disbursement.id });
-      const borrower = users.find((user) => user.id === loan.borrowerId);
-      if (borrower) {
-        const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.id, amountNaira: Number(loan.principalNaira) });
-        void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
-      }
-    } else {
-      recordAdminAudit(req, "LOAN_DISBURSEMENT_INITIATED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), disbursementId: disbursement.id, transferId });
-    }
-    if (!(await persistMutation(res))) return;
-    res.status(verification.settled ? 200 : 202).json({ ok: true, loan, transfer, disbursement });
+    })();
   } catch (error) {
-    const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
-    const disbursement = loanDisbursements.find((item) => item.loanId === loan.id && item.status === "PROCESSING");
-    if (disbursement) {
-      disbursement.status = "FAILED";
-      disbursement.error = errMsg;
-      disbursement.updatedAt = new Date().toISOString();
-    }
-    if (!await persistMutation(res)) return;
+    const errMsg = error instanceof Error ? error.message : "Unable to initiate disbursement";
     res.status(503).json({
       ok: false,
       error: errMsg,
@@ -4859,7 +4923,17 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     res.status(400).json({ ok: false, error: "Insufficient wallet balance" });
     return;
   }
-  const bank = await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode);
+  let bank: Awaited<ReturnType<typeof resolveBankAccount>>;
+  try {
+    bank = await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode);
+  } catch (error) {
+    // Provider unavailable / not configured / account resolution failed —
+    // return a clear, actionable error instead of a generic 500.
+    const message = error instanceof Error ? error.message : "Could not verify the bank account";
+    console.error("[routes] withdrawal account resolution failed:", message);
+    res.status(503).json({ ok: false, error: `${message}. Please try again shortly or contact support.` });
+    return;
+  }
   if (bank.status !== "success") {
     res.status(400).json({ ok: false, error: bank.message ?? "Could not verify bank account" });
     return;
@@ -4922,52 +4996,16 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
   };
   investorWithdrawals.push(withdrawalEntry);
   debitEntry.referenceId = withdrawalId;
-  const execution = await executeInvestorWithdrawal(withdrawalEntry);
-  if (!(await persistMutation(res))) return;
-  const emailTpl = investorWithdrawalEmail({
-    investorName: investor.fullName,
-    withdrawalId,
-    amountNaira: parsed.data.amountNaira,
-    feeNaira: Math.round(totalFeeMinor) / 100,
-    netNaira: Math.round(netMinor) / 100,
-    balanceNaira: Math.round(wallet.availableMinor) / 100,
-    bankName: resolvedBankName,
-    accountNumber: parsed.data.accountNumber,
-  });
-  void sendEmail({
-    to: investor.email,
-    name: investor.fullName,
-    subject: emailTpl.subject,
-    html: emailTpl.html,
-  }).then((emailRes) => {
-    notifications.push({
-      id: randomUUID(),
-      userId: investor.id,
-      channel: "EMAIL" as const,
-      kind: "WITHDRAWAL_REQUEST" as const,
-      subject: emailTpl.subject,
-      recipientMasked: investor.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
-      status: emailRes.sent ? "SENT" : "NOT_CONFIGURED",
-      providerMessageId: emailRes.providerReference,
-      retryCount: 0,
-      relatedEntityType: "WITHDRAWAL",
-      relatedEntityId: withdrawalId,
-      createdAt: new Date().toISOString(),
-      sentAt: emailRes.sent ? new Date().toISOString() : undefined,
-    });
-  }).catch(() => undefined);
-  const finalStatus = execution.finalStatus ?? (execution.error ? "FAILED" : "PROCESSING");
-  let responseMessage = "Withdrawal submitted.";
-  if (finalStatus === "SUCCESSFUL") responseMessage = "Withdrawal processed successfully and confirmed by the provider.";
-  else if (finalStatus === "FAILED") responseMessage = execution.error ? `Withdrawal failed and the wallet balance was restored: ${execution.error}` : "Withdrawal failed and the wallet balance was restored.";
-  else if (finalStatus === "PROCESSING") responseMessage = "Withdrawal has been submitted and is being processed by the provider. Final status will be confirmed shortly.";
-  res.json({
-    ok: finalStatus !== "FAILED",
+  // Respond immediately: the wallet hold and the withdrawal record exist, the
+  // provider transfer is executed in the background and its final status is
+  // picked up by the dashboard's withdrawal-status polling. Blocking here on
+  // Flutterwave (+ persistence) is what made withdrawals take 30s+ or fail.
+  schedulePersist();
+  res.status(202).json({
+    ok: true,
     withdrawal: withdrawalEntry,
-    message: responseMessage,
-    finalStatus,
-    providerResponse: execution.transfer,
-    providerVerification: execution.verification,
+    message: "Withdrawal has been submitted and is being processed. Final status will be confirmed shortly.",
+    finalStatus: "PROCESSING",
     feeBreakdown: {
       flatNaira: Math.round(flatMinor) / 100,
       percentNaira: Math.round(feePercentMinor) / 100,
@@ -4975,6 +5013,49 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
       netNaira: Math.round(netMinor) / 100,
     },
   });
+  void (async () => {
+    const execution = await executeInvestorWithdrawal(withdrawalEntry);
+    schedulePersist();
+    const emailTpl = investorWithdrawalEmail({
+      investorName: investor.fullName,
+      withdrawalId,
+      amountNaira: parsed.data.amountNaira,
+      feeNaira: Math.round(totalFeeMinor) / 100,
+      netNaira: Math.round(netMinor) / 100,
+      balanceNaira: Math.round(wallet.availableMinor) / 100,
+      bankName: resolvedBankName,
+      accountNumber: parsed.data.accountNumber,
+    });
+    try {
+      const emailRes = await sendEmail({
+        to: investor.email,
+        name: investor.fullName,
+        subject: emailTpl.subject,
+        html: emailTpl.html,
+      });
+      notifications.push({
+        id: randomUUID(),
+        userId: investor.id,
+        channel: "EMAIL" as const,
+        kind: "WITHDRAWAL_REQUEST" as const,
+        subject: emailTpl.subject,
+        recipientMasked: investor.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+        status: emailRes.sent ? "SENT" : "NOT_CONFIGURED",
+        providerMessageId: emailRes.providerReference,
+        retryCount: 0,
+        relatedEntityType: "WITHDRAWAL",
+        relatedEntityId: withdrawalId,
+        createdAt: new Date().toISOString(),
+        sentAt: emailRes.sent ? new Date().toISOString() : undefined,
+      });
+      schedulePersist();
+    } catch (_emailErr) {
+      // Email failure must not affect the withdrawal outcome.
+    }
+    if (execution.error) {
+      console.error(`[routes] withdrawal ${withdrawalId} execution error:`, execution.error);
+    }
+  })();
 });
 
 // ===============================

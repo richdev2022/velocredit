@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const TEST_PREFIX = `test-bvn-nin-${Date.now()}`;
 

@@ -133,9 +133,24 @@ export function createLoanDisbursement(input: {
   });
 }
 
+const PROVIDER_TIMEOUT_MS = 15_000;
+
+async function fetchWithTimeout(path: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+  try {
+    return await fetch(path, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("Flutterwave request timed out");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function verifyTransaction(transactionId: string) {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `${env.FLUTTERWAVE_BASE_URL}/transactions/${encodeURIComponent(transactionId)}/verify`,
     { headers: { Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}` } }
   );
@@ -155,7 +170,7 @@ export async function verifyTransfer(transferIdOrReference: string, byReference 
   const path = byReference
     ? `${env.FLUTTERWAVE_BASE_URL}/transfers/reference/${encodeURIComponent(transferIdOrReference)}`
     : `${env.FLUTTERWAVE_BASE_URL}/transfers/${encodeURIComponent(transferIdOrReference)}`;
-  const response = await fetch(path, {
+  const response = await fetchWithTimeout(path, {
     headers: { Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}` },
   });
   const text = await response.text();
@@ -235,7 +250,7 @@ export async function verifyTransferWithRetry(
 
 export async function resolveBankAccount(accountNumber: string, bankCode: string) {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
-  const response = await fetch(`${env.FLUTTERWAVE_BASE_URL}/accounts/resolve`, {
+  const response = await fetchWithTimeout(`${env.FLUTTERWAVE_BASE_URL}/accounts/resolve`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}`,
@@ -258,7 +273,7 @@ export async function resolveBankAccount(accountNumber: string, bankCode: string
 
 export async function listBanks(country = "NG") {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `${env.FLUTTERWAVE_BASE_URL}/banks/${encodeURIComponent(country)}`,
     { headers: { Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}` } }
   );
