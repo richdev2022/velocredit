@@ -78,6 +78,7 @@ import {
   decomposeRuntimeStateIntoTables,
   reloadStoreFromRelationalTables,
   persistStore,
+  normalizeLoanProducts,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { env } from "./config.js";
@@ -2584,7 +2585,13 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
   });
 });
 
-router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), (_req, res) => {
+router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), async (_req, res) => {
+  // Self-heal first: legacy snapshots could contain duplicated rows (same id /
+  // same name). Borrowers must ONLY ever see the admin-configured products.
+  if (normalizeLoanProducts()) {
+    console.warn("[routes] borrower/loan-products removed duplicated product rows from the in-memory catalog");
+    void persistStore().catch(() => undefined);
+  }
   res.json({ ok: true, products: loanProducts.filter((p) => p.isActive) });
 });
 
@@ -4511,7 +4518,13 @@ router.post("/consents", requireAuth, async (req: AuthRequest, res) => {
   res.status(201).json({ ok: true, consent });
 });
 
-router.get("/admin/loan-products", requireAuth, requireRole("ADMIN"), (_req, res) => {
+router.get("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (_req, res) => {
+  // Self-heal duplicates so the admin sees the authoritative catalog (this is
+  // also what the borrower endpoint serves from — one source of truth).
+  if (normalizeLoanProducts()) {
+    console.warn("[routes] admin/loan-products removed duplicated product rows from the in-memory catalog");
+    void persistStore().catch(() => undefined);
+  }
   res.json({ ok: true, products: loanProducts });
 });
 
@@ -4540,6 +4553,18 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  // Duplicate-name guard: two products with the same name (case-insensitive)
+  // make the borrower's product-type filtering ambiguous — the borrower
+  // application flow maps products to PERSONAL/BUSINESS programs by name.
+  const normalizedName = parsed.data.name.trim().toLowerCase();
+  const duplicate = loanProducts.find((p) => p.name.trim().toLowerCase() === normalizedName);
+  if (duplicate) {
+    res.status(409).json({
+      ok: false,
+      error: { formErrors: [`A loan product named "${duplicate.name}" already exists. Edit that product instead of creating a duplicate.`], fieldErrors: { name: ["A loan product with this name already exists."] } },
+    });
     return;
   }
   const now = new Date().toISOString();
@@ -4578,6 +4603,19 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
+  }
+  // Renaming to another product's name would recreate the ambiguous catalog
+  // (two products mapping to one borrower program), so reject collisions.
+  if (parsed.data.name !== undefined) {
+    const normalizedName = parsed.data.name.trim().toLowerCase();
+    const collision = loanProducts.find((p) => p.id !== product.id && p.name.trim().toLowerCase() === normalizedName);
+    if (collision) {
+      res.status(409).json({
+        ok: false,
+        error: { formErrors: [`Another loan product named "${collision.name}" already exists.`], fieldErrors: { name: ["A loan product with this name already exists."] } },
+      });
+      return;
+    }
   }
   // Cross-field guard on the MERGED product: validate the effective min/max
   // after applying the patch so a partial update cannot invert the range.

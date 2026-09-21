@@ -358,6 +358,7 @@ export function getLoanProgram(type: LoanProgramKey): LoanProgramConfig {
 }
 
 export function applyLoanProducts(products: Array<{
+  id?: string;
   name: string;
   minAmountNaira: number;
   maxAmountNaira: number;
@@ -365,18 +366,62 @@ export function applyLoanProducts(products: Array<{
   interestRatePercent: number;
   processingFeePercent: number;
   lateFeePercent: number;
+  version?: number;
+  updatedAt?: string;
+  isActive?: boolean;
 }>): void {
-  // Track whether we successfully applied at least one product so we don't
-  // clobber the env-default config.loanLimits with stale/seeded backend values
-  // when the backend response is empty or all products fail validation.
-  let appliedAny = false;
+  // ---------------------------------------------------------------------------
+  // Defensive product resolution.
+  //
+  // The borrower endpoint must only return the admin-configured catalog, but a
+  // legacy backend once served FOUR products where two pairs shared an id
+  // (admin-renamed "Personal Loan" v2 + stale seed "Velo Personal Quick" v1).
+  // Applying every product in order let the LAST one win and resurrected the
+  // ₦50,000 seeds over the admin's ₦200 configuration on every page load.
+  //
+  // Resolution rules:
+  //   1. Ignore inactive products (the backend filters them, but never trust it).
+  //   2. De-duplicate by id  -> keep the highest `version` (tie: newest updatedAt).
+  //   3. De-duplicate by name-> keep the newest `updatedAt`.
+  //   4. Per program type (PERSONAL/BUSINESS) apply ONLY the single
+  //      highest-ranked matching product — never a mix.
+  // ---------------------------------------------------------------------------
+  type Ranked = (typeof products)[number] & { __rank: number };
+  const rankOf = (p: { version?: number; updatedAt?: string }): number => {
+    // version dominates (PATCH always bumps it), updatedAt only breaks ties.
+    const version = Number.isFinite(p.version) ? Number(p.version) : 0;
+    const updated = Math.min(Math.max(Date.parse(p.updatedAt ?? "") || 0, 0), 1e16 - 1);
+    return version * 1e16 + updated;
+  };
+
+  const seenById = new Map<string, Ranked>();
+  const seenByName = new Map<string, Ranked>();
   for (const product of products) {
-    const type: LoanProgramKey | null = /business/i.test(product.name)
-      ? "BUSINESS"
-      : /personal/i.test(product.name)
-        ? "PERSONAL"
-        : null;
-    if (!type) continue;
+    if (product.isActive === false) continue;
+    const ranked: Ranked = { ...product, __rank: rankOf(product) };
+    const idKey = typeof product.id === "string" && product.id ? product.id : `anon:${product.name}`;
+    const currentById = seenById.get(idKey);
+    if (!currentById || ranked.__rank > currentById.__rank) seenById.set(idKey, ranked);
+    const nameKey = product.name.trim().toLowerCase();
+    const currentByName = seenByName.get(nameKey);
+    if (!currentByName || ranked.__rank > currentByName.__rank) seenByName.set(nameKey, ranked);
+  }
+  // A product survives only if it is BOTH the best for its id AND its name.
+  const unique = [...seenById.values()].filter((p) => seenByName.get(p.name.trim().toLowerCase()) === p);
+
+  let appliedAny = false;
+  // Name -> program mapping (same precedence as before: a name containing
+  // "business" maps to BUSINESS even if it also contains "personal").
+  const matchesType = (name: string, type: LoanProgramKey): boolean =>
+    type === "BUSINESS"
+      ? /business/i.test(name)
+      : /personal/i.test(name) && !/business/i.test(name);
+  for (const type of ["PERSONAL", "BUSINESS"] as LoanProgramKey[]) {
+    // Single authoritative product for this type: highest version, then newest
+    // updatedAt. Anything else in the list is ignored for this program.
+    const candidates = unique.filter((p) => matchesType(p.name, type));
+    if (candidates.length === 0) continue;
+    const product = candidates.reduce((best, p) => (p.__rank > best.__rank ? p : best), candidates[0]);
     const program = config.loanPrograms[type];
     const limits = {
       min: Number(product.minAmountNaira),
@@ -395,6 +440,7 @@ export function applyLoanProducts(products: Array<{
       // tenor list. Keep the configured list so calculator options and
       // validation remain consistent with admin settings.
       tenures: program.tenures,
+      productName: product.name,
       fees: {
         ...program.fees,
         interest: { ...program.fees.interest, value: Number(product.interestRatePercent) },

@@ -90,6 +90,36 @@ export default function LoanRequestSection() {
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+          {/* Product terms — bound STRICTLY to the application type the customer
+              selected. The range, interest and fees below come from this product
+              only; no other catalog entry may influence this screen. */}
+          <div className="lg:col-span-5 rounded-2xl border border-velo-100 bg-velo-50/60 p-4 dark:border-velo-800 dark:bg-velo-900/20">
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-velo-600 dark:text-velo-300">
+                  {application.applicantType === "BUSINESS" ? "Business" : "Personal"} loan product
+                </p>
+                <p className="text-base font-bold text-slate-900 dark:text-white">
+                  {program.productName || (application.applicantType === "BUSINESS" ? "Business Loan" : "Personal Loan")}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                <div>
+                  <span className="text-slate-500 dark:text-slate-400">Amount range: </span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">
+                    ₦{program.loanLimits.min.toLocaleString()} – ₦{program.loanLimits.max.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 dark:text-slate-400">Interest: </span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">
+                    {program.fees.interest.value}{program.fees.interest.type === "percentage" ? "%" : " flat"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Left — selectors */}
           <div className="lg:col-span-3 space-y-5">
             <LoanAmountSelector

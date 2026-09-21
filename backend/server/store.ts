@@ -941,7 +941,25 @@ function snapshotIsMeaningful(snap: Record<string, unknown[]> | null): boolean {
   return false;
 }
 
-export async function initializeStore(): Promise<void> {
+// Idempotency guard: initializeStore() is called from startup AND from the
+// Google Sheets seeding path (processRowsIntoStore). Without this guard a
+// second invocation would push the SAME database rows into the persistent
+// arrays a second time — the exact mechanism that once produced loan-product
+// duplicates sharing identical ids in the served catalog.
+let storeInitPromise: Promise<void> | null = null;
+
+export function initializeStore(): Promise<void> {
+  if (!storeInitPromise) {
+    storeInitPromise = doInitializeStore().catch((error) => {
+      // Allow a later call to retry (e.g. the DB was unreachable at boot).
+      storeInitPromise = null;
+      throw error;
+    });
+  }
+  return storeInitPromise;
+}
+
+async function doInitializeStore(): Promise<void> {
   if (!sql) return;
 
   const rebuildSnap = await rebuildFromDatabase(sql as unknown as NeonQueryFunction<false, false>);
@@ -967,6 +985,17 @@ export async function initializeStore(): Promise<void> {
   rebuildIndexes();
   seedDefaultCatalog();
   seedAdminLedgerOpeningBalance(0);
+
+  // Self-heal legacy duplicated catalog rows (same id / same name) BEFORE the
+  // post-load decompose pass, so the clean snapshot is what gets upserted.
+  if (normalizeCatalogCollections()) {
+    console.warn("[store/initializeStore] Removed duplicated catalog rows (loan products / investment plans) from loaded state.");
+    try {
+      await persistStore();
+    } catch (e) {
+      console.error("[store/initializeStore] persisting the de-duplicated snapshot failed:", e);
+    }
+  }
 
   try {
     await decomposeAndUpsertAll(sql as unknown as NeonQueryFunction<false, false>, snapshotStore(), undefined);
@@ -1144,6 +1173,74 @@ export function seedLoanProducts(): void {
   for (const product of seed) {
     loanProducts.push({ id: randomUUID(), createdAt: now, ...product });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Catalog normalization (self-healing).
+//
+// Production once served FOUR loan products where two pairs shared the SAME
+// id: the admin-configured rows ("Personal Loan" / "Business Loan", version 2)
+// plus stale pre-rename copies of the very same rows ("Velo Personal Quick" /
+// "Velo Business Boost", version 1) that survived in a legacy snapshot. Any
+// consumer that iterates the list (borrower limits overlay, admin type match)
+// then let the LAST duplicate win — resurrecting ₦50,000 seeds after the
+// admin had configured ₦200.
+//
+// normalizeCatalogCollections() collapses these ghosts in place:
+//   1. same id        -> keep the highest `version` (tie-break: newest updatedAt)
+//   2. same name (ci) -> keep the newest `updatedAt` (guards distinct-id twins)
+// and reports whether anything was removed so callers can re-persist the
+// healed snapshot.
+// ---------------------------------------------------------------------------
+
+type NormalizableRecord = { id: string; version?: number; createdAt?: string; updatedAt?: string };
+
+// Version MUST strictly dominate the timestamp: epoch millis are ~1.75e12, so
+// the multiplier (1e16) must exceed any possible Date.parse value for a
+// "highest version wins, timestamp only breaks ties" ordering.
+const CATALOG_RANK_VERSION_WEIGHT = 1e16;
+
+function catalogRecordRank(record: NormalizableRecord): number {
+  const version = Number.isFinite(record.version) ? Number(record.version) : 0;
+  const updated = Math.min(Math.max(Date.parse(record.updatedAt ?? "") || 0, 0), CATALOG_RANK_VERSION_WEIGHT - 1);
+  return version * CATALOG_RANK_VERSION_WEIGHT + updated;
+}
+
+function dedupeCatalogInPlace<T extends NormalizableRecord>(items: T[], nameOf: (item: T) => string): boolean {
+  if (items.length <= 1) return false;
+  const byId = new Map<string, T>();
+  for (const item of items) {
+    const current = byId.get(item.id);
+    if (!current || catalogRecordRank(item) > catalogRecordRank(current)) byId.set(item.id, item);
+  }
+  const byName = new Map<string, T>();
+  for (const item of byId.values()) {
+    const key = nameOf(item).trim().toLowerCase();
+    const current = byName.get(key);
+    if (!current || catalogRecordRank(item) > catalogRecordRank(current)) byName.set(key, item);
+  }
+  if (byName.size === items.length) return false;
+  // Preserve original ordering of the surviving records (splice in place so
+  // the persistent-array proxy marks the collection dirty for persistence).
+  const survivors = new Set(byName.values());
+  const kept = items.filter((item) => survivors.has(item));
+  items.splice(0, items.length, ...kept);
+  return true;
+}
+
+/** Dedupe the loan-product catalog in place. Returns true when rows were removed. */
+export function normalizeLoanProducts(): boolean {
+  return dedupeCatalogInPlace(loanProducts, (p) => p.name);
+}
+
+/** Dedupe loan products AND investment plans (same seed/duplication pattern). */
+export function normalizeCatalogCollections(): boolean {
+  const loanRemoved = normalizeLoanProducts();
+  let plansRemoved = false;
+  if (investmentPlans.length > 1) {
+    plansRemoved = dedupeCatalogInPlace(investmentPlans, (p) => p.name);
+  }
+  return loanRemoved || plansRemoved;
 }
 
 let adminLedgerBalanceCache = 0;
