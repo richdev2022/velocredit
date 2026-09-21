@@ -69,3 +69,11 @@ LPT9
 
 # Worklog
 worklog.md
+
+# Compiled vite.config artifacts (build/dev junk)
+vite.config.js
+vite.config.d.ts
+vite.config.js.timestamp-*.mjs
+
+# TypeScript incremental build info
+tsconfig.tsbuildinfo

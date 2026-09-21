@@ -136,6 +136,8 @@ export async function runCreditReportReconciliationSweep(): Promise<{ retried: n
 
 /** Register the periodic credit-report reconciliation cron. Safe to call multiple times. */
 export function startCreditReconciliationCron(intervalMs = 10 * 60 * 1000): void {
-  setTimeout(() => { void runCreditReportReconciliationSweep(); }, 60_000).unref();
+  // First sweep 30s after boot so reports left PENDING by a previous run (or
+  // by a slow Prembly response during submission) are picked up quickly.
+  setTimeout(() => { void runCreditReportReconciliationSweep(); }, 30_000).unref();
   setInterval(() => { void runCreditReportReconciliationSweep(); }, intervalMs).unref();
 }
