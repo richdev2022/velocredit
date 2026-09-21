@@ -142,7 +142,7 @@ export function DonutChart({ slices, size = 180 }: { slices: DonutSlice[]; size?
 
   let angle = -Math.PI / 2; // start at top
   const arcs = slices.map((s) => {
-    const value = Math.max(0, s.value);
+    const value = Math.max(0, Number(s?.value) || 0);
     if (total === 0 || value === 0) return { ...s, path: "", percent: 0 };
     const sweep = (value / total) * Math.PI * 2;
     const path = arcPath(angle, angle + sweep, radius, innerRadius);
@@ -173,7 +173,7 @@ export function DonutChart({ slices, size = 180 }: { slices: DonutSlice[]; size?
               {a.label}
             </span>
             <span className="font-semibold text-velo-900 dark:text-white">
-              {a.value.toLocaleString()} <span className="text-slate-400 dark:text-slate-500">({a.percent.toFixed(0)}%)</span>
+              {(Number.isFinite(Number(a.value)) ? Number(a.value) : 0).toLocaleString()} <span className="text-slate-400 dark:text-slate-500">({(Number.isFinite(Number(a.percent)) ? Number(a.percent) : 0).toFixed(0)}%)</span>
             </span>
           </div>
         ))}

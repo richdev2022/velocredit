@@ -21,6 +21,8 @@ import {
   saveAdminOverrides,
   resetAdminOverrides,
   refreshConfig,
+  sanitizeLoanLimits,
+  safeNaira,
   type AdminConfigOverride,
 } from "../../utils/config";
 import {
@@ -79,9 +81,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const showWithdrawals = displaySection === "withdrawals";
   const showLedger = displaySection === "ledger";
   const [activeTab, setActiveTab] = useState<SettingsTab>("programs");
-  const [min, setMin] = useState(currentConfig.loanLimits.min);
-  const [max, setMax] = useState(currentConfig.loanLimits.max);
-  const [defaultAmount, setDefaultAmount] = useState(currentConfig.loanLimits.defaultAmount);
+  // Initialize from the sanitized limits — a corrupt localStorage override or a
+  // bad API response must never put undefined/NaN into these states (that used
+  // to crash the whole Admin page inside the formErrors useMemo with
+  // "Cannot read properties of undefined (reading 'toLocaleString')").
+  const safeInitLimits = sanitizeLoanLimits(currentConfig?.loanLimits);
+  const [min, setMin] = useState(safeInitLimits.min);
+  const [max, setMax] = useState(safeInitLimits.max);
+  const [defaultAmount, setDefaultAmount] = useState(safeInitLimits.defaultAmount);
   const [globalLimitsEnabled, setGlobalLimitsEnabled] = useState(currentConfig.globalLimitsEnabled);
   // Unified single toggle: when ON, the four global fees (interest, serviceFee,
   // processingFee, lateFee) override every program. When OFF, each program uses
@@ -305,7 +312,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   }
 
   const tenureOptions: TenureOption[] = useMemo(() => {
-    const values = new Set([...baseConfig.tenures, ...currentConfig.tenures].map((tenure) => tenure.value));
+    const baseTenures = Array.isArray(baseConfig?.tenures) ? baseConfig.tenures : [];
+    const currentTenures = Array.isArray(currentConfig?.tenures) ? currentConfig.tenures : [];
+    const values = new Set([...baseTenures, ...currentTenures].map((tenure) => tenure?.value).filter((v) => Number.isFinite(v)));
     return [...values].sort((a, b) => a - b).map((value) => ({ value, label: `${value} Days` }));
   }, []);
 
@@ -334,7 +343,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   }, [tenures, tenureFees, fees]);
 
   const previewCalc = useMemo(() => {
-    const safeDef = Math.min(Math.max(defaultAmount, min), max);
+    // Guard against undefined/NaN — Math.min/max with undefined yields NaN and
+    // would silently poison the preview panel.
+    const nMin = Number.isFinite(Number(min)) ? Number(min) : baseConfig.loanLimits.min;
+    const nMax = Number.isFinite(Number(max)) ? Number(max) : baseConfig.loanLimits.max;
+    const lo = Math.min(nMin, nMax);
+    const hi = Math.max(nMin, nMax);
+    const nDef = Number.isFinite(Number(defaultAmount)) ? Number(defaultAmount) : lo;
+    const safeDef = Math.min(Math.max(nDef, lo), hi);
     const safeTenure = tenures.length > 0 ? tenures[Math.floor(tenures.length / 2)].value : 30;
     return calculateLoan(safeDef, safeTenure, {
       fees: {
@@ -348,11 +364,24 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
   const formErrors = useMemo(() => {
     const errs: { key: string; message: string; severity: "error" | "warning" }[] = [];
-    if (!(min < max)) {
-      errs.push({ key: "LOAN_LIMITS", message: `Minimum (₦${min.toLocaleString()}) must be less than Maximum (₦${max.toLocaleString()}).`, severity: "error" });
+    // Coerce states through Number() first — they can transiently hold NaN/
+    // undefined from input parsing. Use safeNaira() so formatting never throws
+    // even when a value is still undefined.
+    const nMin = Number(min);
+    const nMax = Number(max);
+    const nDefault = Number(defaultAmount);
+    const minFinite = Number.isFinite(nMin);
+    const maxFinite = Number.isFinite(nMax);
+    const defFinite = Number.isFinite(nDefault);
+    if (!minFinite || !maxFinite) {
+      errs.push({ key: "LOAN_LIMITS", message: "Minimum and Maximum loan amounts must be valid numbers.", severity: "error" });
+    } else if (!(nMin < nMax)) {
+      errs.push({ key: "LOAN_LIMITS", message: `Minimum (₦${safeNaira(nMin)}) must be less than Maximum (₦${safeNaira(nMax)}).`, severity: "error" });
     }
-    if (defaultAmount < min || defaultAmount > max) {
-      errs.push({ key: "LOAN_DEFAULT", message: `Default amount (₦${defaultAmount.toLocaleString()}) must be between min (₦${min.toLocaleString()}) and max (₦${max.toLocaleString()}).`, severity: "error" });
+    if (minFinite && maxFinite && defFinite && (nDefault < nMin || nDefault > nMax)) {
+      errs.push({ key: "LOAN_DEFAULT", message: `Default amount (₦${safeNaira(nDefault)}) must be between min (₦${safeNaira(nMin)}) and max (₦${safeNaira(nMax)}).`, severity: "error" });
+    } else if (!defFinite) {
+      errs.push({ key: "LOAN_DEFAULT", message: "Default loan amount must be a valid number.", severity: "error" });
     }
     if (tenures.length === 0) {
       errs.push({ key: "TENURES", message: "Select at least one repayment tenure.", severity: "error" });
@@ -406,10 +435,16 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   }
 
   function updateGlobalLimits(patch: Partial<LoanProgramConfig["loanLimits"]>) {
-    const limits = { min, max, defaultAmount, ...patch };
-    if (patch.min !== undefined) setMin(patch.min);
-    if (patch.max !== undefined) setMax(patch.max);
-    if (patch.defaultAmount !== undefined) setDefaultAmount(patch.defaultAmount);
+    const nMin = Number.isFinite(Number(patch.min)) ? Number(patch.min)
+      : Number.isFinite(Number(min)) ? Number(min) : baseConfig.loanLimits.min;
+    const nMax = Number.isFinite(Number(patch.max)) ? Number(patch.max)
+      : Number.isFinite(Number(max)) ? Number(max) : baseConfig.loanLimits.max;
+    const nDef = Number.isFinite(Number(patch.defaultAmount)) ? Number(patch.defaultAmount)
+      : Number.isFinite(Number(defaultAmount)) ? Number(defaultAmount) : nMin;
+    const limits = { min: nMin, max: nMax, defaultAmount: nDef };
+    if (patch.min !== undefined) setMin(nMin);
+    if (patch.max !== undefined) setMax(nMax);
+    if (patch.defaultAmount !== undefined) setDefaultAmount(nDef);
     setPrograms((current) => ({
       PERSONAL: { ...current.PERSONAL, loanLimits: limits },
       BUSINESS: { ...current.BUSINESS, loanLimits: limits },
@@ -471,7 +506,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       const activePrograms = Object.fromEntries(
         (Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>).map(([type, program]) => [type, {
           ...program,
-          loanLimits: globalLimitsEnabled ? { min, max, defaultAmount } : program.loanLimits,
+          loanLimits: globalLimitsEnabled ? { min: Number(min) || 0, max: Number(max) || 0, defaultAmount: Number(defaultAmount) || 0 } : program.loanLimits,
           fees: globalTransactionsEnabled
             ? { ...program.fees, ...fees }
             : { ...program.fees },
@@ -539,9 +574,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     try {
       resetAdminOverrides();
       refreshConfig({});
-      setMin(currentConfig.loanLimits.min);
-      setMax(currentConfig.loanLimits.max);
-      setDefaultAmount(currentConfig.loanLimits.defaultAmount);
+      setMin(currentConfig.loanLimits?.min ?? baseConfig.loanLimits.min);
+      setMax(currentConfig.loanLimits?.max ?? baseConfig.loanLimits.max);
+      setDefaultAmount(currentConfig.loanLimits?.defaultAmount ?? baseConfig.loanLimits.defaultAmount);
       setGlobalLimitsEnabled(true);
       setGlobalTransactionsEnabled(true);
       setSelectedTenures(baseConfig.tenures.map((t) => t.value));
