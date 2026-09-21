@@ -1,10 +1,24 @@
 import { useEffect, useState } from "react";
 import type { FeeKey } from "../../types/loan";
-
-type FeeValue = { type: "flat" | "percentage"; value: number; includeUpfront: boolean; enabled?: boolean };
+import { Segmented, Toggle, type FeeValue } from "./settingsUI";
 
 // Permissive decimal regex — allows: "", "0", "0.", "0.1", ".5", "12.345", etc.
 const DECIMAL_REGEX = /^\d*\.?\d*$/;
+
+function parseNumber(s: string): number {
+  // Allow leading/trailing dot, e.g. ".5" or "5."
+  const normalized = s.trim();
+  if (normalized === "" || normalized === ".") return 0;
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatNumber(n: number): string {
+  if (!Number.isFinite(n)) return "0";
+  // Round to 2 decimals to avoid floating-point noise like 0.30000000000000004.
+  const rounded = Math.round(n * 100) / 100;
+  return String(rounded);
+}
 
 export default function FeeField({ label, value, onChange, baseLabel }: { feeKey: FeeKey; label: string; baseFee: FeeValue; baseLabel?: string; value: FeeValue; onChange: (value: FeeValue) => void }) {
   // Keep a raw text draft so the user can type "0.", "0.1", ".5", etc. without
@@ -35,72 +49,52 @@ export default function FeeField({ label, value, onChange, baseLabel }: { feeKey
     if (Number.isFinite(next) && next >= 0) onChange({ ...value, value: next });
   }
 
+  const isPercent = value.type === "percentage";
+
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 transition-colors dark:border-slate-700 dark:bg-slate-900">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="font-extrabold text-velo-900 text-xs dark:text-velo-100">{label}</div>
+    <div className="rounded-2xl border border-slate-200 bg-white p-3.5 transition-colors dark:border-slate-700 dark:bg-slate-900">
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <div className="min-w-0 text-xs font-extrabold text-velo-900 dark:text-velo-100">{label}</div>
         {baseLabel ? (
-          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">vs {baseLabel}</span>
+          <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">vs {baseLabel}</span>
         ) : null}
       </div>
-      <div className="grid grid-cols-[minmax(7.5rem,0.9fr)_minmax(7rem,1fr)_auto] items-center gap-2">
-        <select
-          value={value.type}
-          onChange={(e) => onChange({ ...value, type: e.target.value as FeeValue["type"] })}
-          className="velo-input !py-2 text-xs font-bold w-full"
-        >
-          <option value="flat">Flat (₦)</option>
-          <option value="percentage">Percentage (%)</option>
-        </select>
-        <input
-          type="text"
-          inputMode="decimal"
-          value={draftValue}
-          onChange={(e) => commit(e.target.value)}
-          onBlur={() => {
-            if (draftValue === "" || draftValue === ".") setDraftValue("0");
-            else setDraftValue(formatNumber(parseNumber(draftValue)));
-          }}
-          className="velo-input !py-2 text-sm font-bold w-full min-w-0"
-          placeholder="0"
-        />
-        <span className="text-xs font-bold text-slate-500">{value.type === "flat" ? "₦" : "%"}</span>
+      <div className="flex items-center gap-2">
+        <div className="w-[8.5rem] shrink-0">
+          <Segmented
+            value={value.type}
+            options={[
+              { value: "flat" as const, label: "Flat ₦" },
+              { value: "percentage" as const, label: "Percent %" },
+            ]}
+            onChange={(t) => onChange({ ...value, type: t })}
+            size="sm"
+          />
+        </div>
+        <div className="relative min-w-0 flex-1">
+          {isPercent ? (
+            <span className="absolute right-9 top-1/2 -translate-y-1/2 select-none text-sm font-black text-slate-400">%</span>
+          ) : (
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 select-none text-sm font-black text-slate-400">₦</span>
+          )}
+          <input
+            type="text"
+            inputMode="decimal"
+            value={draftValue}
+            onChange={(e) => commit(e.target.value)}
+            onBlur={() => {
+              if (draftValue === "" || draftValue === ".") setDraftValue("0");
+              else setDraftValue(formatNumber(parseNumber(draftValue)));
+            }}
+            className={`velo-input !py-2 text-sm font-bold ${isPercent ? "!pr-8" : "!pl-9"}`}
+            placeholder="0"
+          />
+        </div>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-600 dark:text-slate-300">
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={value.enabled !== false}
-            onChange={(e) => onChange({ ...value, enabled: e.target.checked })}
-            className="accent-velo-500"
-          />
-          Active globally
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={value.includeUpfront}
-            onChange={(e) => onChange({ ...value, includeUpfront: e.target.checked })}
-            className="accent-velo-500"
-          />
-          Include in upfront total repayment
-        </label>
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-100 pt-2.5 dark:border-slate-800">
+        <Toggle size="sm" checked={value.enabled !== false} onChange={(e) => onChange({ ...value, enabled: e })} label="Active" />
+        <Toggle size="sm" checked={value.includeUpfront} onChange={(e) => onChange({ ...value, includeUpfront: e })} label="Charge upfront" />
       </div>
     </div>
   );
-}
-
-function parseNumber(s: string): number {
-  // Allow leading/trailing dot, e.g. ".5" or "5."
-  const normalized = s.trim();
-  if (normalized === "" || normalized === ".") return 0;
-  const n = Number(normalized);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function formatNumber(n: number): string {
-  if (!Number.isFinite(n)) return "0";
-  // Round to 2 decimals to avoid floating-point noise like 0.30000000000000004.
-  const rounded = Math.round(n * 100) / 100;
-  return String(rounded);
 }

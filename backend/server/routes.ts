@@ -4529,7 +4529,14 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     lateFeeType: z.enum(["ONE_TIME", "COMPOUNDING_DAILY", "COMPOUNDING_MONTHLY"]).default("COMPOUNDING_DAILY"),
     gracePeriodDays: z.number().int().nonnegative().default(3),
     isActive: z.boolean().default(true),
-  });
+  })
+    // Cross-field guard: a product with min >= max would seed every borrower
+    // screen with an impossible range (this is how the ₦200-vs-₦50,000 class of
+    // bugs used to slip through). Reject at the API boundary.
+    .refine((data) => data.minAmountNaira < data.maxAmountNaira, {
+      message: "minAmountNaira must be less than maxAmountNaira",
+      path: ["minAmountNaira"],
+    });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
@@ -4570,6 +4577,20 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  // Cross-field guard on the MERGED product: validate the effective min/max
+  // after applying the patch so a partial update cannot invert the range.
+  const effectiveMin = parsed.data.minAmountNaira ?? product.minAmountNaira;
+  const effectiveMax = parsed.data.maxAmountNaira ?? product.maxAmountNaira;
+  if (!(effectiveMin < effectiveMax)) {
+    res.status(400).json({
+      ok: false,
+      error: {
+        formErrors: [],
+        fieldErrors: { minAmountNaira: [`minAmountNaira (${effectiveMin}) must be less than maxAmountNaira (${effectiveMax})`] },
+      },
+    });
     return;
   }
   product.version += 1;

@@ -158,6 +158,19 @@ export default function BorrowerDashboard() {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${target}`);
     }
   }, [view]);
+
+  // Follow the hash on browser back/forward (parity with the admin dashboard).
+  useEffect(() => {
+    function onHashChange() {
+      const hash = window.location.hash.replace(/^#/, "");
+      const params = new URLSearchParams(hash);
+      const v = params.get("view") as BorrowerView | null;
+      const valid: BorrowerView[] = ["overview", "applications", "repayments", "kyc", "account", "credit", "profile"];
+      if (v && valid.includes(v)) setView(v);
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const [successMsg, setSuccessMsg] = useState("");
   const [repayBusy, setRepayBusy] = useState(null as string | null);
   const [sidebarOpen, setSidebarOpen] = useState(false);

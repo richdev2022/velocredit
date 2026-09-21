@@ -129,6 +129,19 @@ export default function InvestorDashboard() {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${target}`);
     }
   }, [view]);
+
+  // Follow the hash on browser back/forward (parity with the admin dashboard).
+  useEffect(() => {
+    function onHashChange() {
+      const hash = window.location.hash.replace(/^#/, "");
+      const params = new URLSearchParams(hash);
+      const v = params.get("view") as InvestorView | null;
+      const valid: InvestorView[] = ["overview", "wallet", "investments", "kyc", "transactions", "payout", "profile"];
+      if (v && valid.includes(v)) setView(v);
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const investorMenu: Array<{ key: InvestorView; label: string; icon: string; hint?: string }> = [
     { key: "overview", label: "Overview", icon: "grid", hint: "Summary & KPIs" },

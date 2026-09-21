@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getEffectiveConfig, resolveApiUrl } from "./config";
+import { getEffectiveConfig, resolveApiUrl, config, applyLoanProducts, baseConfig } from "./config";
 
 describe("loan configuration", () => {
   it("propagates global transaction limits to every loan program", () => {
@@ -34,3 +34,49 @@ describe("loan configuration", () => {
     expect(config.loanPrograms.BUSINESS.fees.interest.value).toBe(8);
   });
 });
+
+describe("applyLoanProducts (admin-set limits reaching the borrower)", () => {
+  it("applies a valid personal product so the borrower sees the admin limits", () => {
+    // Reset to defaults first so the test is order-independent.
+    refreshTestConfig();
+    applyLoanProducts([
+      { name: "Personal Loan", minAmountNaira: 200, maxAmountNaira: 30_000_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
+    ]);
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(200);
+    expect(config.loanPrograms.PERSONAL.loanLimits.max).toBe(30_000_000);
+    expect(config.loanLimits.min).toBe(200);
+  });
+
+  it("skips invalid products (min >= max, negative, non-finite) instead of clobbering config", () => {
+    refreshTestConfig();
+    const before = { ...config.loanPrograms.PERSONAL.loanLimits };
+    applyLoanProducts([
+      { name: "Personal Loan", minAmountNaira: 50_000, maxAmountNaira: 50_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
+      { name: "Personal Loan", minAmountNaira: -5, maxAmountNaira: 10_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
+      { name: "Personal Loan", minAmountNaira: Number.NaN, maxAmountNaira: 10_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
+    ]);
+    expect(config.loanPrograms.PERSONAL.loanLimits).toEqual(before);
+  });
+
+  it("does not touch global limits when no valid product could be applied", () => {
+    refreshTestConfig();
+    const before = { ...config.loanLimits };
+    applyLoanProducts([
+      { name: "Unknown Widget Loan", minAmountNaira: 100, maxAmountNaira: 5_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
+      { name: "Business Loan", minAmountNaira: 500_000, maxAmountNaira: 500_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
+    ]);
+    expect(config.loanLimits).toEqual(before);
+  });
+});
+
+/** Reset the singleton config to baseline so tests don't leak state. */
+function refreshTestConfig() {
+  Object.assign(config, getEffectiveConfig({}));
+  config.loanLimits = { ...baseConfig.loanLimits };
+  config.tenures = baseConfig.tenures.slice();
+  config.loanPrograms = {
+    PERSONAL: structuredClone(baseConfig.loanPrograms.PERSONAL),
+    BUSINESS: structuredClone(baseConfig.loanPrograms.BUSINESS),
+  };
+  config.fees = structuredClone(baseConfig.fees);
+}

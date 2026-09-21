@@ -1,13 +1,17 @@
 // ============================================================================
 // src/components/admin/AdminSettings.tsx
-// Visual loan configuration editor.
+// Platform Settings console — completely redesigned "admin console" layout.
 //
-// Changes are saved as "admin overrides" in localStorage and applied to the
-// running `config` object via refreshConfig(). The overrides live in the
-// same browser that saves them until the Node admin configuration API is enabled.
+// Visual language (see ./settingsUI.tsx): tabbed navigation, settings rows,
+// toggle switches, segmented fee editors, naira-chip inputs. Fully responsive
+// with explicit dark: variants.
 //
-// Use this page to tweak loan limits, tenures, fees, company info without
-// editing the .env file.
+// Functionality preserved 1:1 from the previous design:
+//   - Backend-first save flow (PATCH loan products BEFORE localStorage write)
+//   - 60s save timeout to tolerate Render cold starts, per-product errors
+//   - Per-tenure fee overrides, global limits/fees toggles
+//   - Platform settings (withdrawal fees, default investment rate)
+//   - Investor tools (earning rate, wallet credit), withdrawals, ledger
 // ============================================================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -33,9 +37,10 @@ import {
 import { adminListLoanProducts, adminCreateLoanProduct, adminPatchLoanProduct } from "../../services/apiClient";
 import { formatNaira } from "../../utils/loanCalculator";
 import { calculateLoan } from "../../utils/loanCalculator";
-import type { TenureOption, FeeConfiguration, FeeKey, FeeConfig, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey } from "../../types/loan";
+import type { TenureOption, FeeConfiguration, FeeKey, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey } from "../../types/loan";
 import ProgramEditor from "./ProgramEditor";
 import Icon from "../Icon";
+import { Pill, Toggle, SettingRow, NairaField, FeeEditor, Chip, PanelCard, type FeeValue } from "./settingsUI";
 
 const FEE_LABELS: Record<FeeKey, string> = {
   interest: "Monthly Interest Rate",
@@ -44,11 +49,28 @@ const FEE_LABELS: Record<FeeKey, string> = {
   lateFee: "Default / Late Fee",
 };
 
+const FEE_DESCRIPTIONS: Record<FeeKey, string> = {
+  interest: "Cost of borrowing, applied on the principal for the chosen tenure.",
+  serviceFee: "One-off administration fee charged on the loan amount.",
+  processingFee: "Deducted or charged at disbursement for processing the application.",
+  lateFee: "Penalty applied when a repayment is missed or overdue.",
+};
+
 /** Per-tenure override state: Record<tenureDays, { enabled: boolean, fees }> */
 type TenureFeeState = Record<number, {
   enabled: boolean;
-  fees: Record<FeeKey, { type: "flat" | "percentage"; value: number; includeUpfront: boolean; enabled?: boolean }>;
+  fees: Record<FeeKey, FeeValue>;
 }>;
+
+type SettingsTab = "programs" | "limits" | "fees" | "branding" | "system";
+
+const SETTINGS_TABS: Array<{ key: SettingsTab; label: string; icon: React.ReactNode }> = [
+  { key: "programs", label: "Loan Programs", icon: <Icon name="target" size={15} /> },
+  { key: "limits", label: "Limits & Tenures", icon: <Icon name="money" size={15} /> },
+  { key: "fees", label: "Fees & Charges", icon: <Icon name="chart" size={15} /> },
+  { key: "branding", label: "Branding & Access", icon: <Icon name="bank" size={15} /> },
+  { key: "system", label: "System", icon: <Icon name="lock" size={15} /> },
+];
 
 export default function AdminSettings(props?: { displaySection?: "all" | "ledger" | "withdrawals" | "investor-tools" }) {
   const displaySection: NonNullable<typeof props>["displaySection"] = props?.displaySection ?? "all";
@@ -56,6 +78,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const showInvestorTools = displaySection === "investor-tools";
   const showWithdrawals = displaySection === "withdrawals";
   const showLedger = displaySection === "ledger";
+  const [activeTab, setActiveTab] = useState<SettingsTab>("programs");
   const [min, setMin] = useState(currentConfig.loanLimits.min);
   const [max, setMax] = useState(currentConfig.loanLimits.max);
   const [defaultAmount, setDefaultAmount] = useState(currentConfig.loanLimits.defaultAmount);
@@ -83,7 +106,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     BUSINESS: structuredClone(currentConfig.loanPrograms.BUSINESS),
   }));
 
-  const [fees, setFees] = useState<Record<FeeKey, { type: "flat" | "percentage"; value: number; includeUpfront: boolean; enabled?: boolean }>>(() => ({
+  const [fees, setFees] = useState<Record<FeeKey, FeeValue>>(() => ({
     interest:      { ...currentConfig.fees.interest },
     serviceFee:    { ...currentConfig.fees.serviceFee },
     processingFee: { ...currentConfig.fees.processingFee },
@@ -281,7 +304,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }
   }
 
-
   const tenureOptions: TenureOption[] = useMemo(() => {
     const values = new Set([...baseConfig.tenures, ...currentConfig.tenures].map((tenure) => tenure.value));
     return [...values].sort((a, b) => a - b).map((value) => ({ value, label: `${value} Days` }));
@@ -333,7 +355,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       errs.push({ key: "LOAN_DEFAULT", message: `Default amount (₦${defaultAmount.toLocaleString()}) must be between min (₦${min.toLocaleString()}) and max (₦${max.toLocaleString()}).`, severity: "error" });
     }
     if (tenures.length === 0) {
-      errs.push({ key: "TENURES", message: "Add at least one valid tenure (comma-separated days).", severity: "error" });
+      errs.push({ key: "TENURES", message: "Select at least one repayment tenure.", severity: "error" });
     }
     (Object.keys(fees) as FeeKey[]).forEach((k) => {
       const f = fees[k];
@@ -517,41 +539,41 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     try {
       resetAdminOverrides();
       refreshConfig({});
-    setMin(currentConfig.loanLimits.min);
-    setMax(currentConfig.loanLimits.max);
-    setDefaultAmount(currentConfig.loanLimits.defaultAmount);
-    setGlobalLimitsEnabled(true);
-    setGlobalTransactionsEnabled(true);
-    setSelectedTenures(baseConfig.tenures.map((t) => t.value));
-    setCompanyName(baseConfig.companyName);
-    setCompanyWebsite(baseConfig.companyWebsite);
-    setBrandLogoUrl(baseConfig.brandLogoUrl);
-    setLenderSignatoryName(baseConfig.lenderSignatoryName);
-    setLenderSignatoryPosition(baseConfig.lenderSignatoryPosition);
-    setLenderSignatorySignatureUrl(baseConfig.lenderSignatorySignatureUrl);
-    setApiUrl(baseConfig.apiUrl);
-    setLoanManagerEmails(baseConfig.loanManagerEmails.join(", "));
-    setAdminEmails(baseConfig.adminEmails.join(", "));
-    setPrograms({ PERSONAL: structuredClone(baseConfig.loanPrograms.PERSONAL), BUSINESS: structuredClone(baseConfig.loanPrograms.BUSINESS) });
-    setFees({
-      interest:      { ...baseConfig.fees.interest },
-      serviceFee:    { ...baseConfig.fees.serviceFee },
-      processingFee: { ...baseConfig.fees.processingFee },
-      lateFee:       { ...baseConfig.fees.lateFee },
-    });
-    const resetState: TenureFeeState = {};
-    baseConfig.tenures.forEach((t) => {
-      resetState[t.value] = {
-        enabled: false,
-        fees: {
-          interest:      { ...baseConfig.fees.interest },
-          serviceFee:    { ...baseConfig.fees.serviceFee },
-          processingFee: { ...baseConfig.fees.processingFee },
-          lateFee:       { ...baseConfig.fees.lateFee },
-        },
-      };
-    });
-    setTenureFees(resetState);
+      setMin(currentConfig.loanLimits.min);
+      setMax(currentConfig.loanLimits.max);
+      setDefaultAmount(currentConfig.loanLimits.defaultAmount);
+      setGlobalLimitsEnabled(true);
+      setGlobalTransactionsEnabled(true);
+      setSelectedTenures(baseConfig.tenures.map((t) => t.value));
+      setCompanyName(baseConfig.companyName);
+      setCompanyWebsite(baseConfig.companyWebsite);
+      setBrandLogoUrl(baseConfig.brandLogoUrl);
+      setLenderSignatoryName(baseConfig.lenderSignatoryName);
+      setLenderSignatoryPosition(baseConfig.lenderSignatoryPosition);
+      setLenderSignatorySignatureUrl(baseConfig.lenderSignatorySignatureUrl);
+      setApiUrl(baseConfig.apiUrl);
+      setLoanManagerEmails(baseConfig.loanManagerEmails.join(", "));
+      setAdminEmails(baseConfig.adminEmails.join(", "));
+      setPrograms({ PERSONAL: structuredClone(baseConfig.loanPrograms.PERSONAL), BUSINESS: structuredClone(baseConfig.loanPrograms.BUSINESS) });
+      setFees({
+        interest:      { ...baseConfig.fees.interest },
+        serviceFee:    { ...baseConfig.fees.serviceFee },
+        processingFee: { ...baseConfig.fees.processingFee },
+        lateFee:       { ...baseConfig.fees.lateFee },
+      });
+      const resetState: TenureFeeState = {};
+      baseConfig.tenures.forEach((t) => {
+        resetState[t.value] = {
+          enabled: false,
+          fees: {
+            interest:      { ...baseConfig.fees.interest },
+            serviceFee:    { ...baseConfig.fees.serviceFee },
+            processingFee: { ...baseConfig.fees.processingFee },
+            lateFee:       { ...baseConfig.fees.lateFee },
+          },
+        };
+      });
+      setTenureFees(resetState);
       setResetConfirm(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -562,875 +584,824 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }
   }
 
+  const saveDisabled = saving || formErrors.some((error) => error.severity === "error");
+
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-5">
       {showConfig && (
-      <>
-      {/* Header */}
-      <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(15,23,42,0.12)] rounded-2xl dark:shadow-none">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex items-start gap-3.5">
-            <div className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-velo-500 to-velo-600 text-white shadow-md">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09A1.65 1.65 0 00-1.51 1z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </div>
-            <div>
-              <h2 className="text-lg font-extrabold text-velo-900 dark:text-white">Loan Settings & Configuration</h2>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 max-w-xl">
-                Adjust loan limits, tenures, fee schedules, branding, and backend URL. Changes are saved for every user.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {saved && (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400 text-xs font-bold border border-emerald-100 dark:border-emerald-900/40 animate-fade-in">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                Saved
-              </span>
-            )}
-            {!resetConfirm ? (
-              <button type="button" onClick={() => setResetConfirm(true)} className="btn-secondary !py-2 text-xs">
-                Restore .env defaults
-              </button>
-            ) : (
-              <div className="flex items-center gap-1.5">
-                <button type="button" onClick={handleReset} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-50 text-red-700 border border-red-100 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900/40 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-900/30">
-                  Yes, reset all
-                </button>
-                <button type="button" onClick={() => setResetConfirm(false)} className="btn-ghost text-xs !py-2">
-                  Cancel
-                </button>
-              </div>
-            )}
-            <button type="button" onClick={handleSave} disabled={saving || formErrors.some((error) => error.severity === "error")} className="btn-primary !py-2 text-xs !px-4 !font-extrabold">
-              {saving ? "Saving…" : "Save Settings"}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {saveError && (
-        <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-900/40 p-4 text-sm font-medium text-red-700 dark:text-red-400">{saveError}</div>
-      )}
-
-      {formErrors.length > 0 && (
-        <div className={`rounded-xl border p-4 ${formErrors.some(e => e.severity === "error") ? "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-900/40" : "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-900/40"}`}>
-          <h3 className={`text-sm font-bold mb-1 ${formErrors.some(e => e.severity === "error") ? "text-red-700 dark:text-red-400" : "text-amber-800 dark:text-amber-400"}`}>
-            Configuration issues
-          </h3>
-          <ul className="space-y-1 text-xs">
-            {formErrors.map((e, i) => (
-              <li key={i} className="flex items-start gap-2 text-slate-700 dark:text-slate-300">
-                <span className="text-slate-400 dark:text-slate-500 mt-0.5">•</span>
-                <span><strong>{e.key}:</strong> {e.message}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      </>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {showConfig && (
         <>
-        {/* ===== Left: Configuration Sections ===== */}
-        <div className="lg:col-span-2 space-y-6">
-          <Section title="Personal & Business Loan Programs" subtitle="Configure limits, tenures, rates, fees, and collateral rules independently for each loan type." icon={<Icon name="target" size={20} />}>
-            <div className="space-y-5">
-              {(["PERSONAL", "BUSINESS"] as LoanProgramKey[]).map((type) => (
-                <ProgramEditor key={type} type={type} value={programs[type]} onChange={(value) => setPrograms((current) => ({ ...current, [type]: value }))} />
-              ))}
-            </div>
-          </Section>
-
-          <Section title="Loan Amount Limits" subtitle="Activate global limits to apply them to both programs, or deactivate to use each program's limits." icon={<Icon name="money" size={20} />}>
-            <div className="mb-4 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950">
-              <span className="text-sm font-bold">Apply global limits</span>
-              <button type="button" role="switch" aria-checked={globalLimitsEnabled} onClick={() => setGlobalLimitsEnabled((value) => !value)} className={`relative h-6 w-11 rounded-full transition ${globalLimitsEnabled ? "bg-velo-500" : "bg-slate-300 dark:bg-slate-700"}`}><span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${globalLimitsEnabled ? "left-6" : "left-1"}`} /></button>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <NumberField
-                label="Minimum Loan Amount (₦)"
-                value={min}
-                onChange={(value) => updateGlobalLimits({ min: value })}
-              />
-              <NumberField
-                label="Maximum Loan Amount (₦)"
-                value={max}
-                onChange={(value) => updateGlobalLimits({ max: value })}
-              />
-              <NumberField
-                label="Default Amount (₦)"
-                value={defaultAmount}
-                onChange={(value) => updateGlobalLimits({ defaultAmount: value })}
-              />
-            </div>
-          </Section>
-
-          <Section title="Repayment Tenures" subtitle="Select the repayment periods available to borrowers." icon={<Icon name="calendar" size={20} />}>
-            <Field label="Tenures (days)">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {tenureOptions.map((tenure) => (
-                  <label key={tenure.value} className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-velo-900 cursor-pointer hover:border-velo-300 transition-colors">
-                    <input
-                      type="checkbox"
-                      checked={selectedTenures.includes(tenure.value)}
-                      onChange={(event) => setSelectedTenures((current) => event.target.checked
-                        ? [...current, tenure.value].sort((a, b) => a - b)
-                        : current.filter((value) => value !== tenure.value))}
-                      className="h-4 w-4 rounded accent-velo-500"
-                    />
-                    {tenure.value} days
-                  </label>
-                ))}
-              </div>
-              {tenures.length === 0 && <span className="mt-2 block text-xs text-red-600">Select at least one tenure.</span>}
-            </Field>
-          </Section>
-
-          <Section title="Fees Configuration (Global)" subtitle="Activate global fees for all programs, or deactivate to use each program's separate fee configuration." icon={<Icon name="money" size={20} />}>
-            <div className="mb-4">
-              <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-950">
-                <div className="pr-4">
-                  <div className="text-sm font-bold text-velo-900 dark:text-velo-100">Global transactions</div>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    When ON, the four fees below override every loan program (interest, service fee, processing fee, late fee). When OFF, each program uses its own per-program fees.
-                  </div>
+          {/* ===== Console header ===== */}
+          <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 text-white shadow-elevated">
+            <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-velo-400/20 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-24 -left-10 h-48 w-48 rounded-full bg-sky-400/10 blur-3xl" />
+            <div className="relative flex flex-col gap-4 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-start gap-3.5">
+                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09A1.65 1.65 0 00-1.51 1z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </div>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-black tracking-tight sm:text-xl">Platform Settings</h2>
+                  <p className="mt-0.5 text-xs leading-5 text-white/70 sm:max-w-xl sm:text-[13px]">
+                    Configure loan programs, limits, fees, branding and access — saved for every user on the platform.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {saving && (
+                  <Pill tone="info"><span className="h-2 w-2 animate-pulse rounded-full bg-velo-400" />Saving…</Pill>
+                )}
+                {!saving && saved && (
+                  <Pill tone="success" ><span className="flex h-3 w-3 items-center justify-center"><svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"/></svg></span>Saved</Pill>
+                )}
+                {!saving && !saved && (
+                  <span className="hidden items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-white/70 sm:inline-flex">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />Live for all users
+                  </span>
+                )}
+                {!resetConfirm ? (
+                  <button
+                    type="button"
+                    onClick={() => setResetConfirm(true)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-white/20 disabled:opacity-50"
+                    disabled={saving}
+                  >
+                    Restore defaults
+                  </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <button type="button" onClick={handleReset} disabled={saving} className="inline-flex items-center gap-1.5 rounded-xl bg-red-500 px-3.5 py-2 text-xs font-black text-white shadow transition hover:bg-red-600 disabled:opacity-50">
+                      Yes, reset all
+                    </button>
+                    <button type="button" onClick={() => setResetConfirm(false)} className="rounded-xl px-3 py-2 text-xs font-bold text-white/80 transition hover:bg-white/10">
+                      Cancel
+                    </button>
+                  </span>
+                )}
                 <button
                   type="button"
-                  role="switch"
-                  aria-checked={globalTransactionsEnabled}
-                  onClick={() => setGlobalTransactionsEnabled((v) => !v)}
-                  className={`relative h-6 w-11 shrink-0 rounded-full transition ${globalTransactionsEnabled ? "bg-velo-500" : "bg-slate-300 dark:bg-slate-700"}`}
+                  onClick={handleSave}
+                  disabled={saveDisabled}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-xs font-black text-velo-800 shadow-lg transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${globalTransactionsEnabled ? "left-6" : "left-1"}`} />
+                  {saving ? (
+                    <><span className="h-3 w-3 animate-spin rounded-full border-2 border-velo-600 border-t-transparent" />Saving…</>
+                  ) : (
+                    <><svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>Save settings</>
+                  )}
                 </button>
               </div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
-                <FeeField
-                  key={k}
-                  feeKey={k}
-                  label={FEE_LABELS[k]}
-                  baseFee={baseConfig.fees[k]}
-                  value={fees[k]}
-                  onChange={(v) => setFees({ ...fees, [k]: v })}
-                />
-              ))}
-            </div>
-          </Section>
+          </div>
 
-          <Section
-            title="Per-Tenure Fee Overrides"
-            subtitle="Optional: Set DIFFERENT fees per loan tenor. Toggle a tenure ON to override global fees. Any fee left untoggled inherits from the Global config above."
-            icon={<Icon name="chart" size={20} />}
-          >
-            <div className="space-y-3">
-              {tenures.length === 0 && (
-                <div className="text-xs text-slate-500 italic">Add tenures above first to configure per-tenure fees.</div>
-              )}
-              {tenures.map((t) => {
-                const state = tenureFeesSynced[t.value];
-                if (!state) return null;
+          {/* ===== Error surfaces ===== */}
+          {saveError && (
+            <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+              <Icon name="alert" size={18} />
+              <div className="min-w-0 flex-1">{saveError}</div>
+            </div>
+          )}
+          {formErrors.length > 0 && (
+            <div className={`rounded-2xl border p-4 ${formErrors.some(e => e.severity === "error") ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/40" : "border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/40"}`}>
+              <div className={`mb-1.5 flex items-center gap-2 text-sm font-black ${formErrors.some(e => e.severity === "error") ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
+                <Icon name="alert" size={15} />{formErrors.some(e => e.severity === "error") ? "Fix these before saving" : "Review these warnings"}
+              </div>
+              <ul className="space-y-1 text-xs">
+                {formErrors.map((e, i) => (
+                  <li key={i} className="flex items-start gap-2 text-slate-700 dark:text-slate-300">
+                    <span className="mt-0.5 text-slate-400">•</span>
+                    <span><strong className="font-bold">{e.key}:</strong> {e.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* ===== Sticky tab bar ===== */}
+          <div className="sticky top-14 z-20 -mx-1 bg-slate-50/95 px-1 py-2 backdrop-blur dark:bg-slate-950/95 sm:top-16">
+            <div className="flex gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900" role="tablist">
+              {SETTINGS_TABS.map((tab) => {
+                const active = activeTab === tab.key;
                 return (
-                  <div
-                    key={t.value}
-                    className={`rounded-2xl border transition-all duration-200 overflow-hidden ${
-                      state.enabled
-                        ? "border-velo-300 bg-gradient-to-br from-velo-50/60 to-white shadow-sm"
-                        : "border-slate-200 bg-white hover:border-slate-300"
+                  <button
+                    key={tab.key}
+                    role="tab"
+                    aria-selected={active}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition-all duration-150 ${
+                      active
+                        ? "bg-velo-500 text-white shadow-sm"
+                        : "text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
                     }`}
                   >
-                    <div className="flex items-center justify-between p-4 border-b border-inherit">
-                      <div className="flex items-center gap-3">
-                        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={state.enabled}
-                            onChange={(e) =>
-                              setTenureFees({
-                                ...tenureFeesSynced,
-                                [t.value]: { ...state, enabled: e.target.checked },
-                              })
-                            }
-                            className="h-5 w-5 rounded accent-velo-500 cursor-pointer"
-                          />
-                        </label>
-                        <div>
-                          <div className="text-sm font-extrabold text-velo-900">
-                            {t.value} Day Tenure
-                          </div>
-                          <div className="text-[11px] text-slate-500">
-                            {state.enabled ? <span className="inline-flex items-center gap-1 text-emerald-700"><Icon name="check" size={12} />Custom fees active for this tenure</span> : "Using global fees (inherited)"}
-                          </div>
-                        </div>
-                      </div>
-                      <span
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border ${
-                          state.enabled
-                            ? "bg-velo-500 text-white border-velo-500 shadow-sm"
-                            : "bg-slate-100 text-slate-500 border-slate-200"
-                        }`}
-                      >
-                        {state.enabled ? "CUSTOM" : "GLOBAL"}
-                      </span>
-                    </div>
-                    {state.enabled && (
-                      <div className="p-4 pt-0">
-                        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
-                            <FeeField
-                              key={k}
-                              feeKey={k}
-                              label={`${FEE_LABELS[k]} (${t.value}d only)`}
-                              baseFee={fees[k]}
-                              baseLabel="Global"
-                              value={state.fees[k]}
-                              onChange={(v) =>
-                                setTenureFees({
-                                  ...tenureFeesSynced,
-                                  [t.value]: {
-                                    ...state,
-                                    fees: { ...state.fees, [k]: v },
-                                  },
-                                })
-                              }
-                              compact
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                    {tab.icon}
+                    {tab.label}
+                  </button>
                 );
               })}
             </div>
-          </Section>
-
-          <Section title="Company & Branding" subtitle="Displayed throughout the loan portal and documents." icon={<Icon name="bank" size={20} />}>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Field label="Company Name">
-                <input
-                  type="text"
-                  value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                  className="velo-input text-sm"
-                />
-              </Field>
-              <Field label="Company Website (no protocol)">
-                <input
-                  type="text"
-                  value={companyWebsite}
-                  onChange={(e) => setCompanyWebsite(e.target.value)}
-                  className="velo-input text-sm"
-                  placeholder="www.yourcompany.com"
-                />
-              </Field>
-              <Field label="Brand Logo URL">
-                <input type="url" value={brandLogoUrl} onChange={(e) => setBrandLogoUrl(e.target.value)} className="velo-input text-sm" placeholder="https://.../logo.png" />
-                <div className="mt-2 flex items-center gap-3"><img src={brandLogoUrl} alt="Brand preview" className="h-10 max-w-[180px] object-contain" /><span className="text-xs text-slate-500">Used in navigation, SEO, emails, and agreements where supported.</span></div>
-              </Field>
-              <Field label="Authorised Signatory Full Name">
-                <input type="text" value={lenderSignatoryName} onChange={(e) => setLenderSignatoryName(e.target.value)} className="velo-input text-sm" placeholder="Full name displayed on agreements" />
-              </Field>
-              <Field label="Authorised Signatory Position">
-                <input type="text" value={lenderSignatoryPosition} onChange={(e) => setLenderSignatoryPosition(e.target.value)} className="velo-input text-sm" placeholder="e.g. Director" />
-              </Field>
-              <Field label="Authorised Signatory Signature URL">
-                <input type="url" value={lenderSignatorySignatureUrl} onChange={(e) => setLenderSignatorySignatureUrl(e.target.value)} className="velo-input text-sm" placeholder="https://.../signature.png" />
-              </Field>
-              <Field label="Frontend API URL">
-                <input type="url" value={apiUrl} onChange={(e) => setApiUrl(e.target.value.replace(/\/$/, ""))} className="velo-input text-sm" placeholder="https://api.example.com" />
-                <div className="velo-helper">Changing this takes effect after a page reload.</div>
-              </Field>
-              <Field label="Administrator Emails">
-                <input
-                  type="text"
-                  value={adminEmails}
-                  onChange={(e) => setAdminEmails(e.target.value)}
-                  className="velo-input text-sm"
-                  placeholder="admin@company.com, owner@company.com"
-                />
-                <div className="velo-helper">These administrators receive loan application and status notifications and can use password reset.</div>
-              </Field>
-              <Field label="Loan Manager Emails">
-                <input
-                  type="text"
-                  value={loanManagerEmails}
-                  onChange={(e) => setLoanManagerEmails(e.target.value)}
-                  className="velo-input text-sm"
-                  placeholder="manager@company.com, team@company.com"
-                />
-                <div className="velo-helper">Comma-separated recipients for new applications and loan status updates.</div>
-              </Field>
-            </div>
-          </Section>
-
-          <Section title="Environment & Integrations" subtitle="Deployment-controlled values are shown for visibility. Secrets are never exposed in the browser or editable here." icon={<Icon name="lock" size={20} />}>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {[
-                ["Database", "Server secret", "Not exposed"],
-                ["JWT signing", "Server secret", "Not exposed"],
-                ["Flutterwave", "Payment provider", "Configured by backend"],
-                ["Prembly", "Identity provider", "Configured by backend"],
-                ["Google Drive", "Private document storage", "Configured by backend"],
-                ["Brevo / KUDI / Meta", "Notifications", "Configured by backend"],
-                ["Loan policy", "Eligibility thresholds", "Configured by backend"],
-                ["Reminder schedule", "Repayment notifications", "Configured by backend"],
-              ].map(([name, category, status]) => <div key={name} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700"><div className="text-sm font-semibold text-velo-900 dark:text-white">{name}</div><div className="mt-1 text-xs text-slate-500">{category}</div><div className="mt-2 text-xs font-semibold text-emerald-600">{status}</div></div>)}
-            </div>
-            <p className="mt-4 text-xs leading-5 text-slate-500">Provider keys, database credentials, admin passwords, JWT secrets, storage credentials, webhook secrets, and OTP secrets must be changed in the deployment environment and are intentionally unavailable to browser administrators.</p>
-          </Section>
-        </div>
-
-        {/* ===== Right: Live Preview + Info ===== */}
-        <div className="space-y-6">
-          <div className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl border-0 shadow-md bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 text-white relative overflow-hidden">
-            <div className="absolute -top-16 -right-16 w-48 h-48 bg-velo-300/20 rounded-full blur-2xl animate-float" />
-            <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-velo-400/15 rounded-full blur-2xl animate-float-slow" />
-
-            <div className="relative">
-              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/15 border border-white/20 text-[10px] font-bold mb-3">
-                <Icon name="sparkles" size={12} />LIVE PREVIEW
-              </div>
-              <h3 className="font-extrabold text-white mb-0.5">Sample Calculation</h3>
-              <p className="text-xs text-white/70 mb-4">
-                Default amount × middle tenure (selected program fees)
-              </p>
-
-              <div className="space-y-1.5 mb-4">
-                <PreviewRow label="Principal" value={formatNaira(previewCalc.loanAmount)} />
-                <PreviewRow label="Interest" value={formatNaira(previewCalc.interest)} />
-                <PreviewRow label="Service Fee" value={formatNaira(previewCalc.serviceFee)} />
-                <PreviewRow label="Processing Fee" value={formatNaira(previewCalc.processingFee)} />
-                {previewCalc.lateFee > 0 && (
-                  <PreviewRow label="Default Fee (if any)" value={formatNaira(previewCalc.lateFee)} muted />
-                )}
-              </div>
-
-              <div className="border-t border-white/15 pt-3 mb-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-white/80 text-xs font-bold">TOTAL REPAYMENT</span>
-                  <span className="text-2xl font-black tracking-tight animate-bounce-subtle" key={previewCalc.totalRepayment}>
-                    {formatNaira(previewCalc.totalRepayment)}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center mt-2 text-[11px] text-white/70">
-                  <span>Tenure: <strong className="text-white/90">{previewCalc.tenureLabel}</strong></span>
-                  <span>Due: <strong className="text-white/90">{previewCalc.repaymentDateLabel || "..."}</strong></span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={saving || formErrors.some((error) => error.severity === "error")}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white text-velo-700 font-extrabold shadow-lg transition-all duration-200 hover:shadow-xl hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {saving ? "Saving…" : "Apply These Settings"}
-              </button>
-            </div>
           </div>
 
-          <div className="velo-card p-4 sm:p-5 rounded-2xl border-0">
-            <h3 className="font-bold text-velo-900 text-sm mb-2 flex items-center gap-1.5">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-velo-500"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.8"/><path d="M12 8v5M12 16h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-              How this works
-            </h3>
-            <ul className="space-y-2 text-xs text-slate-600">
-              <li className="flex gap-2"><span className="text-velo-500 font-bold">1.</span>Settings are saved to the shared Velo configuration.</li>
-              <li className="flex gap-2"><span className="text-velo-500 font-bold">2.</span>Every applicant receives the saved settings when the site loads.</li>
-              <li className="flex gap-2"><span className="text-velo-500 font-bold">3.</span>Per-tenure fee schedules take precedence over the global fees.</li>
-              <li className="flex gap-2"><span className="text-velo-500 font-bold">4.</span>Restore defaults removes the shared override and returns to the deployed baseline.</li>
-            </ul>
-          </div>
+          {/* ===== Tab content + context sidebar ===== */}
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+            <div className="min-w-0 space-y-5 xl:col-span-2">
+              {activeTab === "programs" && (
+                <>
+                  <PanelCard
+                    title="Loan programs"
+                    description="Each program controls the limits, tenures, rates, fees and collateral rules its applicants see."
+                    icon={<Icon name="target" size={18} />}
+                    action={<Pill tone="info">2 programs</Pill>}
+                  >
+                    <div className="space-y-4 py-2">
+                      {(["PERSONAL", "BUSINESS"] as LoanProgramKey[]).map((type) => (
+                        <ProgramEditor key={type} type={type} value={programs[type]} onChange={(value) => setPrograms((current) => ({ ...current, [type]: value }))} />
+                      ))}
+                    </div>
+                  </PanelCard>
+                </>
+              )}
 
-        </div>
-      </>)}
-      </div>
+              {activeTab === "limits" && (
+                <>
+                  <PanelCard
+                    title="Global loan limits"
+                    description="Apply one range to both programs, or switch off to use each program's own limits."
+                    icon={<Icon name="money" size={18} />}
+                    action={<Toggle checked={globalLimitsEnabled} onChange={setGlobalLimitsEnabled} label={globalLimitsEnabled ? "Global" : "Per program"} />}
+                  >
+                    <div className={globalLimitsEnabled ? "" : "pointer-events-none opacity-50"}>
+                      <div className="grid grid-cols-1 gap-4 py-3 sm:grid-cols-3">
+                        <NairaField label="Minimum loan" value={min} onChange={(value) => updateGlobalLimits({ min: value })} />
+                        <NairaField label="Maximum loan" value={max} onChange={(value) => updateGlobalLimits({ max: value })} />
+                        <NairaField label="Default amount" value={defaultAmount} onChange={(value) => updateGlobalLimits({ defaultAmount: value })} helpText="Pre-selected on the application form" />
+                      </div>
+                    </div>
+                    {!globalLimitsEnabled && (
+                      <p className="pb-3 text-[11px] font-semibold text-amber-600 dark:text-amber-400">Per-program limits are edited on the Loan Programs tab.</p>
+                    )}
+                  </PanelCard>
+
+                  <PanelCard
+                    title="Repayment tenures"
+                    description="Select the repayment periods available to borrowers."
+                    icon={<Icon name="calendar" size={18} />}
+                    action={<Pill tone={tenures.length === 0 ? "danger" : "neutral"}>{tenures.length} selected</Pill>}
+                  >
+                    <div className="flex flex-wrap gap-2 py-3">
+                      {tenureOptions.map((tenure) => (
+                        <Chip
+                          key={tenure.value}
+                          selected={selectedTenures.includes(tenure.value)}
+                          onClick={() => setSelectedTenures((current) =>
+                            current.includes(tenure.value)
+                              ? current.filter((value) => value !== tenure.value)
+                              : [...current, tenure.value].sort((a, b) => a - b)
+                          )}
+                        >
+                          {tenure.value} days
+                        </Chip>
+                      ))}
+                    </div>
+                    {tenures.length === 0 && <p className="pb-3 text-xs font-semibold text-red-600">Select at least one tenure.</p>}
+                  </PanelCard>
+
+                  <PanelCard
+                    title="Per-tenure fee overrides"
+                    description="Optional: give specific tenors their own fee schedule. Fees left unchanged inherit from the global fees."
+                    icon={<Icon name="chart" size={18} />}
+                  >
+                    <div className="space-y-3 py-3">
+                      {tenures.length === 0 && (
+                        <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                          Select tenures above to configure per-tenure fees.
+                        </div>
+                      )}
+                      {tenures.map((t) => {
+                        const state = tenureFeesSynced[t.value];
+                        if (!state) return null;
+                        return (
+                          <div
+                            key={t.value}
+                            className={`overflow-hidden rounded-2xl border transition-all duration-200 ${
+                              state.enabled
+                                ? "border-velo-300 bg-velo-50/50 dark:border-velo-700 dark:bg-velo-900/20"
+                                : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3 p-3.5">
+                              <div className="flex items-center gap-3">
+                                <Toggle size="sm" checked={state.enabled} onChange={(on) => setTenureFees({ ...tenureFeesSynced, [t.value]: { ...state, enabled: on } })} />
+                                <div>
+                                  <div className="text-sm font-extrabold text-velo-900 dark:text-white">{t.value} days</div>
+                                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                                    {state.enabled ? "Custom fees active for this tenure" : "Using global fees (inherited)"}
+                                  </div>
+                                </div>
+                              </div>
+                              <Pill tone={state.enabled ? "info" : "neutral"}>{state.enabled ? "CUSTOM" : "GLOBAL"}</Pill>
+                            </div>
+                            {state.enabled && (
+                              <div className="grid grid-cols-1 gap-3 border-t border-velo-100 p-3.5 dark:border-velo-800/60 md:grid-cols-2">
+                                {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
+                                  <FeeEditor
+                                    key={k}
+                                    label={FEE_LABELS[k]}
+                                    value={state.fees[k]}
+                                    baseline={fees[k]}
+                                    baselineLabel="Global"
+                                    onChange={(v) => setTenureFees({ ...tenureFeesSynced, [t.value]: { ...state, fees: { ...state.fees, [k]: v } } })}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </PanelCard>
+                </>
+              )}
+
+              {activeTab === "fees" && (
+                <PanelCard
+                  title="Global fees & charges"
+                  description="When global fees are ON, the four fees below override every loan program. When OFF, each program uses its own per-program fees."
+                  icon={<Icon name="chart" size={18} />}
+                  action={<Toggle checked={globalTransactionsEnabled} onChange={setGlobalTransactionsEnabled} label={globalTransactionsEnabled ? "Global" : "Per program"} />}
+                >
+                  <div className={globalTransactionsEnabled ? "space-y-4 py-3" : "space-y-4 py-3"}>
+                    {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
+                      <FeeEditor
+                        key={k}
+                        label={FEE_LABELS[k]}
+                        description={FEE_DESCRIPTIONS[k]}
+                        value={fees[k]}
+                        baseline={baseConfig.fees[k]}
+                        baselineLabel="default"
+                        onChange={(v) => setFees({ ...fees, [k]: v })}
+                      />
+                    ))}
+                  </div>
+                  {!globalTransactionsEnabled && (
+                    <p className="pb-3 text-[11px] font-semibold text-amber-600 dark:text-amber-400">Per-program fees are edited on the Loan Programs tab.</p>
+                  )}
+                </PanelCard>
+              )}
+
+              {activeTab === "branding" && (
+                <PanelCard
+                  title="Company, branding & access"
+                  description="Displayed throughout the loan portal, emails and agreement documents."
+                  icon={<Icon name="bank" size={18} />}
+                >
+                  <div className="py-1">
+                    <SettingRow label="Company name" description="Legal entity name shown on agreements and receipts.">
+                      <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)} className="velo-input text-sm" />
+                    </SettingRow>
+                    <SettingRow label="Company website" description="Shown in the portal footer and documents (no protocol).">
+                      <input type="text" value={companyWebsite} onChange={(e) => setCompanyWebsite(e.target.value)} className="velo-input text-sm" placeholder="www.yourcompany.com" />
+                    </SettingRow>
+                    <SettingRow label="Brand logo URL" description="Used in navigation, SEO, emails and agreements." stacked>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <input type="url" value={brandLogoUrl} onChange={(e) => setBrandLogoUrl(e.target.value)} className="velo-input text-sm" placeholder="https://.../logo.png" />
+                        <div className="flex h-12 w-32 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white px-2 dark:border-slate-700 dark:bg-slate-800">
+                          {brandLogoUrl ? <img src={brandLogoUrl} alt="Brand preview" className="max-h-10 max-w-full object-contain" /> : <span className="text-[10px] text-slate-400">No logo</span>}
+                        </div>
+                      </div>
+                    </SettingRow>
+                    <SettingRow label="Authorised signatory" description="Name and position printed on loan agreements.">
+                      <div className="space-y-2">
+                        <input type="text" value={lenderSignatoryName} onChange={(e) => setLenderSignatoryName(e.target.value)} className="velo-input text-sm" placeholder="Full name" />
+                        <input type="text" value={lenderSignatoryPosition} onChange={(e) => setLenderSignatoryPosition(e.target.value)} className="velo-input text-sm" placeholder="e.g. Director" />
+                      </div>
+                    </SettingRow>
+                    <SettingRow label="Signatory signature URL" description="Signature image appended to agreements.">
+                      <input type="url" value={lenderSignatorySignatureUrl} onChange={(e) => setLenderSignatorySignatureUrl(e.target.value)} className="velo-input text-sm" placeholder="https://.../signature.png" />
+                    </SettingRow>
+                    <SettingRow label="Frontend API URL" description="Takes effect after a page reload.">
+                      <input type="url" value={apiUrl} onChange={(e) => setApiUrl(e.target.value.replace(/\/$/, ""))} className="velo-input text-sm" placeholder="https://api.example.com" />
+                    </SettingRow>
+                    <SettingRow label="Administrator emails" description="Receive loan notifications; can use password reset." stacked>
+                      <input type="text" value={adminEmails} onChange={(e) => setAdminEmails(e.target.value)} className="velo-input text-sm" placeholder="admin@company.com, owner@company.com" />
+                    </SettingRow>
+                    <SettingRow label="Loan manager emails" description="Comma-separated recipients for applications and status updates." stacked last>
+                      <input type="text" value={loanManagerEmails} onChange={(e) => setLoanManagerEmails(e.target.value)} className="velo-input text-sm" placeholder="manager@company.com, team@company.com" />
+                    </SettingRow>
+                  </div>
+                </PanelCard>
+              )}
+
+              {activeTab === "system" && (
+                <PanelCard
+                  title="Environment & integrations"
+                  description="Deployment-controlled values, shown for visibility only."
+                  icon={<Icon name="lock" size={18} />}
+                >
+                  <div className="grid gap-3 py-3 sm:grid-cols-2">
+                    {[
+                      ["Database", "Server secret"],
+                      ["JWT signing", "Server secret"],
+                      ["Flutterwave", "Payment provider"],
+                      ["Prembly", "Identity provider"],
+                      ["Google Drive", "Document storage"],
+                      ["Brevo / KUDI / Meta", "Notifications"],
+                      ["Loan policy", "Eligibility thresholds"],
+                      ["Reminder schedule", "Repayment notifications"],
+                    ].map(([name, category]) => (
+                      <div key={name} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3.5 py-3 dark:border-slate-700">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-bold text-velo-900 dark:text-white">{name}</div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">{category}</div>
+                        </div>
+                        <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />Backend
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="border-t border-slate-100 py-3 text-[11px] leading-5 text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                    Provider keys, database credentials, admin passwords, JWT secrets, storage and webhook secrets are configured in the deployment environment and are intentionally never exposed to the browser.
+                  </p>
+                </PanelCard>
+              )}
+            </div>
+
+            {/* ===== Context sidebar ===== */}
+            <div className="min-w-0 space-y-5">
+              {(activeTab === "limits" || activeTab === "fees" || activeTab === "programs") && (
+                <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 p-5 text-white shadow-elevated">
+                  <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-velo-300/20 blur-2xl" />
+                  <div className="relative">
+                    <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] font-black tracking-wider">
+                      <Icon name="sparkles" size={11} />LIVE PREVIEW
+                    </span>
+                    <h3 className="mb-0.5 text-sm font-extrabold">Sample calculation</h3>
+                    <p className="mb-4 text-[11px] text-white/70">Default amount × middle tenure, using global fees.</p>
+                    <div className="mb-3 space-y-1">
+                      <PreviewRow label="Principal" value={formatNaira(previewCalc.loanAmount)} />
+                      <PreviewRow label="Interest" value={formatNaira(previewCalc.interest)} />
+                      <PreviewRow label="Service Fee" value={formatNaira(previewCalc.serviceFee)} />
+                      <PreviewRow label="Processing Fee" value={formatNaira(previewCalc.processingFee)} />
+                      {previewCalc.lateFee > 0 && <PreviewRow label="Default Fee (if any)" value={formatNaira(previewCalc.lateFee)} muted />}
+                    </div>
+                    <div className="border-t border-white/15 pt-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-black tracking-wider text-white/80">TOTAL REPAYMENT</span>
+                        <span key={previewCalc.totalRepayment} className="animate-bounce-subtle text-xl font-black tracking-tight sm:text-2xl">
+                          {formatNaira(previewCalc.totalRepayment)}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex justify-between text-[10px] text-white/70">
+                        <span>Tenure: <strong className="text-white/90">{previewCalc.tenureLabel}</strong></span>
+                        <span>Due: <strong className="text-white/90">{previewCalc.repaymentDateLabel || "…"}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === "branding" && (
+                <PanelCard title="How branding is used" icon={<Icon name="sparkles" size={16} />}>
+                  <ul className="space-y-2.5 py-2 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                    {[
+                      "The company name appears on agreements, receipts and emails.",
+                      "The logo renders in the portal navigation and PDF documents.",
+                      "The signatory block is printed on every loan agreement.",
+                      "Admin emails receive application and status notifications.",
+                    ].map((line) => (
+                      <li key={line} className="flex gap-2">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-velo-500" />{line}
+                      </li>
+                    ))}
+                  </ul>
+                </PanelCard>
+              )}
+
+              {activeTab === "system" && (
+                <PanelCard title="Security model" icon={<Icon name="lock" size={16} />}>
+                  <div className="space-y-2.5 py-2 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                    <p>Secrets live only on the server. The browser admin console edits product configuration — never credentials.</p>
+                    <p>To rotate a provider key or database credential, update the environment variables in your hosting dashboard and redeploy.</p>
+                  </div>
+                </PanelCard>
+              )}
+
+              <PanelCard title="How this works" icon={<Icon name="history" size={16} />}>
+                <ol className="space-y-2.5 py-2 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                  {[
+                    "Settings are saved to the shared Velo configuration and pushed to the backend.",
+                    "Every applicant receives the saved settings when the site loads.",
+                    "Per-tenure fee schedules take precedence over the global fees.",
+                    "Restore defaults returns to the deployed baseline configuration.",
+                  ].map((line, i) => (
+                    <li key={line} className="flex gap-2.5">
+                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-velo-100 text-[10px] font-black text-velo-700 dark:bg-velo-900 dark:text-velo-300">{i + 1}</span>
+                      {line}
+                    </li>
+                  ))}
+                </ol>
+              </PanelCard>
+            </div>
+          </div>
+        </>
+      )}
+
       {(showInvestorTools || showWithdrawals || showLedger) && (
-      <>
-      {/* ===== Investor Management + Admin Ledger Center ===== */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
           {/* ============ INVESTOR MANAGEMENT ============ */}
           {showInvestorTools && (
-          <div className={`space-y-6 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
-            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(16,185,129,0.12)] rounded-2xl border-l-4 border-emerald-500 dark:bg-slate-900 dark:border-slate-800 dark:shadow-none">
-              <div className="flex items-start justify-between flex-wrap gap-4 mb-5">
-                <div>
-                  <h3 className="text-lg font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
-                    <Icon name="briefcase" size={22} />Investor Management — Withdrawal Fees &amp; Earning Rates
-                  </h3>
-                  <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-                    Configure global withdrawal fees, default investment earning rates, and per-investor overrides.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleSavePlatformSettings}
-                    disabled={platformLoading}
-                    className="btn-primary !py-2 !px-4 text-xs !font-extrabold"
-                  >
-                    {platformLoading ? "Saving…" : <><Icon name="save" size={14} />Save Platform Settings</>}
+            <div className={`min-w-0 space-y-5 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
+              <PanelCard
+                title="Investor management"
+                description="Global withdrawal fees, default investment earning rate, and per-investor overrides."
+                icon={<Icon name="briefcase" size={18} />}
+                tone="emerald"
+                action={
+                  <button onClick={handleSavePlatformSettings} disabled={platformLoading} className="btn-primary !py-2 !px-4 text-xs !font-extrabold">
+                    {platformLoading ? "Saving…" : <><Icon name="save" size={14} />Save platform settings</>}
                   </button>
-                </div>
-              </div>
-              {platformMessage && <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 px-4 py-2.5 text-sm font-bold mb-4 animate-fade-in">{platformMessage}</div>}
-              {platformError && <div className="rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 px-4 py-2.5 text-sm font-bold mb-4">{platformError}</div>}
-          
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-4">
-                  <label className="text-xs font-bold text-slate-700 block mb-2">
-                    Investor Withdrawal Fee (%)
-                    <span className="text-[10px] font-normal text-slate-500 block mb-1">
-                      Percentage of withdrawal amount charged as fee
-                    </span>
-                  </label>
+                }
+              >
+                {platformMessage && (
+                  <div className="mb-1 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-bold text-emerald-700 animate-fade-in dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    <Icon name="check" size={14} />{platformMessage}
+                  </div>
+                )}
+                {platformError && (
+                  <div className="mb-1 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-bold text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+                    <Icon name="alert" size={14} />{platformError}
+                  </div>
+                )}
+                <SettingRow
+                  label="Investor withdrawal fee (%)"
+                  description="Percentage of the withdrawal amount charged as a fee."
+                  last
+                >
                   <div className="relative">
                     <input
                       type="number"
                       step="0.1"
                       min="0"
                       max="100"
-                      className="velo-input pr-8"
+                      className="velo-input pr-8 text-sm font-bold"
                       value={withdrawalFeePercent}
                       onChange={(e) => setWithdrawalFeePercent(Number(e.target.value))}
                     />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">%</span>
                   </div>
-                  <div className="mt-3 pt-3 border-t border-slate-100 flex justify-between text-[11px]">
-                    <span className="text-slate-500">Current</span>
-                    <span className="font-extrabold text-emerald-600">{platformSettings?.investorWithdrawalFeePercent ?? 0}%</span>
-                  </div>
-                </div>
-                
-                <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-4">
-                  <label className="text-xs font-bold text-slate-700 block mb-2">
-                    Flat Withdrawal Fee (₦)
-                    <span className="text-[10px] font-normal text-slate-500 block mb-1">
-                      Fixed flat fee added to every withdrawal
-                    </span>
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">₦</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      className="velo-input !pl-12"
-                      value={withdrawalFeeFlatNaira}
-                      onChange={(e) => setWithdrawalFeeFlatNaira(Number(e.target.value))}
-                    />
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-slate-100 flex justify-between text-[11px]">
-                    <span className="text-slate-500">Current</span>
-                    <span className="font-extrabold text-emerald-600">
-                      ₦{Math.round((platformSettings?.investorWithdrawalFeeFlatMinor ?? 0) / 100).toLocaleString("en-NG")}
-                    </span>
-                  </div>
-                </div>
-                
-                <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-4">
-                  <label className="text-xs font-bold text-slate-700 block mb-2">
-                    Default Investment Annual Rate
-                    <span className="text-[10px] font-normal text-slate-500 block mb-1">
-                      Default rate used when no plan rate or override is set
-                    </span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="0.25"
-                      min="0"
-                      max="100"
-                      className="velo-input pr-8"
-                      value={defaultAnnualRate}
-                      onChange={(e) => setDefaultAnnualRate(Number(e.target.value))}
-                    />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-slate-100 flex justify-between text-[11px]">
-                    <span className="text-slate-500">Current</span>
-                    <span className="font-extrabold text-emerald-600">{platformSettings?.defaultInvestmentAnnualRatePercent ?? 0}%</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+                </SettingRow>
+              </PanelCard>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(59,130,246,0.12)] rounded-2xl border-t-4 border-blue-500">
-                <h3 className="text-md font-extrabold text-velo-900 mb-1 flex items-center gap-2">
-                  <Icon name="chart" size={20} />Set Custom Earning Rate per Investor
-                </h3>
-                <p className="text-xs text-slate-500 mb-4">Override the default earning rate for a specific investor.</p>
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 block mb-1.5">Select Investor</label>
-                    <select
-                      className="velo-input text-sm"
-                      value={earningInvestorId}
-                      onChange={(e) => setEarningInvestorId(e.target.value)}
-                      disabled={investorsLoading}
-                    >
-                      <option value="">{investorsLoading ? "Loading investors…" : "Select investor…"}</option>
-                      {investors.map((inv) => (
-                        <option key={inv.id} value={inv.id}>
-                          {inv.fullName} — {inv.email}
-                        </option>
-                      ))}
-                    </select>
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                <PanelCard
+                  title="Withdrawal fee (flat)"
+                  description="Fixed fee added to every investor withdrawal."
+                  icon={<Icon name="wallet" size={18} />}
+                  tone="emerald"
+                >
+                  <div className="py-2">
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">₦</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="100"
+                        className="velo-input !pl-9 text-sm font-bold"
+                        value={withdrawalFeeFlatNaira}
+                        onChange={(e) => setWithdrawalFeeFlatNaira(Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="mt-3 flex justify-between border-t border-slate-100 pt-3 text-[11px] dark:border-slate-800">
+                      <span className="text-slate-500">Currently saved</span>
+                      <span className="font-black text-emerald-600 dark:text-emerald-400">
+                        ₦{Math.round((platformSettings?.investorWithdrawalFeeFlatMinor ?? 0) / 100).toLocaleString("en-NG")}
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 block mb-1.5">Annual Earning Rate (%)</label>
+                </PanelCard>
+
+                <PanelCard
+                  title="Default investment rate"
+                  description="Annual rate used when no plan rate or override is set."
+                  icon={<Icon name="chart" size={18} />}
+                  tone="emerald"
+                >
+                  <div className="py-2">
                     <div className="relative">
                       <input
                         type="number"
                         step="0.25"
                         min="0"
                         max="100"
-                        className="velo-input pr-8"
+                        className="velo-input pr-8 text-sm font-bold"
+                        value={defaultAnnualRate}
+                        onChange={(e) => setDefaultAnnualRate(Number(e.target.value))}
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">%</span>
+                    </div>
+                    <div className="mt-3 flex justify-between border-t border-slate-100 pt-3 text-[11px] dark:border-slate-800">
+                      <span className="text-slate-500">Currently saved</span>
+                      <span className="font-black text-emerald-600 dark:text-emerald-400">{platformSettings?.defaultInvestmentAnnualRatePercent ?? 0}%</span>
+                    </div>
+                  </div>
+                </PanelCard>
+
+                <PanelCard
+                  title="Custom earning rate"
+                  description="Override the default annual earning rate for one investor."
+                  icon={<Icon name="chart" size={18} />}
+                  tone="sky"
+                >
+                  <div className="space-y-3 py-2">
+                    <select className="velo-input text-sm" value={earningInvestorId} onChange={(e) => setEarningInvestorId(e.target.value)} disabled={investorsLoading}>
+                      <option value="">{investorsLoading ? "Loading investors…" : "Select investor…"}</option>
+                      {investors.map((inv) => (
+                        <option key={inv.id} value={inv.id}>{inv.fullName} — {inv.email}</option>
+                      ))}
+                    </select>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="0.25"
+                        min="0"
+                        max="100"
+                        className="velo-input pr-8 text-sm font-bold"
                         value={earningRatePercent}
                         onChange={(e) => setEarningRatePercent(Number(e.target.value))}
                       />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">%</span>
                     </div>
+                    <button onClick={handleSaveEarningRate} disabled={earningRateSaving} className="btn-primary w-full !py-2.5 !font-extrabold text-sm">
+                      {earningRateSaving ? "Saving…" : <><Icon name="check" size={14} />Save earning rate</>}
+                    </button>
+                    {earningRateMsg && <InlineMessage message={earningRateMsg} />}
                   </div>
-                  <button
-                    onClick={handleSaveEarningRate}
-                    disabled={earningRateSaving}
-                    className="btn-primary w-full !py-2.5 !font-extrabold text-sm"
-                  >
-                    {earningRateSaving ? "Saving…" : <><Icon name="check" size={14} />Save Custom Earning Rate</>}
-                  </button>
-                  {earningRateMsg && <div className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${earningRateMsg.startsWith("Error:") ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}><Icon name={earningRateMsg.startsWith("Error:") ? "alert" : "check"} size={14} />{earningRateMsg.replace(/^Error: /, "")}</div>}
-                </div>
-              </div>
-              
-              <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(245,158,11,0.12)] rounded-2xl border-t-4 border-amber-500">
-                <h3 className="text-md font-extrabold text-velo-900 mb-1 flex items-center gap-2">
-                  <Icon name="wallet" size={20} />Credit Investor Wallet
-                </h3>
-                <p className="text-xs text-slate-500 mb-4">Manually add funds to an investor's wallet (admin ledger is debited, investor credited).</p>
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 block mb-1.5">Select Investor</label>
-                    <select
-                      className="velo-input text-sm"
-                      value={creditInvestorId}
-                      onChange={(e) => setCreditInvestorId(e.target.value)}
-                      disabled={investorsLoading}
-                    >
+                </PanelCard>
+
+                <PanelCard
+                  title="Credit investor wallet"
+                  description="Add funds manually — the admin ledger is debited, the investor credited."
+                  icon={<Icon name="wallet" size={18} />}
+                  tone="amber"
+                >
+                  <div className="space-y-3 py-2">
+                    <select className="velo-input text-sm" value={creditInvestorId} onChange={(e) => setCreditInvestorId(e.target.value)} disabled={investorsLoading}>
                       <option value="">{investorsLoading ? "Loading investors…" : "Select investor…"}</option>
                       {investors.map((inv) => (
-                        <option key={inv.id} value={inv.id}>
-                          {inv.fullName} — {inv.email}
-                        </option>
+                        <option key={inv.id} value={inv.id}>{inv.fullName} — {inv.email}</option>
                       ))}
                     </select>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-xs font-bold text-slate-700 block mb-1.5">Amount (₦)</label>
+                    <div className="grid grid-cols-2 gap-3">
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">₦</span>
-                        <input
-                          type="number"
-                          min="100"
-                          className="velo-input !pl-12"
-                          value={creditAmountNaira}
-                          onChange={(e) => setCreditAmountNaira(e.target.value)}
-                        />
+                        <span className="absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm font-black text-slate-400">₦</span>
+                        <input type="number" min="100" className="velo-input !pl-9 text-sm font-bold" value={creditAmountNaira} onChange={(e) => setCreditAmountNaira(e.target.value)} />
                       </div>
-                    </div>
-                    <div>
-                      <label className="text-xs font-bold text-slate-700 block mb-1.5">Reason</label>
-                      <select
-                        className="velo-input text-sm"
-                        value={creditReason}
-                        onChange={(e) => setCreditReason(e.target.value as any)}
-                      >
+                      <select className="velo-input text-sm" value={creditReason} onChange={(e) => setCreditReason(e.target.value as any)}>
                         <option value="MANUAL_CREDIT">Manual Credit</option>
                         <option value="INVESTMENT_RETURN">Investment Return</option>
                         <option value="BONUS">Bonus</option>
                         <option value="CORRECTION">Correction</option>
                       </select>
                     </div>
+                    <input type="text" className="velo-input text-sm" placeholder="Optional note to investor" value={creditDescription} onChange={(e) => setCreditDescription(e.target.value)} />
+                    <button
+                      onClick={handleCreditInvestor}
+                      disabled={creditSaving}
+                      className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 px-5 py-2.5 text-sm font-extrabold text-white shadow transition hover:from-emerald-600 hover:to-emerald-700 disabled:opacity-50"
+                    >
+                      {creditSaving ? "Processing…" : <><Icon name="check" size={14} />Credit investor wallet</>}
+                    </button>
+                    {creditMsg && <InlineMessage message={creditMsg} />}
                   </div>
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 block mb-1.5">Description (optional)</label>
-                    <input
-                      type="text"
-                      className="velo-input text-sm"
-                      placeholder="Optional note to investor"
-                      value={creditDescription}
-                      onChange={(e) => setCreditDescription(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    onClick={handleCreditInvestor}
-                    disabled={creditSaving}
-                    className="btn-primary w-full !py-2.5 !font-extrabold text-sm !bg-gradient-to-r !from-emerald-500 !to-emerald-600 hover:!from-emerald-600 hover:!to-emerald-700"
-                  >
-                    {creditSaving ? "Processing…" : <><Icon name="check" size={14} />Credit Investor Wallet</>}
-                  </button>
-                  {creditMsg && <div className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${creditMsg.startsWith("Error:") ? "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400" : "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400"}`}><Icon name={creditMsg.startsWith("Error:") ? "alert" : "check"} size={14} />{creditMsg.replace(/^Error: /, "")}</div>}
-                </div>
+                </PanelCard>
               </div>
-            </div>
             </div>
           )}
 
           {/* ============ PENDING WITHDRAWALS ============ */}
           {showWithdrawals && (
-          <div className={`space-y-6 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
-            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(168,85,247,0.12)] rounded-2xl border-l-4 border-purple-500 dark:bg-slate-900 dark:border-slate-800 dark:shadow-none">
-              <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
-                <div>
-                  <h3 className="text-md font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
-                    <Icon name="clock" size={20} />Pending Investor Withdrawals
-                  </h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Monitor investor withdrawals. Failed payouts can be retried from here.
-                  </p>
-                </div>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 text-xs font-bold border border-amber-100 dark:border-amber-900/40">
-                  {withdrawals.filter(w => w.status === "FAILED").length} failed
-                </span>
-              </div>
-              {withdrawalsLoading ? (
-                <div className="text-sm text-slate-500 dark:text-slate-400 py-8 text-center">Loading withdrawals…</div>
-              ) : withdrawals.length === 0 ? (
-                <div className="text-sm text-slate-500 dark:text-slate-400 py-8 text-center rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">No withdrawal requests yet.</div>
-              ) : (
-                <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-                  <table className="w-full text-sm">
-                    <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 text-xs uppercase">
-                      <tr>
-                        <th className="text-left p-3 font-bold">Investor</th>
-                        <th className="text-right p-3 font-bold">Amount</th>
-                        <th className="text-right p-3 font-bold">Fee</th>
-                        <th className="text-right p-3 font-bold">Net</th>
-                        <th className="text-left p-3 font-bold">Bank</th>
-                        <th className="text-left p-3 font-bold">Status</th>
-                        <th className="text-right p-3 font-bold">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {withdrawals.slice(0, 20).map((w) => (
-                        <tr key={w.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                          <td className="p-3">
-                            <div className="font-bold text-velo-900 dark:text-white">{investors.find(i => i.id === w.investorId)?.fullName || w.investorId.slice(0, 8)}</div>
-                            <div className="text-[10px] text-slate-500 dark:text-slate-400">{new Date(w.createdAt).toLocaleDateString()}</div>
-                          </td>
-                          <td className="p-3 text-right font-bold dark:text-slate-200">₦{Number(w.amountNaira).toLocaleString("en-NG")}</td>
-                          <td className="p-3 text-right text-red-600 dark:text-red-400 font-semibold">-₦{Number(w.feeNaira).toLocaleString("en-NG")}</td>
-                          <td className="p-3 text-right font-extrabold text-emerald-700 dark:text-emerald-400">₦{Number(w.netNaira).toLocaleString("en-NG")}</td>
-                          <td className="p-3 dark:text-slate-200">
-                            <div className="font-semibold">{w.bankName}</div>
-                            <div className="text-[11px] text-slate-500 dark:text-slate-400">••••••{w.accountNumber.slice(-4)}</div>
-                          </td>
-                          <td className="p-3">
-                            <span className={`inline-flex px-2 py-1 rounded-full text-[10px] font-bold ${
-                              w.status === "SUCCESSFUL" ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400" :
-                              w.status === "PENDING_APPROVAL" ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400" :
-                              w.status === "PROCESSING" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400" :
-                              w.status === "REJECTED" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" :
-                              w.status === "FAILED" ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400" :
-                              "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
-                            }`}>
-                              {String(w.status).replace(/_/g, " ")}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right">
-                            {w.status === "FAILED" && (
-                              <button
-                                onClick={() => handleRetryWithdrawal(w.id)}
-                                disabled={withdrawalActioning === w.id}
-                                className="inline-flex items-center px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold transition"
-                              >
-                                <Icon name="history" size={13} />{withdrawalActioning === w.id ? "Retrying…" : "Retry"}
-                              </button>
-                            )}
-                          </td>
+            <div className={`min-w-0 space-y-5 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
+              <PanelCard
+                title="Pending investor withdrawals"
+                description="Monitor investor withdrawals. Failed payouts can be retried from here."
+                icon={<Icon name="clock" size={18} />}
+                tone="violet"
+                action={<Pill tone={withdrawals.filter(w => w.status === "FAILED").length > 0 ? "warning" : "neutral"}>{withdrawals.filter(w => w.status === "FAILED").length} failed</Pill>}
+              >
+                {withdrawalsLoading ? (
+                  <div className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">Loading withdrawals…</div>
+                ) : withdrawals.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">No withdrawal requests yet.</div>
+                ) : (
+                  <div className="scrollable-sm overflow-x-auto py-2">
+                    <table className="w-full min-w-[640px] text-sm">
+                      <thead className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        <tr className="border-b border-slate-200 dark:border-slate-700">
+                          <th className="p-3 text-left font-black">Investor</th>
+                          <th className="p-3 text-right font-black">Amount</th>
+                          <th className="p-3 text-right font-black">Fee</th>
+                          <th className="p-3 text-right font-black">Net</th>
+                          <th className="p-3 text-left font-black">Bank</th>
+                          <th className="p-3 text-left font-black">Status</th>
+                          <th className="p-3 text-right font-black">Action</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {withdrawals.slice(0, 20).map((w) => (
+                          <tr key={w.id} className="transition hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            <td className="p-3">
+                              <div className="font-bold text-velo-900 dark:text-white">{investors.find(i => i.id === w.investorId)?.fullName || w.investorId.slice(0, 8)}</div>
+                              <div className="text-[10px] text-slate-500 dark:text-slate-400">{new Date(w.createdAt).toLocaleDateString()}</div>
+                            </td>
+                            <td className="p-3 text-right font-bold dark:text-slate-200">₦{Number(w.amountNaira).toLocaleString("en-NG")}</td>
+                            <td className="p-3 text-right font-semibold text-red-600 dark:text-red-400">-₦{Number(w.feeNaira).toLocaleString("en-NG")}</td>
+                            <td className="p-3 text-right font-black text-emerald-700 dark:text-emerald-400">₦{Number(w.netNaira).toLocaleString("en-NG")}</td>
+                            <td className="p-3 dark:text-slate-200">
+                              <div className="font-semibold">{w.bankName}</div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400">••••{w.accountNumber.slice(-4)}</div>
+                            </td>
+                            <td className="p-3">
+                              <Pill tone={w.status === "SUCCESSFUL" ? "success" : w.status === "FAILED" || w.status === "REJECTED" ? "danger" : w.status === "PENDING_APPROVAL" || w.status === "PROCESSING" ? "info" : "neutral"}>
+                                {String(w.status).replace(/_/g, " ")}
+                              </Pill>
+                            </td>
+                            <td className="p-3 text-right">
+                              {w.status === "FAILED" && (
+                                <button
+                                  onClick={() => handleRetryWithdrawal(w.id)}
+                                  disabled={withdrawalActioning === w.id}
+                                  className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-amber-600"
+                                >
+                                  <Icon name="history" size={13} />{withdrawalActioning === w.id ? "Retrying…" : "Retry"}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </PanelCard>
             </div>
-          </div>
           )}
 
-          {/* ============ RIGHT SIDEBAR — Admin Ledger ============ */}
+          {/* ============ ADMIN LEDGER ============ */}
           {showLedger && (
-          <div className={`space-y-6 ${showInvestorTools || showWithdrawals ? "lg:col-span-1" : "lg:col-span-3"}`}>
-            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(6,78,59,0.18)] dark:shadow-none rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-800 text-white overflow-hidden relative">
-              <div className="absolute -top-10 -right-10 w-36 h-36 rounded-full bg-white/5 blur-xl"></div>
-              <div className="absolute bottom-0 right-10 w-24 h-24 rounded-full bg-emerald-400/20 blur-xl"></div>
-              <div className="relative">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-100/80">Admin Ledger Balance</span>
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/10 text-[10px] font-bold text-emerald-50 border border-white/10">
-                    <Icon name="check" size={12} />SYNCED
-                  </span>
-                </div>
-                <div className="mt-1 text-3xl sm:text-4xl font-black tracking-tight">
-                  {adminLedgerBalance !== null ? "₦" + Math.round(adminLedgerBalance / 100).toLocaleString("en-NG") : "—"}
-                </div>
-                <div className="mt-1 text-[11px] text-emerald-100/70">
-                  Funds available for investor funding &amp; payouts
-                </div>
-                <div className="mt-4 pt-4 border-t border-white/10 grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider text-emerald-100/70 font-bold mb-0.5">Debits today</div>
-                    <div className="text-lg font-extrabold">₦0.00</div>
+            <div className={`min-w-0 space-y-5 ${showInvestorTools || showWithdrawals ? "lg:col-span-1" : "lg:col-span-3"}`}>
+              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-emerald-800 p-5 text-white shadow-elevated">
+                <div className="pointer-events-none absolute -right-10 -top-10 h-36 w-36 rounded-full bg-white/5 blur-xl" />
+                <div className="relative">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-100/80">Admin ledger balance</span>
+                    <Pill tone="success">Synced</Pill>
                   </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider text-emerald-100/70 font-bold mb-0.5">Last updated</div>
-                    <div className="text-sm font-bold">{platformSettings?.updatedAt ? new Date(platformSettings.updatedAt).toLocaleDateString() : "—"}</div>
+                  <div className="mt-1 text-3xl font-black tracking-tight sm:text-4xl">
+                    {adminLedgerBalance !== null ? "₦" + Math.round(adminLedgerBalance / 100).toLocaleString("en-NG") : "—"}
                   </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="velo-card p-4 sm:p-5 lg:p-6 border-0 shadow-[0_20px_60px_-20px_rgba(15,23,42,0.12)] dark:shadow-none rounded-2xl dark:bg-slate-900 dark:border-slate-800">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-md font-extrabold text-velo-900 dark:text-white flex items-center gap-2">
-                    <Icon name="history" size={18} />Admin Ledger Activity
-                  </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Debit/Credit entries for all investment ops</p>
-                </div>
-                <select
-                  value={ledgerFilter}
-                  onChange={(e) => setLedgerFilter(e.target.value)}
-                  className="text-[10px] rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-slate-600 dark:text-slate-300 font-bold focus:outline-none focus:ring-1 focus:ring-velo-500"
-                >
-                  <option value="">All</option>
-                  <option value="INVESTOR_FUNDING">Investor Funding</option>
-                  <option value="INVESTMENT_PAYOUT">Investment Payouts</option>
-                  <option value="WITHDRAWAL_FEE">Withdrawal Fees</option>
-                  <option value="REVERSAL">Reversals</option>
-                </select>
-              </div>
-              {ledgerLoading ? (
-                <div className="text-sm text-slate-500 dark:text-slate-400 py-6 text-center">Loading ledger…</div>
-              ) : (
-                <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
-                  {ledgerEntries
-                    .filter(e => !ledgerFilter || e.entryType === ledgerFilter)
-                    .map((e) => (
-                      <div
-                        key={e.id}
-                        onClick={() => setSelectedLedgerEntry(e as AdminLedgerEntry)}
-                        className="flex items-start gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:shadow-md cursor-pointer transition"
-                      >
-                        <div className={`mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-lg flex-shrink-0 ${e.direction === "DEBIT" ? "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400" : "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400"}`}>
-                          <Icon name={e.direction === "DEBIT" ? "arrowDown" : "arrowUp"} size={15} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="font-bold text-xs text-velo-900 dark:text-white truncate">
-                              {String(e.entryType).replace(/_/g, " ")}
-                            </div>
-                            <div className={`font-black text-xs whitespace-nowrap ${e.direction === "DEBIT" ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}>
-                              {e.direction === "DEBIT" ? "-" : "+"}₦{Math.round(e.amountMinor / 100).toLocaleString("en-NG")}
-                            </div>
-                          </div>
-                          <div className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
-                            {e.description || "—"}
-                          </div>
-                          <div className="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">
-                            {new Date(e.createdAt).toLocaleString()}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  {ledgerEntries.filter(e => !ledgerFilter || e.entryType === ledgerFilter).length === 0 && (
-                    <div className="text-xs text-slate-500 dark:text-slate-400 text-center py-6 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-                      No ledger entries match this filter.
+                  <div className="mt-1 text-[11px] text-emerald-100/70">Funds available for investor funding &amp; payouts</div>
+                  <div className="mt-4 grid grid-cols-2 gap-3 border-t border-white/10 pt-4">
+                    <div>
+                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-100/70">Debits today</div>
+                      <div className="text-lg font-extrabold">₦0.00</div>
                     </div>
-                  )}
+                    <div>
+                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-100/70">Last updated</div>
+                      <div className="text-sm font-bold">{platformSettings?.updatedAt ? new Date(platformSettings.updatedAt).toLocaleDateString() : "—"}</div>
+                    </div>
+                  </div>
                 </div>
-              )}
+              </div>
 
-              {!ledgerLoading && ledgerTotal > 0 && (
-                <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
-                  <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
-                    Showing {ledgerOffset + 1}–{Math.min(ledgerOffset + LEDGER_LIMIT, ledgerTotal)} of {ledgerTotal} entries
+              <PanelCard
+                title="Ledger activity"
+                description="Debit/credit entries for all investment operations."
+                icon={<Icon name="history" size={18} />}
+                action={
+                  <select
+                    value={ledgerFilter}
+                    onChange={(e) => setLedgerFilter(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-600 focus:outline-none focus:ring-1 focus:ring-velo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                  >
+                    <option value="">All</option>
+                    <option value="INVESTOR_FUNDING">Investor Funding</option>
+                    <option value="INVESTMENT_PAYOUT">Investment Payouts</option>
+                    <option value="WITHDRAWAL_FEE">Withdrawal Fees</option>
+                    <option value="REVERSAL">Reversals</option>
+                  </select>
+                }
+              >
+                {ledgerLoading ? (
+                  <div className="py-6 text-center text-sm text-slate-500 dark:text-slate-400">Loading ledger…</div>
+                ) : (
+                  <div className="max-h-[480px] space-y-2 overflow-y-auto py-2 pr-1">
+                    {ledgerEntries
+                      .filter(e => !ledgerFilter || e.entryType === ledgerFilter)
+                      .map((e) => (
+                        <button
+                          type="button"
+                          key={e.id}
+                          onClick={() => setSelectedLedgerEntry(e as AdminLedgerEntry)}
+                          className="flex w-full items-start gap-3 rounded-xl border border-slate-100 p-3 text-left transition hover:border-slate-300 hover:bg-slate-50 hover:shadow-sm dark:border-slate-800 dark:hover:border-slate-600 dark:hover:bg-slate-800/50"
+                        >
+                          <span className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${e.direction === "DEBIT" ? "bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400" : "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400"}`}>
+                            <Icon name={e.direction === "DEBIT" ? "arrowDown" : "arrowUp"} size={15} />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-start justify-between gap-2">
+                              <span className="truncate text-xs font-bold text-velo-900 dark:text-white">{String(e.entryType).replace(/_/g, " ")}</span>
+                              <span className={`whitespace-nowrap text-xs font-black ${e.direction === "DEBIT" ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                                {e.direction === "DEBIT" ? "-" : "+"}₦{Math.round(e.amountMinor / 100).toLocaleString("en-NG")}
+                              </span>
+                            </span>
+                            <span className="mt-0.5 line-clamp-1 block text-[10px] text-slate-500 dark:text-slate-400">{e.description || "—"}</span>
+                            <span className="mt-0.5 block text-[10px] text-slate-400 dark:text-slate-500">{new Date(e.createdAt).toLocaleString()}</span>
+                          </span>
+                        </button>
+                      ))}
+                    {ledgerEntries.filter(e => !ledgerFilter || e.entryType === ledgerFilter).length === 0 && (
+                      <div className="rounded-xl border border-dashed border-slate-200 py-6 text-center text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                        No ledger entries match this filter.
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = Math.max(0, ledgerOffset - LEDGER_LIMIT);
-                        setLedgerOffset(next);
-                        void reloadLedger(next, ledgerFilter);
-                      }}
-                      disabled={ledgerOffset === 0}
-                      className="px-2.5 py-1 text-[10px] font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                    >
-                      <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={12} />Prev</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = Math.min(Math.max(0, ledgerTotal - LEDGER_LIMIT), ledgerOffset + LEDGER_LIMIT);
-                        setLedgerOffset(next);
-                        void reloadLedger(next, ledgerFilter);
-                      }}
-                      disabled={ledgerOffset + LEDGER_LIMIT >= ledgerTotal}
-                      className="px-2.5 py-1 text-[10px] font-bold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                    >
-                      <span className="inline-flex items-center gap-1">Next<Icon name="arrowRight" size={12} /></span>
-                    </button>
+                )}
+
+                {!ledgerLoading && ledgerTotal > 0 && (
+                  <div className="flex items-center justify-between gap-2 border-t border-slate-100 py-3 dark:border-slate-800">
+                    <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                      Showing {ledgerOffset + 1}–{Math.min(ledgerOffset + LEDGER_LIMIT, ledgerTotal)} of {ledgerTotal} entries
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = Math.max(0, ledgerOffset - LEDGER_LIMIT);
+                          setLedgerOffset(next);
+                          void reloadLedger(next, ledgerFilter);
+                        }}
+                        disabled={ledgerOffset === 0}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                      >
+                        <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={12} />Prev</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = Math.min(Math.max(0, ledgerTotal - LEDGER_LIMIT), ledgerOffset + LEDGER_LIMIT);
+                          setLedgerOffset(next);
+                          void reloadLedger(next, ledgerFilter);
+                        }}
+                        disabled={ledgerOffset + LEDGER_LIMIT >= ledgerTotal}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                      >
+                        <span className="inline-flex items-center gap-1">Next<Icon name="arrowRight" size={12} /></span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </PanelCard>
             </div>
-          </div>
           )}
 
           {selectedLedgerEntry !== null && (
-            <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6 animate-fade-in" onClick={() => setSelectedLedgerEntry(null)}>
-              <div className="velo-card max-w-lg w-full max-h-[90vh] overflow-y-auto rounded-2xl border-0 shadow-elevated dark:bg-slate-900 dark:border-slate-800 animate-slide-in-left" onClick={(ev) => ev.stopPropagation()}>
-                <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-4 sticky top-0 bg-white dark:bg-slate-900 z-10 rounded-t-2xl">
+            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm animate-fade-in sm:p-6" onClick={() => setSelectedLedgerEntry(null)}>
+              <div className="velo-card max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl shadow-elevated dark:bg-slate-900 dark:border-slate-800" onClick={(ev) => ev.stopPropagation()}>
+                <div className="sticky top-0 z-10 flex items-start justify-between gap-4 rounded-t-2xl border-b border-slate-100 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
                   <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${selectedLedgerEntry.direction === "DEBIT" ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600"}`}>
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${selectedLedgerEntry.direction === "DEBIT" ? "bg-red-50 text-red-600 dark:bg-red-900/30" : "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30"}`}>
                         <Icon name={selectedLedgerEntry.direction === "DEBIT" ? "arrowDown" : "arrowUp"} size={14} />
                       </span>
-                      <h3 className="text-base font-black text-velo-900 dark:text-white">Ledger Entry Details</h3>
+                      <h3 className="text-base font-black text-velo-900 dark:text-white">Ledger entry details</h3>
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">Full transaction breakdown and metadata</p>
                   </div>
                   <button
                     type="button"
                     onClick={() => setSelectedLedgerEntry(null)}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg font-bold text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
                   >
                     <Icon name="x" size={16} />
                   </button>
                 </div>
 
-                <div className="p-5 space-y-4">
+                <div className="space-y-4 p-5">
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700/60">
-                      <div className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-0.5">Entry Type</div>
+                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-800/60">
+                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Entry type</div>
                       <div className="text-sm font-black text-velo-900 dark:text-white">{String(selectedLedgerEntry.entryType).replace(/_/g, " ")}</div>
                     </div>
-                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700/60">
-                      <div className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-0.5">Direction</div>
+                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-800/60">
+                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Direction</div>
                       <div className={`text-sm font-black ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-600" : "text-emerald-600"}`}>{selectedLedgerEntry.direction}</div>
                     </div>
                   </div>
 
-                  <div className={`p-4 rounded-2xl ${selectedLedgerEntry.direction === "DEBIT" ? "bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900/50" : "bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900/50"}`}>
-                    <div className="text-[10px] uppercase font-bold tracking-wider mb-1 opacity-70" style={{ color: selectedLedgerEntry.direction === "DEBIT" ? "#991b1b" : "#065f46" }}>
-                      Transaction Amount
+                  <div className={`rounded-2xl border p-4 ${selectedLedgerEntry.direction === "DEBIT" ? "border-red-100 bg-red-50 dark:border-red-900/50 dark:bg-red-950/40" : "border-emerald-100 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/40"}`}>
+                    <div className="mb-1 text-[10px] font-black uppercase tracking-wider opacity-70" style={{ color: selectedLedgerEntry.direction === "DEBIT" ? "#991b1b" : "#065f46" }}>
+                      Transaction amount
                     </div>
                     <div className={`text-2xl font-black ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-700 dark:text-red-400" : "text-emerald-700 dark:text-emerald-400"}`}>
                       {selectedLedgerEntry.direction === "DEBIT" ? "-" : "+"}₦{Math.round(selectedLedgerEntry.amountMinor / 100).toLocaleString("en-NG")}
@@ -1438,195 +1409,86 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   </div>
 
                   <div className="space-y-2.5">
-                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Entry ID</span>
-                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right font-mono break-all">{selectedLedgerEntry.id}</span>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Created At</span>
-                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right">{new Date(selectedLedgerEntry.createdAt).toLocaleString()}</span>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Reference ID</span>
-                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right font-mono">{selectedLedgerEntry.referenceId || "—"}</span>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Investor ID</span>
-                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right font-mono break-all">{selectedLedgerEntry.investorId || "—"}</span>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Currency</span>
-                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right">{selectedLedgerEntry.currency}</span>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 py-2 border-b border-slate-100 dark:border-slate-800">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Balance After</span>
-                      <span className="text-[11px] font-black text-emerald-700 dark:text-emerald-400 text-right">₦{Math.round(selectedLedgerEntry.balanceAfterMinor / 100).toLocaleString("en-NG")}</span>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 py-2">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 w-28 flex-shrink-0">Description</span>
-                      <span className="text-[11px] font-bold text-velo-900 dark:text-white text-right">{selectedLedgerEntry.description || "—"}</span>
-                    </div>
+                    {([
+                      ["Entry ID", selectedLedgerEntry.id, true],
+                      ["Created at", new Date(selectedLedgerEntry.createdAt).toLocaleString(), false],
+                      ["Reference ID", selectedLedgerEntry.referenceId || "—", true],
+                      ["Investor ID", selectedLedgerEntry.investorId || "—", true],
+                      ["Currency", selectedLedgerEntry.currency, false],
+                      ["Balance after", "₦" + Math.round(selectedLedgerEntry.balanceAfterMinor / 100).toLocaleString("en-NG"), false],
+                      ["Description", selectedLedgerEntry.description || "—", false],
+                    ] as Array<[string, string, boolean]>).map(([label, value, mono]) => (
+                      <div key={label} className="flex items-start justify-between gap-3 border-b border-slate-100 py-2 last:border-0 dark:border-slate-800">
+                        <span className="w-28 shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400">{label}</span>
+                        <span className={`break-all text-right text-[11px] font-bold text-velo-900 dark:text-white ${mono ? "font-mono" : ""}`}>{value}</span>
+                      </div>
+                    ))}
                   </div>
 
                   {selectedLedgerEntry.metadata && Object.keys(selectedLedgerEntry.metadata).length > 0 && (
-                    <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
-                      <div className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 tracking-wider mb-2">Metadata</div>
-                      <pre className="p-3 rounded-xl bg-slate-900 dark:bg-slate-950 text-emerald-400 text-[10px] leading-relaxed overflow-x-auto font-mono border border-slate-800">
+                    <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
+                      <div className="mb-2 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Metadata</div>
+                      <pre className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 p-3 font-mono text-[10px] leading-relaxed text-emerald-400 dark:bg-slate-950">
                         {JSON.stringify(selectedLedgerEntry.metadata, null, 2)}
                       </pre>
                     </div>
                   )}
                 </div>
 
-                <div className="p-4 border-t border-slate-100 dark:border-slate-800 sticky bottom-0 bg-white dark:bg-slate-900 rounded-b-2xl">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedLedgerEntry(null)}
-                    className="btn-primary w-full !py-2.5 text-xs !font-extrabold"
-                  >
-                    Close Details
+                <div className="sticky bottom-0 rounded-b-2xl border-t border-slate-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                  <button type="button" onClick={() => setSelectedLedgerEntry(null)} className="btn-primary w-full !py-2.5 text-xs !font-extrabold">
+                    Close details
                   </button>
                 </div>
               </div>
             </div>
           )}
-
-      </div>
-      </>
+        </div>
       )}
 
-      {/* Bottom sticky save bar on mobile */}
-      {showConfig && (<div className="lg:hidden sticky bottom-4 -mx-4 sm:-mx-6 px-4 sm:px-6 z-20">
-        <div className="velo-card p-3 flex items-center gap-2 shadow-elevated rounded-2xl border-0 dark:bg-slate-900 dark:border-slate-800">
-          <div className="flex-1 min-w-0">
-            {saved ? (
-              <div className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 dark:text-emerald-400"><Icon name="check" size={13} />Settings saved</div>
-            ) : (
-              <div className="text-xs text-slate-500 dark:text-slate-400">Click Save to persist changes</div>
-            )}
+      {/* ===== Mobile sticky save bar ===== */}
+      {showConfig && (
+        <div className="sticky bottom-4 z-20 -mx-4 px-4 sm:-mx-6 sm:px-6 lg:hidden">
+          <div className="velo-card flex items-center gap-2 rounded-2xl border-0 p-3 shadow-elevated dark:bg-slate-900 dark:border-slate-800">
+            <div className="min-w-0 flex-1">
+              {saved ? (
+                <div className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 dark:text-emerald-400"><Icon name="check" size={13} />Settings saved</div>
+              ) : saving ? (
+                <div className="text-xs font-bold text-velo-600 dark:text-velo-400">Saving…</div>
+              ) : (
+                <div className="text-xs text-slate-500 dark:text-slate-400">Tap save to persist changes</div>
+              )}
+            </div>
+            <button type="button" onClick={handleSave} disabled={saveDisabled} className="btn-primary shrink-0 !py-2 !px-4 text-xs !font-extrabold">
+              {saving ? "Saving…" : "Save"}
+            </button>
           </div>
-          <button type="button" onClick={handleSave} disabled={saving || formErrors.some((error) => error.severity === "error")} className="btn-primary !py-2 !px-4 text-xs !font-extrabold shrink-0">
-            {saving ? "Saving…" : "Save"}
-          </button>
         </div>
-      </div>)}
+      )}
     </div>
   );
 }
 
 /* =======================================================================
-   Small UI helpers
+   Small local helpers
    ======================================================================= */
 
-function Section({ title, subtitle, icon, children }: { title: string; subtitle?: string; icon?: React.ReactNode; children: React.ReactNode }) {
+function InlineMessage({ message }: { message: string }) {
+  const isError = message.startsWith("Error:");
   return (
-    <div className="velo-card p-4 sm:p-5 lg:p-6 rounded-2xl dark:bg-slate-900 dark:border-slate-800">
-      <div className="mb-4">
-        <div className="flex items-center gap-2">
-          {icon && <span className="inline-flex text-velo-600 dark:text-velo-400 leading-none">{icon}</span>}
-          <h3 className="font-extrabold text-velo-900 dark:text-white text-base">{title}</h3>
-        </div>
-        {subtitle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{subtitle}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="block text-xs font-bold text-velo-900 dark:text-white mb-1.5">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function NumberField({ label, value, onChange, helpText }: { label: string; value: number; onChange: (n: number) => void; helpText?: string }) {
-  return (
-    <Field label={label}>
-      <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-sm">₦</span>
-        <input
-          type="text"
-          inputMode="numeric"
-          value={value.toLocaleString("en-NG")}
-          onChange={(e) => {
-            const n = Number(e.target.value.replace(/[^0-9]/g, ""));
-            onChange(Number.isFinite(n) ? n : 0);
-          }}
-          className="velo-input !pl-12 font-bold text-sm"
-        />
-      </div>
-      {helpText && <div className="text-[11px] text-slate-400 mt-1">{helpText}</div>}
-    </Field>
-  );
-}
-
-function FeeField({
-  feeKey, label, baseFee, value, onChange, compact, baseLabel,
-}: {
-  feeKey: FeeKey;
-  label: string;
-  baseFee: { type: "flat" | "percentage"; value: number; includeUpfront: boolean };
-  value: { type: "flat" | "percentage"; value: number; includeUpfront: boolean };
-  onChange: (v: { type: "flat" | "percentage"; value: number; includeUpfront: boolean }) => void;
-  compact?: boolean;
-  baseLabel?: string;
-}) {
-  return (
-    <div className={`rounded-xl border border-slate-200 p-4 hover:border-velo-200 hover:shadow-sm transition-all duration-200 ${compact ? "p-3" : ""}`}>
-      <div className="flex items-start justify-between gap-2 mb-3">
-        <div>
-          <div className={`font-extrabold text-velo-900 ${compact ? "text-xs" : "text-sm"}`}>{label}</div>
-        </div>
-      </div>
-      <div className="space-y-2.5">
-        <div className="grid grid-cols-[minmax(7.5rem,0.9fr)_minmax(7rem,1fr)_auto] items-center gap-2">
-          <select
-            value={value.type}
-            onChange={(e) => onChange({ ...value, type: e.target.value as "flat" | "percentage" })}
-            className={`velo-input !py-2 text-xs font-bold w-full ${compact ? "!py-1.5 text-[10px]" : ""}`}
-          >
-            <option value="flat">Flat (₦)</option>
-            <option value="percentage">Percentage (%)</option>
-          </select>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={value.value}
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (raw === "") {
-                onChange({ ...value, value: 0 });
-                return;
-              }
-              const next = Number(raw);
-              if (Number.isFinite(next) && next >= 0) onChange({ ...value, value: next });
-            }}
-            className={`velo-input !py-2 text-base font-bold w-full min-w-0 ${compact ? "!py-1.5 text-sm" : ""}`}
-          />
-          <span className={`text-xs font-bold text-slate-500 lg:w-6 ${compact ? "text-[10px]" : ""}`}>
-            {value.type === "flat" ? "₦" : "%"}
-          </span>
-        </div>
-        <label className={`flex items-center gap-2 text-slate-600 cursor-pointer select-none ${compact ? "text-[10px]" : "text-[11px]"}`}>
-          <input
-            type="checkbox"
-            checked={value.includeUpfront}
-            onChange={(e) => onChange({ ...value, includeUpfront: e.target.checked })}
-            className="h-3.5 w-3.5 rounded accent-velo-500"
-          />
-          <span>Include in upfront total repayment</span>
-        </label>
-      </div>
+    <div className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${
+      isError
+        ? "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+        : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+    }`}>
+      <Icon name={isError ? "alert" : "check"} size={14} />{message.replace(/^Error: /, "")}
     </div>
   );
 }
 
 function PreviewRow({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
   return (
-    <div className={`flex justify-between items-center py-0.5 ${muted ? "opacity-50" : ""}`}>
+    <div className={`flex items-center justify-between py-0.5 ${muted ? "opacity-50" : ""}`}>
       <span className="text-[11px] text-white/75">{label}</span>
       <span className="text-sm font-bold">{value}</span>
     </div>

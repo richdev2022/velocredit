@@ -3,7 +3,7 @@
 // Loan amount + tenure selector + live fee breakdown. Shared by both flows.
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import LoanAmountSelector from "../components/LoanAmountSelector";
@@ -33,11 +33,15 @@ export default function LoanRequestSection() {
     return () => { cancelled = true; };
   }, []);
 
-  if (!application) return null;
-
-  // Re-read the program after the fetch completes (configVersion forces re-render).
+  // Re-read the program after the re-fetch completes (configVersion forces the
+  // useMemo below to re-run, so the freshly fetched admin limits are used).
   void configVersion;
-  const program = getLoanProgram(application.applicantType || "PERSONAL");
+  const program = useMemo(
+    () => getLoanProgram(application?.applicantType || "PERSONAL"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [application?.applicantType, configVersion],
+  );
+
   const {
     register,
     handleSubmit,
@@ -48,10 +52,10 @@ export default function LoanRequestSection() {
     resolver: zodResolver(loanRequestSchemaFor(program.loanLimits, program.tenures)),
     mode: "onChange",
     defaultValues: {
-      amount: application.loanRequest.amount,
-      tenure: application.loanRequest.tenure,
-      purpose: application.loanRequest.purpose,
-    },
+      amount: application?.loanRequest.amount,
+      tenure: application?.loanRequest.tenure,
+      purpose: application?.loanRequest.purpose,
+    } as LoanRequestForm,
   });
 
   const amountWatch = watch("amount");
@@ -72,6 +76,10 @@ export default function LoanRequestSection() {
     markSectionStatus("loanRequest", "completed");
     next();
   }
+
+  // NOTE: Hooks above must run unconditionally (Rules of Hooks). Only AFTER
+  // all hooks is it safe to bail out of rendering when there is no application.
+  if (!application) return null;
 
   return (
     <SectionShell
