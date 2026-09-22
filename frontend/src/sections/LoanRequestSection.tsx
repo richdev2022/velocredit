@@ -1,6 +1,15 @@
 // ============================================================================
 // src/sections/LoanRequestSection.tsx
 // Loan amount + tenure selector + live fee breakdown. Shared by both flows.
+//
+// PRODUCT BINDING CONTRACT (2026-09 incident fix):
+//   This screen fetches the catalog with `?type=<applicantType>` so the
+//   backend returns the SINGLE authoritative product for the flow the
+//   customer selected. Every piece of loan information below — product name,
+//   description, amount range, interest (with its type semantics), processing
+//   fee, late fee and grace period — renders from THAT product only. No other
+//   catalog entry may influence this screen, and no stale env defaults are
+//   shown while the admin has configured a product.
 // ============================================================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -11,37 +20,82 @@ import LoanSummary from "../components/LoanSummary";
 import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
 import { type LoanRequestForm } from "../utils/validation";
-import { getLoanProgram, applyLoanProducts } from "../utils/config";
+import { getLoanProgram, applyLoanProduct, applyLoanProducts } from "../utils/config";
 import { loanRequestSchemaFor } from "../utils/validation";
-import { getLoanProducts } from "../services/apiClient";
+import { clampTenure } from "../utils/loanCalculator";
+import { getLoanProducts, type LoanProduct } from "../services/apiClient";
+import type { LoanProgramKey } from "../types/loan";
+
+/** Human labels for the product's interest semantics (matches admin catalog). */
+const INTEREST_TYPE_LABELS: Record<string, string> = {
+  ANNUALIZED: "p.a. (prorated over tenure)",
+  SIMPLE_FLAT: "per month",
+  REDUCING_BALANCE: "per month, reducing balance",
+};
+
+const LATE_FEE_TYPE_LABELS: Record<string, string> = {
+  ONE_TIME: "one-time",
+  COMPOUNDING_DAILY: "daily compounding",
+  COMPOUNDING_MONTHLY: "monthly compounding",
+};
 
 export default function LoanRequestSection() {
   const { application, calculation, patchLoanRequest, markSectionStatus, next } = useApplication();
-  // Re-fetch loan products on mount so the borrower always sees the latest
-  // limits the admin has set (the ApplicationContext fetch on login may be
-  // stale if the admin updated limits after the borrower logged in).
+  const applicantType: LoanProgramKey = application?.applicantType || "PERSONAL";
+
+  // Type-scoped product fetch: the backend resolves THE product for this
+  // application flow (?type=PERSONAL|BUSINESS) and its terms are applied
+  // strictly to this flow's program config. Re-runs if the applicant type
+  // changes so the two flows can never cross-contaminate.
+  const [appliedProduct, setAppliedProduct] = useState<LoanProduct | null>(null);
   const [configVersion, setConfigVersion] = useState(0);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    void getLoanProducts().then((response) => {
+    void getLoanProducts({ type: applicantType }).then((response) => {
       if (cancelled) return;
-      applyLoanProducts(response.products);
+      const product = response.products[0] ?? null;
+      if (product) {
+        // Strict per-flow application — the backend already picked THE product
+        // for this applicant type. Works even when the backend serves the
+        // all-inactive fallback (catalogNotice), so the admin's configured
+        // terms always beat stale env defaults.
+        applyLoanProduct(product, applicantType);
+        setAppliedProduct(product);
+      } else {
+        // Defensive: an empty catalog response keeps whatever config is
+        // already in memory rather than wiping the screen.
+        applyLoanProducts(response.products, {
+          includeInactive: response.catalogNotice === "ALL_PRODUCTS_INACTIVE_FALLBACK",
+        });
+      }
       setConfigVersion((v) => v + 1);
     }).catch(() => {
       // If the fetch fails, fall back to whatever config is already in memory.
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [applicantType]);
 
   // Re-read the program after the re-fetch completes (configVersion forces the
-  // useMemo below to re-run, so the freshly fetched admin limits are used).
+  // useMemo below to re-run, so the freshly applied product terms are used).
   void configVersion;
   const program = useMemo(
-    () => getLoanProgram(application?.applicantType || "PERSONAL"),
+    () => getLoanProgram(applicantType),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [application?.applicantType, configVersion],
+    [applicantType, configVersion],
   );
+
+  // Preselect the product's default tenure for fresh applications (the saved
+  // value always wins once the customer has picked one).
+  useEffect(() => {
+    const defaultTenure = appliedProduct?.defaultTenureDays;
+    if (!defaultTenure) return;
+    if (application?.loanRequest.tenure) return;
+    const resolved = clampTenure(defaultTenure, program.tenures);
+    setValue("tenure", resolved, { shouldDirty: false, shouldValidate: false });
+    patchLoanRequest({ tenure: resolved });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appliedProduct, program.tenures, application?.loanRequest.tenure]);
 
   const {
     register,
@@ -97,6 +151,28 @@ export default function LoanRequestSection() {
   // message (never silently disabled). calculation===null only happens when no
   // amount exists at all yet.
   const canContinue = !!calculation;
+
+  // ---------------------------------------------------------------------------
+  // Product banner — bound STRICTLY to the returned product. The range,
+  // interest (with its semantics), fees and grace period below come from THIS
+  // product only; the program config is the fallback when the fetch failed.
+  // ---------------------------------------------------------------------------
+  const typeLabel = applicantType === "BUSINESS" ? "Business" : "Personal";
+  const bannerProduct = appliedProduct ?? program.product ?? null;
+  const bannerName = bannerProduct?.name
+    ?? program.productName
+    ?? (applicantType === "BUSINESS" ? "Business Loan" : "Personal Loan");
+  const bannerMin = bannerProduct ? bannerProduct.minAmountNaira : program.loanLimits.min;
+  const bannerMax = bannerProduct ? bannerProduct.maxAmountNaira : program.loanLimits.max;
+  const bannerRate = bannerProduct ? bannerProduct.interestRatePercent : program.fees.interest.value;
+  const bannerRateType = bannerProduct
+    ? bannerProduct.interestType
+    : (program.fees.interest.interestType ?? "SIMPLE_FLAT");
+  const bannerProcessingFee = bannerProduct ? bannerProduct.processingFeePercent : program.fees.processingFee.value;
+  const bannerLateFee = bannerProduct ? bannerProduct.lateFeePercent : program.fees.lateFee.value;
+  const bannerLateFeeType = bannerProduct?.lateFeeType;
+  const bannerGraceDays = bannerProduct?.gracePeriodDays;
+
   return (
     <SectionShell
       title="Loan Request"
@@ -106,32 +182,56 @@ export default function LoanRequestSection() {
     >
       <form onSubmit={handleSubmit(onSubmit, () => setSubmitAttempted(true))} className="space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-          {/* Product terms — bound STRICTLY to the application type the customer
-              selected. The range, interest and fees below come from this product
-              only; no other catalog entry may influence this screen. */}
+          {/* Product terms — from THE product the backend resolved for this
+              application type only. */}
           <div className="lg:col-span-5 rounded-2xl border border-velo-100 bg-velo-50/60 p-4 dark:border-velo-800 dark:bg-velo-900/20">
-            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-              <div>
+            <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+              <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-wide text-velo-600 dark:text-velo-300">
-                  {application.applicantType === "BUSINESS" ? "Business" : "Personal"} loan product
+                  {typeLabel} loan product
                 </p>
                 <p className="text-base font-bold text-slate-900 dark:text-white">
-                  {program.productName || (application.applicantType === "BUSINESS" ? "Business Loan" : "Personal Loan")}
+                  {bannerName}
                 </p>
+                {bannerProduct?.description && (
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 max-w-prose">
+                    {bannerProduct.description}
+                  </p>
+                )}
               </div>
               <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
                 <div>
                   <span className="text-slate-500 dark:text-slate-400">Amount range: </span>
                   <span className="font-semibold text-slate-800 dark:text-slate-100">
-                    ₦{program.loanLimits.min.toLocaleString()} – ₦{program.loanLimits.max.toLocaleString()}
+                    ₦{Number(bannerMin).toLocaleString()} – ₦{Number(bannerMax).toLocaleString()}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-500 dark:text-slate-400">Interest: </span>
                   <span className="font-semibold text-slate-800 dark:text-slate-100">
-                    {program.fees.interest.value}{program.fees.interest.type === "percentage" ? "%" : " flat"}
+                    {bannerRate}% {INTEREST_TYPE_LABELS[bannerRateType] ?? "per month"}
                   </span>
                 </div>
+                <div>
+                  <span className="text-slate-500 dark:text-slate-400">Processing fee: </span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">
+                    {bannerProcessingFee}%
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 dark:text-slate-400">Late fee: </span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">
+                    {bannerLateFee}%{bannerLateFeeType ? ` (${LATE_FEE_TYPE_LABELS[bannerLateFeeType] ?? bannerLateFeeType})` : ""}
+                  </span>
+                </div>
+                {typeof bannerGraceDays === "number" && (
+                  <div>
+                    <span className="text-slate-500 dark:text-slate-400">Grace period: </span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-100">
+                      {bannerGraceDays} {bannerGraceDays === 1 ? "day" : "days"}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           </div>

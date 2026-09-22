@@ -12,7 +12,7 @@
 //   without redeploying.
 // ============================================================================
 
-import type { FeeConfig, FeeConfiguration, LoanLimits, TenureOption, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey, LoanProgramOverrides } from "../types/loan";
+import type { AppliedLoanProductInfo, FeeConfig, FeeConfiguration, LoanLimits, TenureOption, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey, LoanProgramOverrides } from "../types/loan";
 
 // ---------------------------------------------------------------------------
 // Admin override layer — reads localStorage
@@ -357,20 +357,91 @@ export function getLoanProgram(type: LoanProgramKey): LoanProgramConfig {
   return config.loanPrograms[type];
 }
 
-export function applyLoanProducts(products: Array<{
-  id?: string;
-  name: string;
-  minAmountNaira: number;
-  maxAmountNaira: number;
-  defaultTenureDays?: number;
-  interestRatePercent: number;
-  processingFeePercent: number;
-  lateFeePercent: number;
+// ---------------------------------------------------------------------------
+// Loan product application
+// ---------------------------------------------------------------------------
+
+/** Input accepted from the backend catalog (apiClient LoanProduct is compatible). */
+export type ApplyLoanProductInput = AppliedLoanProductInfo & {
   version?: number;
   updatedAt?: string;
   isActive?: boolean;
   programType?: "PERSONAL" | "BUSINESS" | "BOTH" | null;
-}>): void {
+};
+
+/**
+ * Apply ONE product's terms STRICTLY to ONE borrower flow (PERSONAL/BUSINESS).
+ *
+ * This is the authoritative path for the loan request screen: the backend
+ * resolves the single product for the flow (?type=PERSONAL|BUSINESS) and the
+ * whole screen — limits, interest, fees, grace period — renders from it.
+ * No keyword guessing, no mixing with other catalog entries.
+ *
+ * Returns true when the product was valid and applied.
+ */
+export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgramKey): boolean {
+  const program = config.loanPrograms[type];
+  if (!program || !product || typeof product !== "object") return false;
+  const min = Number(product.minAmountNaira);
+  const max = Number(product.maxAmountNaira);
+  // Validate: finite, ordered, non-negative. Skip invalid products rather
+  // than clobbering good config with bad data.
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min >= max || min < 0) return false;
+  const interestRate = Number(product.interestRatePercent);
+  const processingFee = Number(product.processingFeePercent);
+  const lateFee = Number(product.lateFeePercent);
+  const interestType = product.interestType ?? "SIMPLE_FLAT";
+  const limits = {
+    min,
+    max,
+    defaultAmount: Math.min(max, Math.max(min, program.loanLimits.defaultAmount)),
+  };
+  const appliedInfo: AppliedLoanProductInfo = {
+    id: product.id,
+    name: product.name,
+    description: product.description,
+    minAmountNaira: min,
+    maxAmountNaira: max,
+    defaultTenureDays: product.defaultTenureDays,
+    interestRatePercent: Number.isFinite(interestRate) ? interestRate : 0,
+    interestType,
+    processingFeePercent: Number.isFinite(processingFee) ? processingFee : 0,
+    lateFeePercent: Number.isFinite(lateFee) ? lateFee : 0,
+    lateFeeType: product.lateFeeType,
+    gracePeriodDays: product.gracePeriodDays,
+  };
+  config.loanPrograms[type] = {
+    ...program,
+    loanLimits: sanitizeLoanLimits(limits),
+    // Products expose a default tenure, not the complete admin-configured
+    // tenor list. Keep the configured list so calculator options and
+    // validation remain consistent with admin settings.
+    tenures: program.tenures,
+    productName: product.name,
+    product: appliedInfo,
+    fees: {
+      ...program.fees,
+      interest: {
+        ...program.fees.interest,
+        value: appliedInfo.interestRatePercent,
+        interestType,
+      },
+      processingFee: { ...program.fees.processingFee, type: "percentage", value: appliedInfo.processingFeePercent },
+      lateFee: { ...program.fees.lateFee, type: "percentage", value: appliedInfo.lateFeePercent },
+    },
+  };
+  // Keep the global limits in sync with the PERSONAL flow (landing calculator
+  // and other consumers read config.loanLimits).
+  if (type === "PERSONAL") {
+    config.loanLimits = sanitizeLoanLimits(limits);
+  }
+  return true;
+}
+
+export function applyLoanProducts(
+  products: ApplyLoanProductInput[],
+  opts?: { includeInactive?: boolean },
+): void {
   // ---------------------------------------------------------------------------
   // Defensive product resolution.
   //
@@ -381,17 +452,24 @@ export function applyLoanProducts(products: Array<{
   // ₦50,000 seeds over the admin's ₦200 configuration on every page load.
   //
   // Resolution rules:
-  //   1. Ignore inactive products (the backend filters them, but never trust it).
-  //   2. De-duplicate by id  -> keep the highest `version` (tie: newest updatedAt).
-  //   3. De-duplicate by name-> keep the newest `updatedAt`.
-  //   4. Per program type (PERSONAL/BUSINESS) apply ONLY the single
+  //   1. Ignore inactive products UNLESS the caller explicitly passes
+  //      includeInactive — the backend sets catalogNotice
+  //      ALL_PRODUCTS_INACTIVE_FALLBACK when EVERY product is inactive and
+  //      serves the catalog anyway so the application funnel is not bricked.
+  //      Dropping those rows would leave the borrower with stale env defaults
+  //      (₦100,000 / 5%) instead of the admin's actual configured terms
+  //      (production incident 2026-09-21), so in that state we apply them.
+  //   2. ACTIVE products always outrank inactive ones at equal version.
+  //   3. De-duplicate by id  -> keep the highest `version` (tie: newest updatedAt).
+  //   4. De-duplicate by name-> keep the newest `updatedAt`.
+  //   5. Per program type (PERSONAL/BUSINESS) apply ONLY the single
   //      highest-ranked matching product — never a mix.
-  //   5. Products the admin renamed away from the personal/business keywords
+  //   6. Products the admin renamed away from the personal/business keywords
   //      are mapped via the backend's explicit `programType` first, then a
   //      deterministic fallback — so the borrower NEVER ends up with empty
   //      loan information for either flow.
   // ---------------------------------------------------------------------------
-  type Ranked = (typeof products)[number] & { __rank: number };
+  type Ranked = ApplyLoanProductInput & { __rank: number; __active: number };
   const rankOf = (p: { version?: number; updatedAt?: string }): number => {
     // version dominates (PATCH always bumps it), updatedAt only breaks ties.
     const version = Number.isFinite(p.version) ? Number(p.version) : 0;
@@ -402,14 +480,24 @@ export function applyLoanProducts(products: Array<{
   const seenById = new Map<string, Ranked>();
   const seenByName = new Map<string, Ranked>();
   for (const product of products) {
-    if (product.isActive === false) continue;
-    const ranked: Ranked = { ...product, __rank: rankOf(product) };
+    if (product.isActive === false && !opts?.includeInactive) continue;
+    const ranked: Ranked = {
+      ...product,
+      __rank: rankOf(product),
+      // An ACTIVE product must always beat an inactive duplicate (the admin
+      // deliberately deactivated the latter), even a higher-version one.
+      __active: product.isActive === false ? 0 : 1,
+    };
     const idKey = typeof product.id === "string" && product.id ? product.id : `anon:${product.name}`;
     const currentById = seenById.get(idKey);
-    if (!currentById || ranked.__rank > currentById.__rank) seenById.set(idKey, ranked);
+    if (!currentById || ranked.__active > currentById.__active || (ranked.__active === currentById.__active && ranked.__rank > currentById.__rank)) {
+      seenById.set(idKey, ranked);
+    }
     const nameKey = product.name.trim().toLowerCase();
     const currentByName = seenByName.get(nameKey);
-    if (!currentByName || ranked.__rank > currentByName.__rank) seenByName.set(nameKey, ranked);
+    if (!currentByName || ranked.__active > currentByName.__active || (ranked.__active === currentByName.__active && ranked.__rank > currentByName.__rank)) {
+      seenByName.set(nameKey, ranked);
+    }
   }
   // A product survives only if it is BOTH the best for its id AND its name.
   const unique = [...seenById.values()].filter((p) => seenByName.get(p.name.trim().toLowerCase()) === p);
@@ -424,44 +512,21 @@ export function applyLoanProducts(products: Array<{
   const explicitTypesFor = (product: Ranked, type: LoanProgramKey): boolean =>
     product.programType === type || product.programType === "BOTH";
   const applyProduct = (product: Ranked, type: LoanProgramKey): void => {
-    const program = config.loanPrograms[type];
-    const limits = {
-      min: Number(product.minAmountNaira),
-      max: Number(product.maxAmountNaira),
-      defaultAmount: Math.min(Number(product.maxAmountNaira), Math.max(Number(product.minAmountNaira), program.loanLimits.defaultAmount)),
-    };
-    // Validate: min < max, both finite, min >= 0. Skip invalid products
-    // rather than clobbering good config with bad data.
-    if (!Number.isFinite(limits.min) || !Number.isFinite(limits.max) || limits.min >= limits.max || limits.min < 0) {
-      return;
-    }
-    config.loanPrograms[type] = {
-      ...program,
-      loanLimits: sanitizeLoanLimits(limits),
-      // Products expose a default tenure, not the complete admin-configured
-      // tenor list. Keep the configured list so calculator options and
-      // validation remain consistent with admin settings.
-      tenures: program.tenures,
-      productName: product.name,
-      fees: {
-        ...program.fees,
-        interest: { ...program.fees.interest, value: Number(product.interestRatePercent) },
-        processingFee: { ...program.fees.processingFee, type: "percentage", value: Number(product.processingFeePercent) },
-        lateFee: { ...program.fees.lateFee, type: "percentage", value: Number(product.lateFeePercent) },
-      },
-    };
-    applied.add(type);
+    if (applyLoanProduct(product, type)) applied.add(type);
   };
 
   // Pass 1 — explicit backend classification (keyword names or programType).
   const appliedProductIds = new Set<string>();
   const idOf = (p: Ranked): string => (typeof p.id === "string" && p.id ? p.id : `anon:${p.name}`);
   for (const type of ["PERSONAL", "BUSINESS"] as LoanProgramKey[]) {
-    // Single authoritative product for this type: highest version, then newest
-    // updatedAt. Anything else in the list is ignored for this program.
+    // Single authoritative product for this type: active beats inactive, then
+    // highest version / newest updatedAt. Anything else is ignored for this flow.
     const candidates = unique.filter((p) => explicitTypesFor(p, type) || matchesType(p.name, type));
     if (candidates.length === 0) continue;
-    const product = candidates.reduce((best, p) => (p.__rank > best.__rank ? p : best), candidates[0]);
+    const product = candidates.reduce((best, p) => {
+      if (p.__active !== best.__active) return p.__active > best.__active ? p : best;
+      return p.__rank > best.__rank ? p : best;
+    }, candidates[0]);
     applyProduct(product, type);
     appliedProductIds.add(idOf(product));
   }
@@ -477,7 +542,7 @@ export function applyLoanProducts(products: Array<{
     const candidatesForType = (ignoreClaims: boolean) => unique
       .filter((p) => ignoreClaims || !appliedProductIds.has(idOf(p)))
       .filter((p) => !p.programType || p.programType === "BOTH" || (!matchesType(p.name, "PERSONAL") && !matchesType(p.name, "BUSINESS")))
-      .sort((a, b) => Number(a.minAmountNaira) - Number(b.minAmountNaira));
+      .sort((a, b) => (b.__active - a.__active) || (Number(a.minAmountNaira) - Number(b.minAmountNaira)));
     const fallback = candidatesForType(false)[0] ?? candidatesForType(true)[0];
     if (fallback) {
       applyProduct(fallback, type);

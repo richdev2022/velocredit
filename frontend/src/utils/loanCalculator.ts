@@ -125,10 +125,26 @@ export function calculateMonthlyInterest(amount: number, fee: FeeConfiguration["
   return calculateFee(amount, fee);
 }
 
+/**
+ * Interest for the WHOLE tenure.
+ *
+ * Semantics (must match the admin product catalog):
+ *   - percentage + ANNUALIZED      -> rate is per YEAR, prorated days/365
+ *                                     ("Yearly rate prorated over the selected
+ *                                     tenure" — the admin UI's promise).
+ *   - percentage + SIMPLE_FLAT or
+ *     REDUCING_BALANCE (or no type) -> rate is per 30-day month, prorated
+ *                                     days/30 (legacy behaviour, unchanged).
+ *   - flat                         -> fixed naira amount for the whole term.
+ */
 export function calculateTermInterest(amount: number, fee: FeeConfiguration["interest"], tenureDays: number): number {
-  const monthlyInterest = calculateMonthlyInterest(amount, fee);
+  const principalFee = calculateFee(amount, fee);
+  if (fee.type !== "percentage") return principalFee;
+  if (fee.interestType === "ANNUALIZED") {
+    return Math.round(principalFee * (tenureDays / 365));
+  }
   const months = tenureDays / 30;
-  return fee.type === "percentage" ? Math.round(monthlyInterest * months) : monthlyInterest;
+  return Math.round(principalFee * months);
 }
 
 /** @deprecated Use calculateMonthlyInterest. Kept for callers outside the UI. */

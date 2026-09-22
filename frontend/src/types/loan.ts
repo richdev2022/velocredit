@@ -11,6 +11,27 @@ export interface CollateralConfig {
   required: boolean;
 }
 
+/**
+ * The backend loan product whose terms are CURRENTLY applied to a program.
+ * Captured by applyLoanProduct / applyLoanProducts so the borrower UI can
+ * render loan information (name, range, interest, fees, grace period) for
+ * EXACTLY the product the admin configured — never an anonymous mix.
+ */
+export interface AppliedLoanProductInfo {
+  id?: string;
+  name: string;
+  description?: string;
+  minAmountNaira: number;
+  maxAmountNaira: number;
+  defaultTenureDays?: number;
+  interestRatePercent: number;
+  interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
+  processingFeePercent: number;
+  lateFeePercent: number;
+  lateFeeType?: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
+  gracePeriodDays?: number;
+}
+
 export interface LoanProgramConfig {
   loanLimits: LoanLimits;
   tenures: TenureOption[];
@@ -23,6 +44,11 @@ export interface LoanProgramConfig {
    * product drives the amounts/fees instead of an anonymous mix.
    */
   productName?: string;
+  /**
+   * Full detail of the applied product (set by applyLoanProduct /
+   * applyLoanProducts). Preferred source for the borrower product banner.
+   */
+  product?: AppliedLoanProductInfo | null;
 }
 
 export type LoanProgramOverrides = Partial<Record<LoanProgramKey, Partial<LoanProgramConfig>>>;
@@ -41,6 +67,16 @@ export interface FeeConfig {
   enabled?: boolean;
   /** Whether this fee should be included in the initial repayment total */
   includeUpfront: boolean;
+  /**
+   * Interest semantics carried over from the loan product catalog. Only used
+   * for the INTEREST fee:
+   *   SIMPLE_FLAT / REDUCING_BALANCE -> percent of principal per 30-day month,
+   *                                    prorated over the tenure (legacy math).
+   *   ANNUALIZED                     -> yearly percent prorated over the
+   *                                    tenure (days / 365).
+   * Absent = legacy monthly behaviour.
+   */
+  interestType?: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
 }
 
 /**

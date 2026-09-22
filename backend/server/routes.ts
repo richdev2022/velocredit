@@ -2670,7 +2670,66 @@ export function buildBorrowerProductCatalog(): {
   };
 }
 
-router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), async (_req, res) => {
+/**
+ * Resolve the SINGLE authoritative product for one borrower application flow
+ * (PERSONAL or BUSINESS). The borrower's loan request screen calls the catalog
+ * endpoint with `?type=PERSONAL|BUSINESS` and renders EXACTLY the returned
+ * product — limits, interest, fees and grace period all come from this one row.
+ *
+ * Resolution order (deterministic, never empty while the catalog exists):
+ *   1. Highest match score among ACTIVE products:
+ *      3 = explicit flow match (programType classification / name keyword),
+ *      2 = BOTH (single-product platform), 1 = unclassified.
+ *      Ties: cheapest first (compareProductsByRange), then most recently
+ *      updated — mirroring the frontend's deterministic fallback.
+ *   2. For BUSINESS, when the top candidate is UNCLASSIFIED (score 1) and
+ *      another candidate exists, the SECOND candidate is served: PERSONAL
+ *      claims the cheapest unclassified product first (frontend pass-2
+ *      mirror), so the two flows split the catalog instead of colliding.
+ *   3. If NO product is active (admin deactivated everything) fall back to the
+ *      FULL catalog so the funnel keeps working — the caller flags this via
+ *      `fromInactiveFallback` so the response carries the catalogNotice.
+ */
+export function resolveBorrowerProductForFlow(type: "PERSONAL" | "BUSINESS"): {
+  product: LoanProductRow | null;
+  fromInactiveFallback: boolean;
+} {
+  const scoreFor = (product: LoanProductRow): number => {
+    const classified = classifyLoanProductType(product);
+    if (classified === type) return 3;
+    if (classified === "BOTH") return 2;
+    return productMatchesApplicantType(product, type) ? 2 : 1;
+  };
+  const rankPool = (pool: LoanProductRow[]): LoanProductRow[] =>
+    pool
+      .slice()
+      .sort((a, b) => {
+        const scoreDiff = scoreFor(b) - scoreFor(a);
+        if (scoreDiff !== 0) return scoreDiff;
+        const rangeDiff = compareProductsByRange(a, b);
+        if (rangeDiff !== 0) return rangeDiff;
+        return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
+      });
+  const pickForType = (pool: LoanProductRow[]): LoanProductRow | null => {
+    if (pool.length === 0) return null;
+    const ranked = rankPool(pool);
+    if (type === "BUSINESS" && ranked.length > 1 && scoreFor(ranked[0]) === 1) {
+      return ranked[1];
+    }
+    return ranked[0];
+  };
+
+  const active = loanProducts.filter((p) => p.isActive);
+  const fromActive = pickForType(active);
+  if (fromActive) return { product: fromActive, fromInactiveFallback: false };
+  return { product: pickForType(loanProducts), fromInactiveFallback: loanProducts.length > 0 };
+}
+
+function loanProductPayload(product: LoanProductRow) {
+  return { ...product, programType: classifyLoanProductType(product) };
+}
+
+router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   // Self-heal first: legacy snapshots could contain duplicated rows (same id /
   // same name). Borrowers must ONLY ever see the admin-configured products.
   if (normalizeLoanProducts()) {
@@ -2685,6 +2744,43 @@ router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), asyn
     await ensureLoanProductsLoaded();
     if (normalizeLoanProducts()) void persistStore().catch(() => undefined);
   }
+
+  // Flow-scoped fetch (?type=PERSONAL|BUSINESS): the borrower loan request
+  // screen renders loan information for EXACTLY ONE product — the one the
+  // backend resolves for the application type the customer selected. This
+  // keeps limits, interest, fees and grace period strictly per product type.
+  const typeParam = typeof req.query.type === "string" ? req.query.type.trim().toUpperCase() : "";
+  const productIdParam = typeof req.query.productId === "string" ? req.query.productId.trim() : "";
+
+  if (productIdParam) {
+    const product = loanProducts.find((p) => p.id === productIdParam);
+    if (!product) {
+      return res.status(404).json({ ok: false, error: "Loan product not found" });
+    }
+    return res.json({
+      ok: true,
+      products: [loanProductPayload(product)],
+      activeCount: loanProducts.filter((p) => p.isActive).length,
+      catalogNotice: product.isActive ? null : "ALL_PRODUCTS_INACTIVE_FALLBACK",
+    });
+  }
+
+  if (typeParam === "PERSONAL" || typeParam === "BUSINESS") {
+    const { product, fromInactiveFallback } = resolveBorrowerProductForFlow(typeParam);
+    if (!product) {
+      return res.json({ ok: true, products: [], activeCount: 0, catalogNotice: "EMPTY_CATALOG" });
+    }
+    if (fromInactiveFallback) {
+      console.warn("[routes] borrower/loan-products?type=" + typeParam + ": NO active loan products — serving the best-match catalog product so the application flow is not bricked (admin should re-activate a product)");
+    }
+    return res.json({
+      ok: true,
+      products: [loanProductPayload(product)],
+      activeCount: loanProducts.filter((p) => p.isActive).length,
+      catalogNotice: fromInactiveFallback ? "ALL_PRODUCTS_INACTIVE_FALLBACK" : null,
+    });
+  }
+
   // programType tells the borrower flow EXPLICITLY which application type a
   // product drives, so loan information never renders empty when product names
   // no longer contain the "personal"/"business" keyword.

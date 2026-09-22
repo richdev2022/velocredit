@@ -30,9 +30,9 @@ type InterestType = LoanProduct["interestType"];
 type LateFeeType = LoanProduct["lateFeeType"];
 
 const INTEREST_TYPE_OPTIONS: Array<{ value: InterestType; label: string; hint: string }> = [
-  { value: "SIMPLE_FLAT", label: "Simple flat", hint: "Fixed percent of the principal for the whole term." },
+  { value: "SIMPLE_FLAT", label: "Simple flat", hint: "Percent of the principal per 30-day month, prorated over the tenure." },
   { value: "ANNUALIZED", label: "Annualized", hint: "Yearly rate prorated over the selected tenure." },
-  { value: "REDUCING_BALANCE", label: "Reducing balance", hint: "Interest accrues on the outstanding balance." },
+  { value: "REDUCING_BALANCE", label: "Reducing balance", hint: "Percent charged monthly on the outstanding balance." },
 ];
 
 const LATE_FEE_TYPE_OPTIONS: Array<{ value: LateFeeType; label: string }> = [
