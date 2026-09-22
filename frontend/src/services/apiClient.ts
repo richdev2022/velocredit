@@ -591,7 +591,7 @@ export async function adminPatchInvestmentPlan(id: string, input: Partial<AdminC
   return request(`/api/v1/admin/investment-plans/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
-export interface AdminLoanProductsResponse { ok: true; products: LoanProduct[]; }
+export interface AdminLoanProductsResponse { ok: true; products: LoanProduct[]; activeCount?: number; }
 export async function adminListLoanProducts(): Promise<AdminLoanProductsResponse> {
   return request("/api/v1/admin/loan-products");
 }

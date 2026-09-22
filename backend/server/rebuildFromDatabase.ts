@@ -86,6 +86,39 @@ const parseJson = <T>(value: unknown, fallback: T): T => {
 
 export type Snapshot = Record<StoreKey, unknown[]>;
 
+export function mapLoanProductRow(row: Row): LoanProduct {
+  const product: LoanProduct = {
+    id: str(row, "id"), name: str(row, "name"), description: strNull(row, "description"),
+    minAmountNaira: number(row, "min_amount_naira"), maxAmountNaira: number(row, "max_amount_naira"),
+    defaultTenureDays: nullableNumber(row, "default_tenure_days"), interestRatePercent: number(row, "interest_rate_percent"),
+    interestType: str(row, "interest_type") as LoanProduct["interestType"], processingFeePercent: number(row, "processing_fee_percent"),
+    lateFeePercent: number(row, "late_fee_percent"), lateFeeType: str(row, "late_fee_type") as LoanProduct["lateFeeType"],
+    gracePeriodDays: number(row, "grace_period_days"), isActive: bool(row, "is_active", true), version: number(row, "version") || 1,
+    createdAt: iso(row.created_at) ?? new Date().toISOString(), updatedAt: iso(row.updated_at),
+  };
+  return product;
+}
+
+export function mapInvestmentPlanRow(row: Row): InvestmentPlan {
+  const plan: InvestmentPlan = {
+    id: str(row, "id"), name: str(row, "name"), description: strNull(row, "description"), currency: "NGN",
+    minAmountNaira: number(row, "min_amount_naira"), maxAmountNaira: number(row, "max_amount_naira"),
+    tenureDays: number(row, "tenure_days"), annualRatePercent: number(row, "annual_rate_percent"),
+    rateType: str(row, "rate_type") as InvestmentPlan["rateType"], earlyLiquidityAllowed: bool(row, "early_liquidity_allowed"),
+    earlyLiquidityFeePercent: number(row, "early_liquidity_fee_percent"), gatewayFeePercent: number(row, "gateway_fee_percent"),
+    forfeitInterestOnEarlyExit: bool(row, "forfeit_interest_on_early_exit"), capacityNaira: nullableNumber(row, "capacity_naira"),
+    isActive: bool(row, "is_active", true), allowNewInvestmentsAfterClose: bool(row, "allow_new_investments_after_close"),
+    version: number(row, "version") || 1, effectiveFrom: iso(row.effective_from) ?? new Date().toISOString(),
+    effectiveTo: iso(row.effective_to), createdAt: iso(row.created_at) ?? new Date().toISOString(), updatedAt: iso(row.updated_at),
+  };
+  return plan;
+}
+
+export async function rebuildLoanProductsFromDatabase(db: NeonQueryFunction<false, false>): Promise<LoanProduct[]> {
+  const rows = await db.query("SELECT * FROM loan_products ORDER BY created_at ASC") as Row[];
+  return rows.map(mapLoanProductRow);
+}
+
 export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): Promise<Snapshot | null> {
   const snapshot: Snapshot = {
     users: [], wallets: [], ledgerEntries: [], walletTransactions: [], kycCases: [],

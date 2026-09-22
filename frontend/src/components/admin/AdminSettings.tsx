@@ -530,18 +530,26 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       await withSaveTimeout((async () => {
         const products = (await adminListLoanProducts()).products;
         for (const [type, program] of Object.entries(activePrograms) as Array<[LoanProgramKey, LoanProgramConfig]>) {
-          // Match the product this program has been bound to (its live name,
-          // set by applyLoanProducts), then fall back to the type keyword. This
-          // keeps the save working even after the admin renames products in
-          // the catalog editor (e.g. "Personal Loan" -> "Velo Flex").
-          const existing = products.find((product: any) =>
-            (program.productName && String(product.name).toLowerCase() === String(program.productName).toLowerCase())
-            || String(product.name).toUpperCase().includes(type)
-            || (type === "PERSONAL" && /personal/i.test(product.name))
-            || (type === "BUSINESS" && /business/i.test(product.name))
-          );
+          // Staged matching, best bind first:
+          //   1. the product this program is BOUND to by its live name (set by
+          //      applyLoanProducts — rename-safe), then
+          //   2. an ACTIVE product whose name carries the type keyword, then
+          //   3. any product with the keyword.
+          // Never a blanket OR-chain: that could bind the program to the wrong
+          // (inactive/stale) product when several names share the keyword.
+          const keyword = type === "PERSONAL" ? /personal/i : /business/i;
+          const existing
+            = (program.productName
+              ? products.find((product: any) => String(product.name).toLowerCase() === String(program.productName).toLowerCase())
+              : undefined)
+            ?? products.find((product: any) => product.isActive && keyword.test(product.name))
+            ?? products.find((product: any) => keyword.test(product.name));
+          // Preserve the admin's product NAME on update — forcing the name back
+          // to "Personal/Business Loan" on every save renamed custom products,
+          // tripped the duplicate-name guard (409) and desynced the binding.
+          const productName = existing ? existing.name : `${type === "PERSONAL" ? "Personal" : "Business"} Loan`;
           const productInput = {
-            name: `${type === "PERSONAL" ? "Personal" : "Business"} Loan`,
+            name: productName,
             minAmountNaira: program.loanLimits.min,
             maxAmountNaira: program.loanLimits.max,
             defaultTenureDays: program.tenures[0]?.value || 30,
