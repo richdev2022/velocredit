@@ -314,6 +314,10 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
   const [savingId, setSavingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [activatingAll, setActivatingAll] = useState(false);
+
+  const activeCount = catalog.filter((p) => p.isActive).length;
+  const allInactive = catalog.length > 0 && activeCount === 0;
 
   async function refresh(): Promise<void> {
     try {
@@ -391,6 +395,29 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
     }
   }
 
+  // One-click recovery for the "everything is inactive" misconfiguration —
+  // that state used to silently brick the borrower application funnel.
+  async function activateAll() {
+    const inactive = catalog.filter((p) => !p.isActive);
+    if (inactive.length === 0) return;
+    setActivatingAll(true);
+    setActionError("");
+    let failures = 0;
+    for (const product of inactive) {
+      try {
+        const updated = await adminPatchLoanProduct(product.id, { isActive: true });
+        setCatalog((current) => current.map((p) => (p.id === product.id ? updated.product : p)));
+      } catch {
+        failures += 1;
+      }
+    }
+    setActivatingAll(false);
+    if (failures > 0) {
+      setActionError(`Activated ${inactive.length - failures} of ${inactive.length} products — ${failures} failed, please retry.`);
+    }
+    onCatalogChanged?.();
+  }
+
   return (
     <PanelCard
       title="Loan product catalog"
@@ -398,7 +425,7 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
       icon={<Icon name="bank" size={18} />}
       action={
         <div className="flex items-center gap-2">
-          <Pill tone="info">{loading ? "…" : `${catalog.length} product${catalog.length === 1 ? "" : "s"}`}</Pill>
+          <Pill tone={catalog.length > 0 && activeCount === 0 ? "warning" : "info"}>{loading ? "…" : `${activeCount}/${catalog.length} active`}</Pill>
           <button
             type="button"
             onClick={startCreate}
@@ -417,6 +444,23 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
         )}
         {actionError && (
           <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300">{actionError}</p>
+        )}
+
+        {allInactive && editingId !== "new" && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-700/60 dark:bg-amber-900/20">
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-amber-800 dark:text-amber-200">No active loan products</p>
+              <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300/80">Borrowers cannot see or select any loan product right now. Activate at least one product to reopen applications.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void activateAll()}
+              disabled={activatingAll}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-[11px] font-black text-white shadow transition hover:bg-amber-600 disabled:opacity-60"
+            >
+              {activatingAll ? <><span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />Activating…</> : "Activate all"}
+            </button>
+          </div>
         )}
 
         {/* Inline creation editor */}

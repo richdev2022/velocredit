@@ -3,7 +3,7 @@ import { randomInt } from "node:crypto";
 import type { NeonQueryFunction } from "@neondatabase/serverless";
 import { sql } from "./db.js";
 import { decomposeAndUpsertAll, type EntityCounts, type Snapshot } from "./decompose.js";
-import { rebuildFromDatabase } from "./rebuildFromDatabase.js";
+import { rebuildFromDatabase, rebuildLoanProductsFromDatabase } from "./rebuildFromDatabase.js";
 
 export type Role = "INVESTOR" | "BORROWER" | "ADMIN" | "LOAN_MANAGER";
 export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loan_applications", "loan_decisions", "loan_disbursements", "loan_repayments", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
@@ -1275,6 +1275,11 @@ async function doInitializeStore(): Promise<void> {
     console.error("[store/initializeStore] post-load full decompose pass FAILED:", e);
   }
 
+  // Kill ghost catalog rows for good (see purgeGhostCatalogRows): survivors
+  // are already upserted by the decompose pass above, so anything still in
+  // Postgres that memory does not know about is stale garbage.
+  await purgeGhostCatalogRows();
+
   startPersistSweeper();
 
   dirtyKeys.clear();
@@ -1515,6 +1520,76 @@ export function normalizeCatalogCollections(): boolean {
     plansRemoved = dedupeCatalogInPlace(investmentPlans, (p) => p.name);
   }
   return loanRemoved || plansRemoved;
+}
+
+// ---------------------------------------------------------------------------
+// Catalog resilience helpers.
+//
+// Production incident: GET /borrower/loan-products returned { products: [] }
+// while the admin had products configured. Three independent holes made that
+// possible:
+//   1. Ghost rows — dedupeCatalogInPlace() collapses duplicates IN MEMORY but
+//      nothing ever DELETEd them from Postgres, so every restart re-loaded the
+//      ghosts and re-collapsed them (and any consumer reading the raw table
+//      kept seeing stale/contradictory rows).
+//   2. Partial hydration — if a boot raced (Neon cold start, transient query
+//      failure) the in-memory catalog could stay empty for the life of the
+//      process, because the seed only runs during initializeStore().
+//   3. All-inactive state — the borrower endpoint served `active only`; with
+//      every product toggled off the response was `[]` and the whole borrowing
+//      funnel silently bricked.
+// The helpers below close all three holes.
+// ---------------------------------------------------------------------------
+
+/**
+ * DELETE catalog rows that no longer exist in memory (ghost rows left behind
+ * by the historical append-instead-of-upsert bug). Skipped when the in-memory
+ * catalog is empty so a partial boot can never wipe the table.
+ */
+export async function purgeGhostCatalogRows(): Promise<void> {
+  if (!sql) return;
+  try {
+    const productIds = loanProducts.map((p) => p.id);
+    if (productIds.length > 0) {
+      await sql.query("DELETE FROM loan_products WHERE NOT (id = ANY($1::text[]))", [productIds]);
+    }
+    const planIds = investmentPlans.map((p) => p.id);
+    if (planIds.length > 0) {
+      await sql.query("DELETE FROM investment_plans WHERE NOT (id = ANY($1::text[]))", [planIds]);
+    }
+  } catch (e) {
+    console.error("[store/purgeGhostCatalogRows] failed:", e);
+  }
+}
+
+/**
+ * Re-read the authoritative loan-product catalog straight from Postgres and
+ * replace the in-memory array with it (deduped). Used when the process booted
+ * without a usable catalog (partial hydration) — borrowers and admins must not
+ * be stuck with an empty list until the next restart.
+ */
+export async function reloadLoanProductsFromDb(): Promise<number> {
+  if (!sql) return loanProducts.length;
+  try {
+    const products = await rebuildLoanProductsFromDatabase(sql as unknown as NeonQueryFunction<false, false>);
+    loanProducts.splice(0, loanProducts.length, ...products);
+    normalizeLoanProducts();
+  } catch (e) {
+    console.error("[store/reloadLoanProductsFromDb] failed:", e);
+  }
+  return loanProducts.length;
+}
+
+/**
+ * Hard guarantee that the in-memory catalog is populated before a borrower- or
+ * admin-facing response is built: DB reload first, seed defaults last.
+ */
+export async function ensureLoanProductsLoaded(): Promise<number> {
+  if (loanProducts.length > 0) return loanProducts.length;
+  const reloaded = await reloadLoanProductsFromDb();
+  if (reloaded > 0) return reloaded;
+  seedLoanProducts();
+  return loanProducts.length;
 }
 
 let adminLedgerBalanceCache = 0;

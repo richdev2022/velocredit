@@ -80,6 +80,8 @@ import {
   reloadStoreFromRelationalTables,
   persistStore,
   normalizeLoanProducts,
+  ensureLoanProductsLoaded,
+  purgeGhostCatalogRows,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { env } from "./config.js";
@@ -2642,20 +2644,55 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
   });
 });
 
+/**
+ * Build the borrower-facing product catalog payload.
+ *
+ * Contract (production incident 2026-09: endpoint returned `products: []`):
+ *   1. The list is never empty while ANY product exists — if every product is
+ *      inactive we serve the full catalog flagged with ALL_PRODUCTS_INACTIVE_FALLBACK
+ *      instead of bricking the application funnel (the admin UI shows a matching
+ *      warning + one-click "Activate all").
+ *   2. `programType` is stamped per product so the borrower flow renders loan
+ *      information STRICTLY for the product type the customer selected.
+ */
+export function buildBorrowerProductCatalog(): {
+  products: Array<(typeof loanProducts)[number] & { programType: "PERSONAL" | "BUSINESS" | "BOTH" | null }>;
+  activeCount: number;
+  catalogNotice: string | null;
+} {
+  const active = loanProducts.filter((p) => p.isActive);
+  const allInactive = active.length === 0 && loanProducts.length > 0;
+  const payload = allInactive ? loanProducts : active;
+  return {
+    products: payload.map((p) => ({ ...p, programType: classifyLoanProductType(p) })),
+    activeCount: active.length,
+    catalogNotice: allInactive ? "ALL_PRODUCTS_INACTIVE_FALLBACK" : null,
+  };
+}
+
 router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), async (_req, res) => {
   // Self-heal first: legacy snapshots could contain duplicated rows (same id /
   // same name). Borrowers must ONLY ever see the admin-configured products.
   if (normalizeLoanProducts()) {
     console.warn("[routes] borrower/loan-products removed duplicated product rows from the in-memory catalog");
     void persistStore().catch(() => undefined);
+    void purgeGhostCatalogRows();
+  }
+  // Hard guarantee: a partial boot (DB hiccup during hydration) must never
+  // leave a logged-in borrower with an empty catalog for the life of the
+  // process — reload straight from Postgres, then fall back to seed defaults.
+  if (loanProducts.length === 0) {
+    await ensureLoanProductsLoaded();
+    if (normalizeLoanProducts()) void persistStore().catch(() => undefined);
   }
   // programType tells the borrower flow EXPLICITLY which application type a
   // product drives, so loan information never renders empty when product names
   // no longer contain the "personal"/"business" keyword.
-  res.json({
-    ok: true,
-    products: loanProducts.filter((p) => p.isActive).map((p) => ({ ...p, programType: classifyLoanProductType(p) })),
-  });
+  const catalog = buildBorrowerProductCatalog();
+  if (catalog.catalogNotice) {
+    console.warn("[routes] borrower/loan-products: NO active loan products — serving the full catalog so the application flow is not bricked (admin should re-activate a product)");
+  }
+  res.json({ ok: true, ...catalog });
 });
 
 router.get("/borrower/application-draft", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
@@ -4722,8 +4759,19 @@ router.get("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (_re
   if (normalizeLoanProducts()) {
     console.warn("[routes] admin/loan-products removed duplicated product rows from the in-memory catalog");
     void persistStore().catch(() => undefined);
+    void purgeGhostCatalogRows();
   }
-  res.json({ ok: true, products: loanProducts });
+  // Same partial-boot guarantee as the borrower endpoint: the admin console
+  // must never render an empty catalog just because hydration raced.
+  if (loanProducts.length === 0) {
+    await ensureLoanProductsLoaded();
+    if (normalizeLoanProducts()) void persistStore().catch(() => undefined);
+  }
+  res.json({
+    ok: true,
+    products: loanProducts,
+    activeCount: loanProducts.filter((p) => p.isActive).length,
+  });
 });
 
 router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (req, res) => {
