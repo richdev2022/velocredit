@@ -796,6 +796,18 @@ app.use("/docs", swaggerUi.serve, swaggerUi.setup(openapi));
 app.get("/openapi.json", (_req, res) => res.json(openapi));
 app.use("/api/v1", apiRouter);
 
+// Express 5 forwards rejected promises from async route handlers to the
+// next error-handling middleware. Without this terminal handler those
+// rejections (e.g. a Flutterwave provider throw inside a wallet route)
+// would fall through to the default handler and return a non-JSON 500.
+app.use((error: unknown, _req: unknown, res: unknown, _next: unknown) => {
+  const message = error instanceof Error ? error.message : "Unexpected server error";
+  console.error("[api] unhandled route error:", error);
+  const resAny = res as { status?: (code: number) => { json: (body: unknown) => void }; headersSent?: boolean };
+  if (!resAny?.status || resAny.headersSent) return;
+  resAny.status(500).json({ ok: false, error: message });
+});
+
 app.use((_req, res) => {
   res.status(404).json({ ok: false, error: "Route not found" });
 });

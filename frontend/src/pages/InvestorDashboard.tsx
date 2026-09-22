@@ -559,8 +559,12 @@ export default function InvestorDashboard() {
         setFundingAmount(String(amt));
         window.location.assign(link);
       } else {
-        setMessage(response.message || "Wallet funding is being processed.");
+        const text = response.message || "Wallet funding is being processed.";
+        setMessage(text);
+        showToast(text, "info");
         setFundModalOpen(false);
+        // Surface the recorded pending deposit on the wallet view immediately.
+        getInvestorDashboard().then((dashboard) => setData(dashboard as DashboardData)).catch(() => undefined);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to start wallet funding");

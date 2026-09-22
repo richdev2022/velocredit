@@ -64,6 +64,10 @@ type UpsertArgs<T> = {
   }>;
 };
 
+// Postgres accepts at most 65535 bind parameters per statement. Keep a wide
+// safety margin: chunk size = min(MAX_ROWS_PER_STATEMENT, floor(60000 / columns)).
+const MAX_ROWS_PER_STATEMENT = 100;
+
 export async function upsertEntities<T>(
   db: NeonQueryFunction<false, false>,
   rows: readonly T[],
@@ -72,27 +76,39 @@ export async function upsertEntities<T>(
   if (rows.length === 0) return 0;
 
   const columns = args.columns.map((entry) => column(entry.snake));
-  const placeholders = args.columns.map((_, index) => `$${index + 1}`).join(", ");
   const conflict = args.pkColumns.map(column).join(", ");
   const updates = args.columns
     .filter((entry) => !args.pkColumns.includes(entry.snake))
     .map((entry) => `${column(entry.snake)} = EXCLUDED.${column(entry.snake)}`)
     .join(", ");
-  const statement = `INSERT INTO ${args.table} (${columns.join(", ")}) VALUES (${placeholders}) ON CONFLICT (${conflict}) ${updates ? `DO UPDATE SET ${updates}` : "DO NOTHING"}`;
+
+  // Multi-row INSERT ... ON CONFLICT. One round trip per chunk instead of one
+  // round trip per row — with a serverless driver (Neon) each query is an HTTPS
+  // round trip, so per-row queries made every mutation take seconds to minutes.
+  const rowsPerStatement = Math.max(1, Math.min(MAX_ROWS_PER_STATEMENT, Math.floor(60000 / args.columns.length)));
 
   let processed = 0;
-  for (let start = 0; start < rows.length; start += BATCH_SIZE) {
-    for (const row of rows.slice(start, start + BATCH_SIZE)) {
-      const values = args.columns.map((entry) => {
+  for (let start = 0; start < rows.length; start += rowsPerStatement) {
+    const chunk = rows.slice(start, start + rowsPerStatement);
+    const tuples: string[] = [];
+    const values: unknown[] = [];
+    let paramIndex = 0;
+    for (const row of chunk) {
+      const placeholders: string[] = [];
+      for (const entry of args.columns) {
+        paramIndex += 1;
+        placeholders.push(`$${paramIndex}`);
         const value = entry.get(row);
-        if (entry.asDate) return date(value as string | undefined | null);
-        if (entry.asBig) return big(value as number | bigint | undefined | null);
-        if (entry.json) return typeof value === "string" ? value : json(value);
-        return value ?? null;
-      });
-      await db.query(statement, values);
-      processed += 1;
+        if (entry.asDate) values.push(date(value as string | undefined | null));
+        else if (entry.asBig) values.push(big(value as number | bigint | undefined | null));
+        else if (entry.json) values.push(typeof value === "string" ? value : json(value));
+        else values.push(value ?? null);
+      }
+      tuples.push(`(${placeholders.join(", ")})`);
     }
+    const statement = `INSERT INTO ${args.table} (${columns.join(", ")}) VALUES ${tuples.join(", ")} ON CONFLICT (${conflict}) ${updates ? `DO UPDATE SET ${updates}` : "DO NOTHING"}`;
+    await db.query(statement, values);
+    processed += chunk.length;
   }
   return processed;
 }
