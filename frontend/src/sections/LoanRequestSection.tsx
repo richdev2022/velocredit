@@ -21,6 +21,7 @@ export default function LoanRequestSection() {
   // limits the admin has set (the ApplicationContext fetch on login may be
   // stale if the admin updated limits after the borrower logged in).
   const [configVersion, setConfigVersion] = useState(0);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   useEffect(() => {
     let cancelled = false;
     void getLoanProducts().then((response) => {
@@ -47,10 +48,17 @@ export default function LoanRequestSection() {
     handleSubmit,
     watch,
     setValue,
-    formState: { errors, isValid },
+    formState: { errors },
   } = useForm<LoanRequestForm>({
     resolver: zodResolver(loanRequestSchemaFor(program.loanLimits, program.tenures)),
-    mode: "onChange",
+    // FREE TYPING CONTRACT: the amount input accepts ANY number the user types
+    // ("200", "45,000", clearing to retype…). Nothing is rejected mid-keystroke.
+    // Validation runs on submit — a value below the product minimum or above
+    // its maximum is REJECTED there with a clear message, and after that first
+    // rejection the form re-validates on change so fixing the amount clears
+    // the error immediately.
+    mode: "onSubmit",
+    reValidateMode: "onChange",
     defaultValues: {
       amount: application?.loanRequest.amount,
       tenure: application?.loanRequest.tenure,
@@ -62,12 +70,15 @@ export default function LoanRequestSection() {
   const tenureWatch = watch("tenure");
 
   function handleAmountChange(v: number) {
-    setValue("amount", v, { shouldValidate: true, shouldDirty: true });
+    // Before the first submit attempt the value is NOT validated on change —
+    // the customer may freely type/retype any amount. After a rejected submit
+    // the error must clear as soon as the amount becomes valid.
+    setValue("amount", v, { shouldValidate: submitAttempted, shouldDirty: true });
     patchLoanRequest({ amount: v });
   }
 
   function handleTenureChange(v: number) {
-    setValue("tenure", v, { shouldValidate: true, shouldDirty: true });
+    setValue("tenure", v, { shouldValidate: submitAttempted, shouldDirty: true });
     patchLoanRequest({ tenure: v });
   }
 
@@ -81,14 +92,19 @@ export default function LoanRequestSection() {
   // all hooks is it safe to bail out of rendering when there is no application.
   if (!application) return null;
 
+  // The Continue button must NOT be gated on form validity: an out-of-range
+  // amount has to reach handleSubmit so it can be REJECTED with a visible
+  // message (never silently disabled). calculation===null only happens when no
+  // amount exists at all yet.
+  const canContinue = !!calculation;
   return (
     <SectionShell
       title="Loan Request"
-      description="Select your loan amount and preferred tenure. Fees recalculate automatically."
-      canContinue={isValid && !!calculation}
-      onContinue={handleSubmit(onSubmit)}
+      description="Type any amount — it must fall within this product's range to continue."
+      canContinue={canContinue}
+      onContinue={handleSubmit(onSubmit, () => setSubmitAttempted(true))}
     >
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+      <form onSubmit={handleSubmit(onSubmit, () => setSubmitAttempted(true))} className="space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
           {/* Product terms — bound STRICTLY to the application type the customer
               selected. The range, interest and fees below come from this product

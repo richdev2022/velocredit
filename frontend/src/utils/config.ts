@@ -369,6 +369,7 @@ export function applyLoanProducts(products: Array<{
   version?: number;
   updatedAt?: string;
   isActive?: boolean;
+  programType?: "PERSONAL" | "BUSINESS" | "BOTH" | null;
 }>): void {
   // ---------------------------------------------------------------------------
   // Defensive product resolution.
@@ -385,6 +386,10 @@ export function applyLoanProducts(products: Array<{
   //   3. De-duplicate by name-> keep the newest `updatedAt`.
   //   4. Per program type (PERSONAL/BUSINESS) apply ONLY the single
   //      highest-ranked matching product — never a mix.
+  //   5. Products the admin renamed away from the personal/business keywords
+  //      are mapped via the backend's explicit `programType` first, then a
+  //      deterministic fallback — so the borrower NEVER ends up with empty
+  //      loan information for either flow.
   // ---------------------------------------------------------------------------
   type Ranked = (typeof products)[number] & { __rank: number };
   const rankOf = (p: { version?: number; updatedAt?: string }): number => {
@@ -409,19 +414,16 @@ export function applyLoanProducts(products: Array<{
   // A product survives only if it is BOTH the best for its id AND its name.
   const unique = [...seenById.values()].filter((p) => seenByName.get(p.name.trim().toLowerCase()) === p);
 
-  let appliedAny = false;
+  const applied = new Set<string>();
   // Name -> program mapping (same precedence as before: a name containing
   // "business" maps to BUSINESS even if it also contains "personal").
   const matchesType = (name: string, type: LoanProgramKey): boolean =>
     type === "BUSINESS"
       ? /business/i.test(name)
       : /personal/i.test(name) && !/business/i.test(name);
-  for (const type of ["PERSONAL", "BUSINESS"] as LoanProgramKey[]) {
-    // Single authoritative product for this type: highest version, then newest
-    // updatedAt. Anything else in the list is ignored for this program.
-    const candidates = unique.filter((p) => matchesType(p.name, type));
-    if (candidates.length === 0) continue;
-    const product = candidates.reduce((best, p) => (p.__rank > best.__rank ? p : best), candidates[0]);
+  const explicitTypesFor = (product: Ranked, type: LoanProgramKey): boolean =>
+    product.programType === type || product.programType === "BOTH";
+  const applyProduct = (product: Ranked, type: LoanProgramKey): void => {
     const program = config.loanPrograms[type];
     const limits = {
       min: Number(product.minAmountNaira),
@@ -431,7 +433,7 @@ export function applyLoanProducts(products: Array<{
     // Validate: min < max, both finite, min >= 0. Skip invalid products
     // rather than clobbering good config with bad data.
     if (!Number.isFinite(limits.min) || !Number.isFinite(limits.max) || limits.min >= limits.max || limits.min < 0) {
-      continue;
+      return;
     }
     config.loanPrograms[type] = {
       ...program,
@@ -448,13 +450,45 @@ export function applyLoanProducts(products: Array<{
         lateFee: { ...program.fees.lateFee, type: "percentage", value: Number(product.lateFeePercent) },
       },
     };
-    appliedAny = true;
+    applied.add(type);
+  };
+
+  // Pass 1 — explicit backend classification (keyword names or programType).
+  const appliedProductIds = new Set<string>();
+  const idOf = (p: Ranked): string => (typeof p.id === "string" && p.id ? p.id : `anon:${p.name}`);
+  for (const type of ["PERSONAL", "BUSINESS"] as LoanProgramKey[]) {
+    // Single authoritative product for this type: highest version, then newest
+    // updatedAt. Anything else in the list is ignored for this program.
+    const candidates = unique.filter((p) => explicitTypesFor(p, type) || matchesType(p.name, type));
+    if (candidates.length === 0) continue;
+    const product = candidates.reduce((best, p) => (p.__rank > best.__rank ? p : best), candidates[0]);
+    applyProduct(product, type);
+    appliedProductIds.add(idOf(product));
+  }
+
+  // Pass 2 — deterministic fallback so a flow NEVER renders empty loan info
+  // (admin may have renamed products away from the personal/business keywords
+  // without the backend being able to classify them). Cheapest unclaimed
+  // active product first -> PERSONAL, next -> BUSINESS. When every unclassified
+  // product is already claimed (single-product platform), the SAME product
+  // serves the remaining flow too — an empty program is never acceptable.
+  for (const type of ["PERSONAL", "BUSINESS"] as LoanProgramKey[]) {
+    if (applied.has(type)) continue;
+    const candidatesForType = (ignoreClaims: boolean) => unique
+      .filter((p) => ignoreClaims || !appliedProductIds.has(idOf(p)))
+      .filter((p) => !p.programType || p.programType === "BOTH" || (!matchesType(p.name, "PERSONAL") && !matchesType(p.name, "BUSINESS")))
+      .sort((a, b) => Number(a.minAmountNaira) - Number(b.minAmountNaira));
+    const fallback = candidatesForType(false)[0] ?? candidatesForType(true)[0];
+    if (fallback) {
+      applyProduct(fallback, type);
+      appliedProductIds.add(idOf(fallback));
+    }
   }
   // Only overwrite the global config.loanLimits if we actually applied a
   // PERSONAL product. Otherwise leave the env-default / localStorage-overridden
   // values intact so the borrower doesn't see a stale seeded ₦50,000 from
   // the backend when the admin has set a different value.
-  if (appliedAny) {
+  if (applied.has("PERSONAL")) {
     const personal = config.loanPrograms.PERSONAL;
     config.loanLimits = sanitizeLoanLimits(personal.loanLimits);
     config.tenures = personal.tenures.slice();

@@ -36,11 +36,12 @@ import {
   adminRetryWithdrawal,
   type AdminLedgerEntry,
 } from "../../services/adminApi";
-import { adminListLoanProducts, adminCreateLoanProduct, adminPatchLoanProduct, type LoanProduct } from "../../services/apiClient";
+import { adminListLoanProducts, adminCreateLoanProduct, adminPatchLoanProduct } from "../../services/apiClient";
 import { formatNaira } from "../../utils/loanCalculator";
 import { calculateLoan } from "../../utils/loanCalculator";
 import type { TenureOption, FeeConfiguration, FeeKey, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey } from "../../types/loan";
 import ProgramEditor from "./ProgramEditor";
+import ProductCatalogCard from "./ProductCatalogCard";
 import Icon from "../Icon";
 import { Pill, Toggle, SettingRow, NairaField, FeeEditor, Chip, PanelCard, type FeeValue } from "./settingsUI";
 
@@ -178,45 +179,11 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const [ledgerTotal, setLedgerTotal] = useState(0);
   const LEDGER_LIMIT = 20;
 
-  // Loan product catalog — the authoritative backend list. The admin must see
-  // EVERY product here (not just the two application flows) and be able to
-  // activate/deactivate each one directly.
-  const [catalog, setCatalog] = useState<LoanProduct[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(true);
-  const [catalogError, setCatalogError] = useState("");
-  const [togglingProductId, setTogglingProductId] = useState<string | null>(null);
-
-  async function refreshCatalog(): Promise<void> {
-    try {
-      const response = await adminListLoanProducts();
-      setCatalog(response.products ?? []);
-      setCatalogError("");
-    } catch (e: any) {
-      setCatalogError(e?.message || "Failed to load loan products");
-    } finally {
-      setCatalogLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void refreshCatalog();
-  }, []);
-
-  async function handleToggleProduct(product: LoanProduct, nextActive: boolean): Promise<void> {
-    setTogglingProductId(product.id);
-    const previous = catalog;
-    // Optimistic update, reverted if the PATCH fails.
-    setCatalog((current) => current.map((p) => (p.id === product.id ? { ...p, isActive: nextActive } : p)));
-    try {
-      const updated = await adminPatchLoanProduct(product.id, { isActive: nextActive });
-      setCatalog((current) => current.map((p) => (p.id === product.id ? updated.product : p)));
-    } catch (e: any) {
-      setCatalog(previous);
-      setSaveError(`Could not ${nextActive ? "activate" : "deactivate"} "${product.name}": ${e?.message || "unknown error"}`);
-    } finally {
-      setTogglingProductId(null);
-    }
-  }
+  // Loan product catalog — rendered by the self-contained ProductCatalogCard
+  // (every product fully editable + activatable + creatable). refreshSignal is
+  // bumped whenever the program save flow creates/patches backend products so
+  // the catalog card re-fetches and stays in sync.
+  const [catalogRefresh, setCatalogRefresh] = useState(0);
 
   useEffect(() => {
     async function loadAdminData() {
@@ -563,12 +530,13 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       await withSaveTimeout((async () => {
         const products = (await adminListLoanProducts()).products;
         for (const [type, program] of Object.entries(activePrograms) as Array<[LoanProgramKey, LoanProgramConfig]>) {
-          // Match by name containing the type OR by a type tag. The seed
-          // products are named "Velo Personal Quick" / "Velo Business Boost"
-          // and the admin saves as "Personal Loan" / "Business Loan" — both
-          // contain the type keyword, so this match works for both.
+          // Match the product this program has been bound to (its live name,
+          // set by applyLoanProducts), then fall back to the type keyword. This
+          // keeps the save working even after the admin renames products in
+          // the catalog editor (e.g. "Personal Loan" -> "Velo Flex").
           const existing = products.find((product: any) =>
-            String(product.name).toUpperCase().includes(type)
+            (program.productName && String(product.name).toLowerCase() === String(program.productName).toLowerCase())
+            || String(product.name).toUpperCase().includes(type)
             || (type === "PERSONAL" && /personal/i.test(product.name))
             || (type === "BUSINESS" && /business/i.test(product.name))
           );
@@ -601,9 +569,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       refreshConfig(overrides);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-      // The save flow may have created/patched backend products — pull the
-      // authoritative catalog again so the list (and toggles) stay in sync.
-      void refreshCatalog();
+      // The save flow may have created/patched backend products — bump the
+      // catalog card so it re-fetches the authoritative list.
+      setCatalogRefresh((v) => v + 1);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Unable to save settings.");
     } finally {
@@ -785,60 +753,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             <div className="min-w-0 space-y-5 xl:col-span-2">
               {activeTab === "programs" && (
                 <>
-                  <PanelCard
-                    title="Loan product catalog"
-                    description="Every loan product configured on the platform. Borrowers only ever see ACTIVE products. Toggle a product to activate or deactivate it."
-                    icon={<Icon name="bank" size={18} />}
-                    action={<Pill tone="info">{catalogLoading ? "…" : `${catalog.length} product${catalog.length === 1 ? "" : "s"}`}</Pill>}
-                  >
-                    <div className="space-y-3 py-2">
-                      {catalogError && (
-                        <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">{catalogError}</p>
-                      )}
-                      {catalogLoading ? (
-                        <p className="velo-helper py-4 text-center">Loading loan products…</p>
-                      ) : catalog.length === 0 ? (
-                        <p className="velo-helper py-4 text-center">No loan products yet — saving a program below creates the first one.</p>
-                      ) : (
-                        catalog.map((product) => (
-                          <div
-                            key={product.id}
-                            className={`rounded-xl border p-4 transition ${product.isActive
-                              ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"
-                              : "border-dashed border-slate-300 bg-slate-50 dark:border-slate-600 dark:bg-slate-900/60"}`}
-                          >
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="text-sm font-bold text-slate-900 dark:text-white">{product.name}</p>
-                                  <Pill tone={product.isActive ? "success" : "warning"}>{product.isActive ? "Active" : "Inactive"}</Pill>
-                                  <Pill tone="neutral">v{product.version}</Pill>
-                                </div>
-                                {product.description && (
-                                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{product.description}</p>
-                                )}
-                              </div>
-                              <div className="shrink-0">
-                                <Toggle
-                                  checked={product.isActive}
-                                  disabled={togglingProductId === product.id}
-                                  onChange={(value) => void handleToggleProduct(product, value)}
-                                  label={product.isActive ? "Active" : "Inactive"}
-                                />
-                              </div>
-                            </div>
-                            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
-                              <span>Range: <span className="font-semibold text-slate-700 dark:text-slate-200">₦{safeNaira(product.minAmountNaira)} – ₦{safeNaira(product.maxAmountNaira)}</span></span>
-                              <span>Interest: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.interestRatePercent}%</span></span>
-                              <span>Tenure: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.defaultTenureDays ?? "—"} days</span></span>
-                              <span>Processing: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.processingFeePercent}%</span></span>
-                              <span>Late fee: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.lateFeePercent}%</span></span>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </PanelCard>
+                  {/* Fully editable catalog — every product (name, range,
+                      tenure, interest + type, fees, grace period, active). */}
+                  <ProductCatalogCard refreshSignal={catalogRefresh} />
 
                   <PanelCard
                     title="Loan programs"
