@@ -9,10 +9,22 @@ interface Props {
   max: number;
 }
 
+/**
+ * Loan amount input — FREE TYPING CONTRACT.
+ *
+ * The user can type ANY amount (or clear the field and retype) without the
+ * input fighting back: no clamping, no live min/max errors mid-keystroke, no
+ * disabled Continue button. The backend-provided minimum/maximum are shown as
+ * helper text and enforced at SUBMIT time by the form's zod schema, which
+ * rejects an out-of-range amount with a clear message.
+ *
+ * A soft, non-blocking notice appears on blur when the typed amount falls
+ * outside the product range so the user is never surprised by the rejection.
+ */
 export default function LoanAmountSelector({ value, onChange, error, min, max }: Props) {
   const step = (max - min) <= 1_000_000 ? 5_000 : 10_000;
   const [input, setInput] = useState(value ? String(value) : "");
-  const [localError, setLocalError] = useState("");
+  const [blurred, setBlurred] = useState(false);
 
   useEffect(() => {
     const next = value ? String(value) : "";
@@ -20,28 +32,29 @@ export default function LoanAmountSelector({ value, onChange, error, min, max }:
   }, [value]);
 
   const quickAmounts = getSuggestedLoanAmounts(min, max);
+  const numeric = input.replace(/[^0-9]/g, "");
+  const typed = numeric ? Number(numeric) : null;
+  const outOfRange = typed !== null && (typed < min || typed > max);
+  // Soft hint AFTER blur only — informational, never blocks typing or Continue.
+  const softHint = blurred && outOfRange && !error
+    ? typed! < min
+      ? `Heads up: the minimum for this product is ${formatNaira(min)}.`
+      : `Heads up: the maximum for this product is ${formatNaira(max)}.`
+    : "";
 
   function inputChanged(raw: string) {
-    const numeric = raw.replace(/[^0-9]/g, "");
-    setInput(numeric);
-    if (!numeric) {
-      setLocalError("Enter a loan amount.");
-      return;
-    }
-    const n = Number(numeric);
-    if (n < min) setLocalError(`Minimum loan amount is ${formatNaira(min)}.`);
-    else if (n > max) setLocalError(`Maximum loan amount is ${formatNaira(max)}.`);
-    else setLocalError("");
-    onChange(n);
+    const cleaned = raw.replace(/[^0-9]/g, "");
+    setInput(cleaned);
+    // Propagate the raw typed value (even if out of range) so the summary and
+    // validation always reflect exactly what the customer typed.
+    onChange(cleaned ? Number(cleaned) : 0);
   }
 
   function pick(n: number) {
     setInput(String(n));
-    setLocalError("");
+    setBlurred(false);
     onChange(n);
   }
-
-  const shownError = localError || error;
 
   return (
     <div className="space-y-4">
@@ -57,15 +70,18 @@ export default function LoanAmountSelector({ value, onChange, error, min, max }:
             inputMode="numeric"
             value={input ? Number(input).toLocaleString("en-NG") : ""}
             onChange={(e) => inputChanged(e.target.value)}
-            className={`velo-input !pl-12 text-lg font-semibold ${shownError ? "velo-input-error" : ""}`}
+            onBlur={() => setBlurred(true)}
+            className={`velo-input !pl-12 text-lg font-semibold ${error ? "velo-input-error" : ""}`}
             placeholder="Enter amount"
             autoComplete="off"
           />
         </div>
-        {shownError ? (
-          <p className="velo-error-text">{shownError}</p>
+        {error ? (
+          <p className="velo-error-text">{error}</p>
+        ) : softHint ? (
+          <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">{softHint}</p>
         ) : (
-          <p className="velo-helper">Minimum: {formatNaira(min)} • Maximum: {formatNaira(max)}</p>
+          <p className="velo-helper">Type any amount — it must be between {formatNaira(min)} and {formatNaira(max)}.</p>
         )}
       </div>
       <div>

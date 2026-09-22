@@ -58,14 +58,20 @@ describe("applyLoanProducts (admin-set limits reaching the borrower)", () => {
     expect(config.loanPrograms.PERSONAL.loanLimits).toEqual(before);
   });
 
-  it("does not touch global limits when no valid product could be applied", () => {
+  it("skips invalid products but still maps the single valid one (never-empty fallback)", () => {
     refreshTestConfig();
-    const before = { ...config.loanLimits };
+    // "Business Loan" is invalid (min >= max) and must never clobber config.
+    // The platform's one VALID product has no personal/business keyword — the
+    // intelligent fallback must still map it so no flow renders empty info.
     applyLoanProducts([
       { name: "Unknown Widget Loan", minAmountNaira: 100, maxAmountNaira: 5_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
       { name: "Business Loan", minAmountNaira: 500_000, maxAmountNaira: 500_000, interestRatePercent: 4, processingFeePercent: 2, lateFeePercent: 1 },
     ]);
-    expect(config.loanLimits).toEqual(before);
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(100);
+    expect(config.loanPrograms.PERSONAL.loanLimits.max).toBe(5_000);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Unknown Widget Loan");
+    // The invalid product is skipped — BUSINESS reuses the valid one instead.
+    expect(config.loanPrograms.BUSINESS.loanLimits.min).toBe(100);
   });
 
   it("duplicate rows with the same id must not resurrect stale seed values (production ₦200-vs-₦50,000 regression)", () => {
@@ -107,6 +113,60 @@ describe("applyLoanProducts (admin-set limits reaching the borrower)", () => {
       { id: "x", name: "Personal Loan", minAmountNaira: 123, maxAmountNaira: 4_567, interestRatePercent: 3, processingFeePercent: 1, lateFeePercent: 1, version: 9, isActive: false },
     ]);
     expect(config.loanPrograms.PERSONAL.loanLimits).toEqual(before);
+  });
+
+  it("programType overrides name keywords when the admin renames products away from personal/business", () => {
+    refreshTestConfig();
+    applyLoanProducts([
+      { id: "p1", name: "Velo Flex Cash", minAmountNaira: 200, maxAmountNaira: 1_000_000, interestRatePercent: 4, processingFeePercent: 1, lateFeePercent: 1, version: 3, isActive: true, programType: "PERSONAL" },
+      { id: "b1", name: "Velo Growth Fund", minAmountNaira: 500_000, maxAmountNaira: 10_000_000, interestRatePercent: 9, processingFeePercent: 2, lateFeePercent: 1, version: 2, isActive: true, programType: "BUSINESS" },
+    ]);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Velo Flex Cash");
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(200);
+    expect(config.loanPrograms.BUSINESS.productName).toBe("Velo Growth Fund");
+    expect(config.loanPrograms.BUSINESS.loanLimits.min).toBe(500_000);
+  });
+
+  it("a single renamed product with programType BOTH serves both borrower flows", () => {
+    refreshTestConfig();
+    applyLoanProducts([
+      { id: "only", name: "Velo Universal Credit", minAmountNaira: 1_000, maxAmountNaira: 2_000_000, interestRatePercent: 6, processingFeePercent: 1, lateFeePercent: 1, version: 1, isActive: true, programType: "BOTH" },
+    ]);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Velo Universal Credit");
+    expect(config.loanPrograms.BUSINESS.productName).toBe("Velo Universal Credit");
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(1_000);
+    expect(config.loanPrograms.BUSINESS.loanLimits.min).toBe(1_000);
+  });
+
+  it("never leaves a flow empty: unmatched products fall back deterministically (cheapest -> PERSONAL)", () => {
+    refreshTestConfig();
+    applyLoanProducts([
+      { id: "u1", name: "Velo Starter", minAmountNaira: 10_000, maxAmountNaira: 500_000, interestRatePercent: 5, processingFeePercent: 1, lateFeePercent: 1, version: 1, isActive: true },
+      { id: "u2", name: "Velo Enterprise", minAmountNaira: 1_000_000, maxAmountNaira: 20_000_000, interestRatePercent: 11, processingFeePercent: 2, lateFeePercent: 1, version: 1, isActive: true },
+    ]);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Velo Starter");
+    expect(config.loanPrograms.BUSINESS.productName).toBe("Velo Enterprise");
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(10_000);
+    expect(config.loanPrograms.BUSINESS.loanLimits.min).toBe(1_000_000);
+  });
+
+  it("one unmatched product serves BOTH flows so neither renders empty", () => {
+    refreshTestConfig();
+    applyLoanProducts([
+      { id: "solo", name: "Velo One", minAmountNaira: 5_000, maxAmountNaira: 5_000_000, interestRatePercent: 7, processingFeePercent: 1, lateFeePercent: 1, version: 1, isActive: true },
+    ]);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Velo One");
+    expect(config.loanPrograms.BUSINESS.productName).toBe("Velo One");
+  });
+
+  it("explicit programType beats a keyword-name competitor of lower version", () => {
+    refreshTestConfig();
+    applyLoanProducts([
+      { id: "kw", name: "Personal Loan", minAmountNaira: 300, maxAmountNaira: 3_000, interestRatePercent: 2, processingFeePercent: 1, lateFeePercent: 1, version: 1, isActive: true },
+      { id: "ex", name: "Velo Prime", minAmountNaira: 800, maxAmountNaira: 8_000, interestRatePercent: 4, processingFeePercent: 1, lateFeePercent: 1, version: 5, isActive: true, programType: "PERSONAL" },
+    ]);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Velo Prime");
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(800);
   });
 });
 

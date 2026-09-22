@@ -70,6 +70,7 @@ import {
   seedLoanStageStatuses,
   type StageStatus,
   type LoanStageKey,
+  type LoanProductSnapshot,
   loanDisbursements,
   disbursementAccounts,
   accountChangeRequests,
@@ -2622,10 +2623,20 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
   const userLoans = loans.filter((item) => item.borrowerId === req.user!.id);
   const userRepayments = repayments.filter((item) => item.borrowerId === req.user!.id);
   const disbursementAccount = disbursementAccounts.find((item) => item.borrowerId === req.user!.id) ?? null;
+  // Decorate every application/loan with resolved product fields so the UI can
+  // always render loan information (name, interest, fees, range) — even for
+  // applications created before products were linked, or whose product was
+  // later renamed/deactivated. Never an empty product block.
   res.json({
     ok: true,
-    applications: userApplications,
-    loans: userLoans,
+    applications: userApplications.map((item) => ({ ...item, ...applicationProductPayload(item) })),
+    loans: userLoans.map((item) => ({ ...item, ...applicationProductPayload({
+      loanProductId: item.loanProductId,
+      applicantType: userApplications.find((a) => a.id === item.applicationId)?.applicantType,
+      amountNaira: item.principalNaira,
+      productSnapshot: item.productSnapshot,
+      customerSnapshot: userApplications.find((a) => a.id === item.applicationId)?.customerSnapshot,
+    }) })),
     repayments: userRepayments,
     disbursementAccount,
   });
@@ -2638,7 +2649,13 @@ router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), asyn
     console.warn("[routes] borrower/loan-products removed duplicated product rows from the in-memory catalog");
     void persistStore().catch(() => undefined);
   }
-  res.json({ ok: true, products: loanProducts.filter((p) => p.isActive) });
+  // programType tells the borrower flow EXPLICITLY which application type a
+  // product drives, so loan information never renders empty when product names
+  // no longer contain the "personal"/"business" keyword.
+  res.json({
+    ok: true,
+    products: loanProducts.filter((p) => p.isActive).map((p) => ({ ...p, programType: classifyLoanProductType(p) })),
+  });
 });
 
 router.get("/borrower/application-draft", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
@@ -2908,6 +2925,17 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       creditReportSnapshot: { internal: internalCredit, external: externalCreditReport },
       amountNaira,
       tenureDays: input.loanRequest?.tenure,
+      // Link the application to the product that governs it RIGHT NOW and
+      // capture its terms — later renames/re-pricing cannot orphan the info.
+      ...(() => {
+        const product = resolveLoanProductForApplication({
+          applicantType: input.applicantType,
+          amountNaira,
+        });
+        return product
+          ? { loanProductId: product.id, productSnapshot: captureProductSnapshot(product) ?? undefined }
+          : {};
+      })(),
       status: "UNDER_REVIEW",
       stageStatuses: { profile: "COMPLETED", employment: "COMPLETED", bvn_nin: "COMPLETED", address: "COMPLETED", liveness: "COMPLETED", loan_details: "COMPLETED", documents: "COMPLETED", disbursement_account: "COMPLETED", consent: "COMPLETED", credit_review: "PENDING_REVIEW", risk_review: "PENDING_REVIEW", approval: "PENDING_REVIEW" },
       stageRejectionNotes: {},
@@ -2992,6 +3020,15 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
       Object.assign(snapshot, { loanRequest: parsed.data.loanRequest });
       application.amountNaira = parsed.data.loanRequest.amount;
       application.tenureDays = parsed.data.loanRequest.tenure;
+      // Re-stamp the product link + terms snapshot so an ongoing application
+      // (draft resumed weeks later, limits changed in between) always keeps a
+      // correct, renderable set of loan information.
+      const product = resolveLoanProductForApplication(application);
+      if (product) {
+        application.loanProductId = product.id;
+        const freshSnapshot = captureProductSnapshot(product);
+        if (freshSnapshot) application.productSnapshot = freshSnapshot;
+      }
     }
     if (parsed.data.collateral) Object.assign(snapshot, { collateral: parsed.data.collateral });
     if (parsed.data.kyc) {
@@ -3080,6 +3117,15 @@ router.get("/borrower/loans", requireAuth, requireRole("BORROWER"), (req: AuthRe
   const page = sorted.slice(offset, offset + limit);
   const withSchedules = page.map((loan) => ({
     ...loan,
+    // Resolved product info (name/interest/fees/range) — never empty, even for
+    // loans created before products were linked or after a product was removed.
+    ...applicationProductPayload({
+      loanProductId: loan.loanProductId,
+      applicantType: loanApplications.find((a) => a.id === loan.applicationId)?.applicantType,
+      amountNaira: loan.principalNaira,
+      productSnapshot: loan.productSnapshot,
+      customerSnapshot: loanApplications.find((a) => a.id === loan.applicationId)?.customerSnapshot,
+    }),
     schedule: indexes.loanSchedulesByLoanId.get(loan.id) ?? [],
   }));
   res.json({
@@ -3099,8 +3145,14 @@ router.get("/borrower/loans/:loanId", requireAuth, requireRole("BORROWER"), asyn
   if (application && synchronizeLoanApplicationStatus(application)) await persistStore().catch(() => undefined);
   res.json({
     ok: true,
-    loan,
-    application,
+    loan: { ...loan, ...applicationProductPayload({
+      loanProductId: loan.loanProductId,
+      applicantType: application?.applicantType,
+      amountNaira: loan.principalNaira,
+      productSnapshot: loan.productSnapshot,
+      customerSnapshot: application?.customerSnapshot,
+    }) },
+    application: application ? { ...application, ...applicationProductPayload(application) } : application,
     schedule: loanSchedules.filter((s) => s.loanId === loan.id),
     repayments: repayments.filter((r) => r.loanId === loan.id),
   });
@@ -3885,21 +3937,189 @@ router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"
   res.json({ ok: true, case: kyc });
 });
 
+// ---------------------------------------------------------------------------
+// Intelligent loan-product resolution (backward compatibility core).
+//
+// Products can be renamed, re-priced, deactivated or deleted by the admin at
+// any time. Ongoing applications must ALWAYS keep rendering correct loan
+// information instead of returning empty product info. The resolver tries, in
+// order of trustworthiness:
+//   1. The product id stored on the application (even if now inactive/renamed)
+//   2. The snapshot product id captured when the application was saved
+//   3. Active-product name keyword match for the applicant type
+//      (snapshot/cached names are checked too, case-insensitively)
+//   4. The application's own captured product snapshot (terms survive deletion)
+//   5. Amount-range containment among active products of the platform
+//   6. Any active product (deterministic: lowest minimum first)
+// It never throws and always yields usable terms.
+// ---------------------------------------------------------------------------
+
+type LoanProductRow = (typeof loanProducts)[number];
+
+function normalizeProductKeyword(name: unknown): string {
+  return String(name ?? "").trim().toLowerCase();
+}
+
+function productMatchesApplicantType(product: LoanProductRow, applicantType: "PERSONAL" | "BUSINESS"): boolean {
+  const name = normalizeProductKeyword(product.name);
+  return applicantType === "BUSINESS"
+    ? name.includes("business")
+    : name.includes("personal") && !name.includes("business");
+}
+
+/** Deterministic ordering: cheapest products first (stable tie-break by creation). */
+function compareProductsByRange(a: LoanProductRow, b: LoanProductRow): number {
+  const minDiff = Number(a.minAmountNaira ?? 0) - Number(b.minAmountNaira ?? 0);
+  if (minDiff !== 0) return minDiff;
+  return String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""));
+}
+
+export function resolveLoanProductForApplication(
+  application: {
+    loanProductId?: string;
+    applicantType?: "PERSONAL" | "BUSINESS";
+    amountNaira?: number;
+    productSnapshot?: LoanProductSnapshot | null;
+    customerSnapshot?: Record<string, unknown> | null;
+  }
+): LoanProductRow | null {
+  // 1. Stored product id — wins even if the product was renamed or deactivated,
+  //    because that is the product the borrower was shown.
+  if (application.loanProductId) {
+    const byId = loanProducts.find((p) => p.id === application.loanProductId);
+    if (byId) return byId;
+  }
+  // 2. Snapshot product id (legacy applications store it only in the snapshot).
+  const snapshotId = (application.productSnapshot as LoanProductSnapshot | undefined)?.productId
+    ?? (application.customerSnapshot as { productSnapshot?: LoanProductSnapshot } | undefined)?.productSnapshot?.productId;
+  if (snapshotId) {
+    const bySnapshotId = loanProducts.find((p) => p.id === snapshotId);
+    if (bySnapshotId) return bySnapshotId;
+  }
+  const type = application.applicantType === "BUSINESS" ? "BUSINESS" : "PERSONAL";
+  const active = loanProducts.filter((p) => p.isActive);
+  // 3. Active products whose name matches the applicant type.
+  const byType = active.filter((p) => productMatchesApplicantType(p, type)).sort(compareProductsByRange);
+  if (byType.length > 0) return byType[0];
+  // 4. Amount-range containment (helps when names no longer carry a keyword).
+  const amount = Number(application.amountNaira ?? 0);
+  if (Number.isFinite(amount) && amount > 0) {
+    const byAmount = active
+      .filter((p) => Number(p.minAmountNaira ?? 0) <= amount && amount <= Number(p.maxAmountNaira ?? 0))
+      .sort(compareProductsByRange);
+    if (byAmount.length > 0) return byAmount[0];
+  }
+  // 5. Any active product — deterministic.
+  if (active.length > 0) return active.slice().sort(compareProductsByRange)[0];
+  // 6. Last resort: any product row at all.
+  return loanProducts[0] ?? null;
+}
+
+/** Build the immutable terms snapshot captured on applications and loans. */
+export function captureProductSnapshot(product: LoanProductRow | null): LoanProductSnapshot | null {
+  if (!product) return null;
+  return {
+    productId: product.id,
+    productName: product.name,
+    minAmountNaira: Number(product.minAmountNaira),
+    maxAmountNaira: Number(product.maxAmountNaira),
+    defaultTenureDays: product.defaultTenureDays,
+    interestRatePercent: Number(product.interestRatePercent),
+    interestType: product.interestType,
+    processingFeePercent: Number(product.processingFeePercent),
+    lateFeePercent: Number(product.lateFeePercent),
+    lateFeeType: product.lateFeeType,
+    gracePeriodDays: product.gracePeriodDays,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Flat product fields merged into application/loan API responses so the UI can
+ * ALWAYS render loan information (product name, interest, fees, range) even
+ * when the underlying product was renamed, deactivated or deleted.
+ */
+function applicationProductPayload(application: {
+  loanProductId?: string;
+  applicantType?: "PERSONAL" | "BUSINESS";
+  amountNaira?: number;
+  productSnapshot?: LoanProductSnapshot | null;
+  customerSnapshot?: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const product = resolveLoanProductForApplication(application);
+  const snapshot = (application.productSnapshot
+    ?? (application.customerSnapshot as { productSnapshot?: LoanProductSnapshot } | undefined)?.productSnapshot) as LoanProductSnapshot | undefined;
+  const source: LoanProductRow | LoanProductSnapshot | undefined = product ?? snapshot ?? undefined;
+  if (!source) return {};
+  // A catalog ROW has `name`; a SNAPSHOT has `productName`. Read both defensively
+  // so a renamed/deleted product still renders its captured terms.
+  const sourceRecord = source as unknown as Record<string, unknown>;
+  const name = sourceRecord.name ?? sourceRecord.productName;
+  if (!name) return {};
+  return {
+    productName: name,
+    productInterestRatePercent: Number(sourceRecord.interestRatePercent ?? snapshot?.interestRatePercent ?? 0),
+    productInterestType: sourceRecord.interestType ?? snapshot?.interestType ?? "SIMPLE_FLAT",
+    productProcessingFeePercent: Number(sourceRecord.processingFeePercent ?? snapshot?.processingFeePercent ?? 0),
+    productLateFeePercent: Number(sourceRecord.lateFeePercent ?? snapshot?.lateFeePercent ?? 0),
+    productGracePeriodDays: sourceRecord.gracePeriodDays ?? snapshot?.gracePeriodDays,
+    productMinAmountNaira: Number(sourceRecord.minAmountNaira ?? snapshot?.minAmountNaira ?? 0),
+    productMaxAmountNaira: Number(sourceRecord.maxAmountNaira ?? snapshot?.maxAmountNaira ?? 0),
+    productDefaultTenureDays: sourceRecord.defaultTenureDays ?? snapshot?.defaultTenureDays,
+  };
+}
+
+/**
+ * Classify a product into the borrower application flow (PERSONAL / BUSINESS)
+ * deterministically, so the borrower never renders an empty program:
+ *   1. Name keyword ("business" -> BUSINESS, "personal" (not business) -> PERSONAL)
+ *   2. Single active product on the platform -> "BOTH" (serves both flows)
+ *   3. Otherwise null (frontend falls back to deterministic assignment)
+ */
+export function classifyLoanProductType(product: LoanProductRow): "PERSONAL" | "BUSINESS" | "BOTH" | null {
+  if (productMatchesApplicantType(product, "BUSINESS")) return "BUSINESS";
+  if (productMatchesApplicantType(product, "PERSONAL")) return "PERSONAL";
+  const active = loanProducts.filter((p) => p.isActive);
+  if (active.length === 1 && active[0].id === product.id) return "BOTH";
+  return null;
+}
+
 function ensureApprovedLoanRecord(application: (typeof loanApplications)[number], now = new Date().toISOString()) {
   const existing = loans.find((loan) => loan.applicationId === application.id);
   if (existing) return existing;
-  const product = loanProducts[0];
+  const product = resolveLoanProductForApplication(application);
+  const snapshot = (application.productSnapshot ?? (application.customerSnapshot as { productSnapshot?: LoanProductSnapshot } | undefined)?.productSnapshot) as LoanProductSnapshot | undefined;
+  // Terms priority:
+  //   1. The stored frontend calculation — exactly what the borrower saw and
+  //      agreed to in the agreement (survives any later product re-pricing).
+  //   2. The resolved product's live terms.
+  //   3. The captured snapshot terms.
+  //   4. Conservative defaults.
+  const savedCalc = (application.customerSnapshot as { calculation?: { loanAmount?: number; interest?: number; processingFee?: number; serviceFee?: number; totalRepayment?: number; tenure?: number } | null } | undefined)?.calculation;
   const principal = Number(application.amountNaira ?? 0);
-  const tenure = application.tenureDays ?? product?.defaultTenureDays ?? 90;
-  const rate = (product?.interestRatePercent ?? 18) / 100;
-  const processing = principal * ((product?.processingFeePercent ?? 2) / 100);
-  const interest = principal * rate * (tenure / 365);
+  const tenure = application.tenureDays
+    ?? (Number.isFinite(Number(savedCalc?.tenure)) && Number(savedCalc?.tenure) > 0 ? Number(savedCalc?.tenure) : undefined)
+    ?? product?.defaultTenureDays
+    ?? snapshot?.defaultTenureDays
+    ?? 90;
+  let interest: number;
+  let processing: number;
+  if (savedCalc && Number(savedCalc.loanAmount) === principal && Number.isFinite(Number(savedCalc.interest)) && Number(savedCalc.interest) >= 0) {
+    interest = Number(savedCalc.interest);
+    processing = Number(savedCalc.processingFee ?? 0) + Number(savedCalc.serviceFee ?? 0);
+  } else {
+    const rate = Number(product?.interestRatePercent ?? snapshot?.interestRatePercent ?? 18) / 100;
+    interest = principal * rate * (tenure / 365);
+    processing = principal * (Number(product?.processingFeePercent ?? snapshot?.processingFeePercent ?? 2) / 100);
+  }
   const totalRepayment = principal + interest + processing;
   const dueAt = new Date(Date.now() + tenure * 86400000).toISOString();
   const loanRecord: (typeof loans)[number] = {
     id: randomUUID(),
     applicationId: application.id,
     borrowerId: application.borrowerId,
+    loanProductId: product?.id ?? snapshot?.productId,
+    productSnapshot: captureProductSnapshot(product) ?? snapshot ?? undefined,
     principalNaira: principal,
     totalInterestNaira: Math.round(interest * 100) / 100,
     totalFeesNaira: Math.round(processing * 100) / 100,
@@ -3955,7 +4175,7 @@ router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
       if (!haystack.includes(search)) return false;
     }
     return true;
-  }).map((a) => seedLoanStageStatuses(a));
+  }).map((a) => ({ ...seedLoanStageStatuses(a), ...applicationProductPayload(a) }));
   const reconciled = filtered.some(synchronizeLoanApplicationStatus);
   if (reconciled) void persistStore().catch(() => undefined);
   const page = paginate(filtered, req.query as Record<string, unknown>);
@@ -4011,8 +4231,14 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req
   }
   res.json({
     ok: true,
-    application,
-    loan,
+    application: application ? { ...application, ...applicationProductPayload(application) } : application,
+    loan: loan ? { ...loan, ...applicationProductPayload({
+      loanProductId: loan.loanProductId,
+      applicantType: application?.applicantType,
+      amountNaira: loan.principalNaira,
+      productSnapshot: loan.productSnapshot,
+      customerSnapshot: application?.customerSnapshot,
+    }) } : loan,
     stages: LOAN_STAGES,
     schedule: loan ? loanSchedules.filter((s) => s.loanId === loan.id) : [],
     repayments: loan ? repayments.filter((r) => r.loanId === loan.id) : [],
@@ -4097,56 +4323,10 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
   if (parsed.data.decision === "APPROVED" && !loans.some((loan) => loan.applicationId === application.id)) {
     application.status = "APPROVED";
     application.approvedAt = new Date().toISOString();
-    const product = loanProducts[0];
-    const principal = Number(application.amountNaira ?? 0);
-    const tenure = application.tenureDays ?? product?.defaultTenureDays ?? 90;
-    const rate = (product?.interestRatePercent ?? 18) / 100;
-    const processing = principal * ((product?.processingFeePercent ?? 2) / 100);
-    const interest = principal * rate * (tenure / 365);
-    const totalRepayment = principal + interest + processing;
-    const dueAt = new Date(Date.now() + tenure * 86400000).toISOString();
-    const now = new Date().toISOString();
-    const loanRecord: (typeof loans)[number] = {
-      id: randomUUID(),
-      applicationId: application.id,
-      borrowerId: application.borrowerId,
-      principalNaira: principal,
-      totalInterestNaira: Math.round(interest * 100) / 100,
-      totalFeesNaira: Math.round(processing * 100) / 100,
-      totalRepaymentNaira: Math.round(totalRepayment * 100) / 100,
-      outstandingNaira: Math.round(totalRepayment * 100) / 100,
-      tenureDays: tenure,
-      status: "DISBURSEMENT_PENDING",
-      dueAt,
-      createdAt: now,
-      updatedAt: now,
-    };
-    loans.push(loanRecord);
-    const scheduleCount = Math.max(1, Math.round(tenure / 30));
-    for (let i = 1; i <= scheduleCount; i++) {
-      loanSchedules.push({
-        id: randomUUID(),
-        loanId: loanRecord.id,
-        installmentNumber: i,
-        dueDate: new Date(Date.now() + (tenure / scheduleCount) * i * 86400000).toISOString().slice(0, 10),
-        principalNaira: Math.round((principal / scheduleCount) * 100) / 100,
-        interestNaira: Math.round((interest / scheduleCount) * 100) / 100,
-        feesNaira: i === 1 ? Math.round(processing * 100) / 100 : 0,
-        totalDueNaira: Math.round((totalRepayment / scheduleCount) * 100) / 100,
-        totalPaidNaira: 0,
-        status: "PENDING",
-        createdAt: now,
-      });
-    }
-    creditHistory.push({
-      id: randomUUID(),
-      userId: application.borrowerId,
-      loanId: loanRecord.id,
-      eventType: "LOAN_APPROVED",
-      detail: `Application ${application.applicationId} approved`,
-      occurredAt: now,
-      createdAt: now,
-    });
+    // Shared builder: resolves the RIGHT product for this application
+    // (applicant type + stored ids + snapshot fallback), honours the borrower's
+    // saved calculation, and captures an immutable terms snapshot.
+    ensureApprovedLoanRecord(application);
   } else if (parsed.data.decision === "REJECTED") {
     application.status = "REJECTED";
   } else {
@@ -4237,55 +4417,9 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
   application.manualDecision = "APPROVED";
   application.manualNote = parsed.data.note || application.manualNote;
   if (!loans.some((l) => l.applicationId === application.id)) {
-    const product = loanProducts[0];
-    const principal = Number(application.amountNaira ?? 0);
-    const tenure = application.tenureDays ?? product?.defaultTenureDays ?? 90;
-    const rate = (product?.interestRatePercent ?? 18) / 100;
-    const processing = principal * ((product?.processingFeePercent ?? 2) / 100);
-    const interest = principal * rate * (tenure / 365);
-    const totalRepayment = principal + interest + processing;
-    const dueAt = new Date(Date.now() + tenure * 86400000).toISOString();
-    const loanRecord: (typeof loans)[number] = {
-      id: randomUUID(),
-      applicationId: application.id,
-      borrowerId: application.borrowerId,
-      principalNaira: principal,
-      totalInterestNaira: Math.round(interest * 100) / 100,
-      totalFeesNaira: Math.round(processing * 100) / 100,
-      totalRepaymentNaira: Math.round(totalRepayment * 100) / 100,
-      outstandingNaira: Math.round(totalRepayment * 100) / 100,
-      tenureDays: tenure,
-      status: "DISBURSEMENT_PENDING",
-      dueAt,
-      createdAt: now,
-      updatedAt: now,
-    };
-    loans.push(loanRecord);
-    const scheduleCount = Math.max(1, Math.round(tenure / 30));
-    for (let i = 1; i <= scheduleCount; i++) {
-      loanSchedules.push({
-        id: randomUUID(),
-        loanId: loanRecord.id,
-        installmentNumber: i,
-        dueDate: new Date(Date.now() + (tenure / scheduleCount) * i * 86400000).toISOString().slice(0, 10),
-        principalNaira: Math.round((principal / scheduleCount) * 100) / 100,
-        interestNaira: Math.round((interest / scheduleCount) * 100) / 100,
-        feesNaira: i === 1 ? Math.round(processing * 100) / 100 : 0,
-        totalDueNaira: Math.round((totalRepayment / scheduleCount) * 100) / 100,
-        totalPaidNaira: 0,
-        status: "PENDING",
-        createdAt: now,
-      });
-    }
-    creditHistory.push({
-      id: randomUUID(),
-      userId: application.borrowerId,
-      loanId: null as unknown as string,
-      eventType: "LOAN_APPROVED",
-      detail: `Loan application ${application.applicationId} approved via one-click stage approval`,
-      occurredAt: now,
-      createdAt: now,
-    });
+    // Shared builder — same product resolution & snapshot capture as the
+    // single-stage approval path, so terms can never depend on catalog order.
+    ensureApprovedLoanRecord(application, now);
   }
   if (previousStatus !== "APPROVED") void sendLoanEmails(application, "APPROVED").catch(() => undefined);
   if (!(await persistMutation(res))) return;

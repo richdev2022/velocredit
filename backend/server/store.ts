@@ -308,6 +308,29 @@ export const LOAN_STAGES = [
 ] as const;
 export type LoanStageKey = typeof LOAN_STAGES[number]["key"];
 
+/**
+ * Immutable snapshot of the loan-product terms attached to an application or
+ * loan at the moment the terms were locked in.
+ *
+ * BACKWARD COMPATIBILITY CONTRACT: products can later be renamed, edited or
+ * deactivated by the admin — the snapshot preserves what the borrower actually
+ * saw/agreed to so loan information never renders empty for ongoing loans.
+ */
+export interface LoanProductSnapshot {
+  productId?: string;
+  productName: string;
+  minAmountNaira?: number;
+  maxAmountNaira?: number;
+  defaultTenureDays?: number;
+  interestRatePercent?: number;
+  interestType?: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
+  processingFeePercent?: number;
+  lateFeePercent?: number;
+  lateFeeType?: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
+  gracePeriodDays?: number;
+  capturedAt?: string;
+}
+
 export interface LoanApplication {
   id: string;
   applicationId: string;
@@ -317,6 +340,10 @@ export interface LoanApplication {
   creditReportSnapshot?: Record<string, unknown>;
   amountNaira?: number;
   tenureDays?: number;
+  /** Product the application is being processed under (may be a stale id — the resolver re-maps intelligently). */
+  loanProductId?: string;
+  /** Terms captured when the product was linked; rendered when the product row is gone/renamed. */
+  productSnapshot?: LoanProductSnapshot;
   status: LoanStatus;
   stageStatuses: Partial<Record<LoanStageKey, StageStatus>>;
   stageRejectionNotes: Partial<Record<LoanStageKey, string>>;
@@ -348,6 +375,10 @@ export interface Loan {
   id: string;
   applicationId: string;
   borrowerId: string;
+  /** Product the loan was created under (stale-id tolerant — see resolver). */
+  loanProductId?: string;
+  /** Terms snapshot captured at approval; survives later product edits/renames. */
+  productSnapshot?: LoanProductSnapshot;
   principalNaira: number;
   totalInterestNaira: number;
   totalFeesNaira: number;
@@ -713,6 +744,8 @@ export function rebuildIndexes(): void {
   const seenEmails = new Set<string>();
   const dedupedUsers: typeof users = [];
   for (const u of users) {
+    // Hole-tolerant: a half-mutated array must never crash the rebuild.
+    if (!u || typeof u.email !== "string") continue;
     const key = u.email.toLowerCase();
     if (!seenEmails.has(key)) {
       seenEmails.add(key);
@@ -727,6 +760,7 @@ export function rebuildIndexes(): void {
   const seenWallets = new Set<string>();
   const dedupedWallets: typeof wallets = [];
   for (const w of wallets) {
+    if (!w || typeof w.userId !== "string") continue;
     if (!seenWallets.has(w.userId)) {
       seenWallets.add(w.userId);
       dedupedWallets.push(w);
@@ -740,6 +774,7 @@ export function rebuildIndexes(): void {
   const seenKyc = new Set<string>();
   const dedupedKyc: typeof kycCases = [];
   for (const k of kycCases) {
+    if (!k || typeof k.userId !== "string") continue;
     if (!seenKyc.has(k.userId)) {
       seenKyc.add(k.userId);
       dedupedKyc.push(k);
@@ -984,8 +1019,24 @@ function indexSingleItem<T>(key: StoreKey, item: T): void {
 function createPersistentArray<T>(key: StoreKey): T[] {
   const target: T[] = [];
   rawState[key] = target;
+  // Bulk mutators that Array.prototype.splice/pop/shift/… execute as sequences
+  // of intermediate index deletes + element shifts. Re-running the index sync
+  // on EVERY intermediate step used to (a) rebuild all indexes O(n) times and
+  // (b) walk a HALF-MUTATED array — a hole from the already-deleted tail read
+  // as `undefined` and crashed rebuildIndexes ("Cannot read properties of
+  // undefined (reading 'email')"). We now run the mutator directly on the
+  // target array and sync exactly ONCE after it completes.
+  const BULK_MUTATORS = new Set(["splice", "pop", "shift", "unshift"]);
   return new Proxy(target, {
     get(array, property, receiver) {
+      if (typeof property === "string" && BULK_MUTATORS.has(property)) {
+        const impl = (Array.prototype as unknown as Record<string, (...args: unknown[]) => unknown>)[property];
+        return (...args: unknown[]) => {
+          const result = impl.apply(array, args);
+          syncAfterMutation(key, array, "length");
+          return wrapNested(result, key);
+        };
+      }
       return wrapNested(Reflect.get(array, property, receiver), key);
     },
     set(array, property, value, receiver) {
@@ -996,7 +1047,14 @@ function createPersistentArray<T>(key: StoreKey): T[] {
     },
     deleteProperty(array, property) {
       const result = Reflect.deleteProperty(array, property);
-      syncAfterMutation(key, array, property);
+      // Numeric-index deletes are INTERMEDIATE splice steps (handled natively
+      // above) or rare explicit `delete arr[i]`. Do NOT rebuild here — the
+      // subsequent `set length` (splice) or the dirty sweeper handles it.
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        requestPersist(key);
+      } else {
+        syncAfterMutation(key, array, property);
+      }
       return result;
     },
   });
