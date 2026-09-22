@@ -180,7 +180,13 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user) return;
     void getLoanProducts().then((response) => {
-      applyLoanProducts(response.products);
+      // When EVERY product is inactive the backend still serves the catalog
+      // (catalogNotice ALL_PRODUCTS_INACTIVE_FALLBACK) so the funnel is not
+      // bricked — apply those rows instead of dropping them, otherwise the
+      // borrower sees stale env defaults instead of the admin's terms.
+      applyLoanProducts(response.products, {
+        includeInactive: response.catalogNotice === "ALL_PRODUCTS_INACTIVE_FALLBACK",
+      });
       setLoanConfigVersion((version) => version + 1);
     }).catch(() => {
       // The deployed frontend defaults remain usable when products are unavailable.

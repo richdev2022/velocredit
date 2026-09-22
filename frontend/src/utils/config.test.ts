@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getEffectiveConfig, resolveApiUrl, config, applyLoanProducts, baseConfig, sanitizeLoanLimits, safeNaira } from "./config";
+import { getEffectiveConfig, resolveApiUrl, config, applyLoanProducts, applyLoanProduct, baseConfig, sanitizeLoanLimits, safeNaira } from "./config";
+import { calculateTermInterest } from "./loanCalculator";
 
 describe("loan configuration", () => {
   it("propagates global transaction limits to every loan program", () => {
@@ -167,6 +168,94 @@ describe("applyLoanProducts (admin-set limits reaching the borrower)", () => {
     ]);
     expect(config.loanPrograms.PERSONAL.productName).toBe("Velo Prime");
     expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(800);
+  });
+
+  it("ACTIVE product beats an inactive duplicate carrying a higher version", () => {
+    refreshTestConfig();
+    // The admin deactivated the newer row — the still-active one must serve
+    // the flow, never the deactivated terms.
+    applyLoanProducts([
+      { id: "old-active", name: "Personal Loan", minAmountNaira: 1_500, maxAmountNaira: 15_000, interestRatePercent: 3, processingFeePercent: 1, lateFeePercent: 1, version: 1, isActive: true },
+      { id: "new-inactive", name: "Velo Flex", minAmountNaira: 9_999, maxAmountNaira: 99_999, interestRatePercent: 9, processingFeePercent: 1, lateFeePercent: 1, version: 9, isActive: false, programType: "PERSONAL" },
+    ]);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Personal Loan");
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(1_500);
+  });
+});
+
+describe("all-inactive catalog fallback (production incident 2026-09-21)", () => {
+  // EXACT live payload: the admin configured both products but deactivated
+  // them; the backend serves the full catalog flagged
+  // ALL_PRODUCTS_INACTIVE_FALLBACK. Dropping the rows left the borrower with
+  // env defaults (₦100,000 – ₦30,000,000 @ 5%) instead of the admin's terms.
+  const allInactiveCatalog = [
+    { id: "84610ec2", name: "Personal Loan", description: "Fast personal loan for salaried individuals", minAmountNaira: 200, maxAmountNaira: 30_000_000, defaultTenureDays: 30, interestRatePercent: 0.9, interestType: "ANNUALIZED" as const, processingFeePercent: 0, lateFeePercent: 1, lateFeeType: "COMPOUNDING_DAILY" as const, gracePeriodDays: 3, isActive: false, version: 4, programType: "PERSONAL" as const },
+    { id: "885d6b34", name: "Business Loan", description: "Working capital for registered SMEs", minAmountNaira: 200, maxAmountNaira: 30_000_000, defaultTenureDays: 30, interestRatePercent: 0.9, interestType: "ANNUALIZED" as const, processingFeePercent: 0, lateFeePercent: 1, lateFeeType: "COMPOUNDING_DAILY" as const, gracePeriodDays: 5, isActive: false, version: 3, programType: "BUSINESS" as const },
+  ];
+
+  it("includeInactive flag (backend ALL_PRODUCTS_INACTIVE_FALLBACK) applies the admin-configured terms", () => {
+    refreshTestConfig();
+    applyLoanProducts(allInactiveCatalog, { includeInactive: true });
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(200);
+    expect(config.loanPrograms.PERSONAL.loanLimits.max).toBe(30_000_000);
+    expect(config.loanPrograms.PERSONAL.fees.interest.value).toBe(0.9);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Personal Loan");
+    expect(config.loanPrograms.BUSINESS.loanLimits.min).toBe(200);
+    expect(config.loanPrograms.BUSINESS.productName).toBe("Business Loan");
+    expect(config.loanLimits.min).toBe(200);
+  });
+
+  it("the fallback-applied program carries the FULL product detail for rendering", () => {
+    refreshTestConfig();
+    applyLoanProducts(allInactiveCatalog, { includeInactive: true });
+    const product = config.loanPrograms.PERSONAL.product;
+    expect(product).toBeTruthy();
+    expect(product?.interestType).toBe("ANNUALIZED");
+    expect(product?.processingFeePercent).toBe(0);
+    expect(product?.lateFeePercent).toBe(1);
+    expect(product?.gracePeriodDays).toBe(3);
+    expect(product?.defaultTenureDays).toBe(30);
+  });
+
+  it("without the flag the inactive rows are still ignored (normal active-filtering path)", () => {
+    refreshTestConfig();
+    const before = { ...config.loanPrograms.PERSONAL.loanLimits };
+    applyLoanProducts(allInactiveCatalog);
+    expect(config.loanPrograms.PERSONAL.loanLimits).toEqual(before);
+  });
+
+  it("applyLoanProduct applies ONE product strictly to ONE flow (type-scoped endpoint contract)", () => {
+    refreshTestConfig();
+    const businessBefore = { ...config.loanPrograms.BUSINESS.loanLimits };
+    const applied = applyLoanProduct(allInactiveCatalog[0], "PERSONAL");
+    expect(applied).toBe(true);
+    expect(config.loanPrograms.PERSONAL.productName).toBe("Personal Loan");
+    expect(config.loanPrograms.PERSONAL.loanLimits.min).toBe(200);
+    expect(config.loanPrograms.PERSONAL.fees.interest.value).toBe(0.9);
+    // The OTHER flow must be untouched — no cross-contamination.
+    expect(config.loanPrograms.BUSINESS.loanLimits).toEqual(businessBefore);
+    expect(config.loanPrograms.BUSINESS.productName).toBeUndefined();
+  });
+
+  it("applyLoanProduct rejects invalid products instead of clobbering the flow", () => {
+    refreshTestConfig();
+    const before = { ...config.loanPrograms.PERSONAL };
+    expect(applyLoanProduct({ name: "Broken", minAmountNaira: 500, maxAmountNaira: 500, interestRatePercent: 1, processingFeePercent: 0, lateFeePercent: 0 }, "PERSONAL")).toBe(false);
+    expect(applyLoanProduct(null as unknown as Parameters<typeof applyLoanProduct>[0], "PERSONAL")).toBe(false);
+    expect(config.loanPrograms.PERSONAL).toEqual(before);
+  });
+
+  it("ANNUALIZED products accrue interest prorated over 365 days; SIMPLE_FLAT stays monthly", () => {
+    // ₦1,000,000 @ 0.9%: annualized 30 days -> round(1_000_000 × 0.009 × 30/365) = 740
+    expect(calculateTermInterest(1_000_000, { type: "percentage", value: 0.9, includeUpfront: true, interestType: "ANNUALIZED" }, 30)).toBe(740);
+    // Same product over 180 days -> round(1_000_000 × 0.009 × 180/365) = 4438
+    expect(calculateTermInterest(1_000_000, { type: "percentage", value: 0.9, includeUpfront: true, interestType: "ANNUALIZED" }, 180)).toBe(4438);
+    // SIMPLE_FLAT / REDUCING_BALANCE / legacy (no type) keep the monthly math:
+    // round(1_000_000 × 0.009 × 1 month) = 9000
+    expect(calculateTermInterest(1_000_000, { type: "percentage", value: 0.9, includeUpfront: true, interestType: "SIMPLE_FLAT" }, 30)).toBe(9_000);
+    expect(calculateTermInterest(1_000_000, { type: "percentage", value: 0.9, includeUpfront: true }, 30)).toBe(9_000);
+    // 90 days simple flat -> 3 months -> 27,000
+    expect(calculateTermInterest(1_000_000, { type: "percentage", value: 0.9, includeUpfront: true, interestType: "SIMPLE_FLAT" }, 90)).toBe(27_000);
   });
 });
 

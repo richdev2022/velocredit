@@ -419,7 +419,20 @@ export async function updateBorrowerDisbursementAccount(input: BorrowerDisbursem
 }
 
 export interface LoanProduct { id: string; name: string; description?: string; minAmountNaira: number; maxAmountNaira: number; defaultTenureDays?: number; interestRatePercent: number; interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED"; processingFeePercent: number; lateFeePercent: number; lateFeeType: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY"; gracePeriodDays: number; isActive: boolean; version: number; createdAt: string; updatedAt?: string; /** Explicit borrower-flow mapping computed by the backend (null = frontend decides deterministically). */ programType?: "PERSONAL" | "BUSINESS" | "BOTH" | null; }
-export async function getLoanProducts(): Promise<{ ok: true; products: LoanProduct[] }> { return request("/api/v1/borrower/loan-products"); }
+export interface LoanProductsResponse { ok: true; products: LoanProduct[]; activeCount?: number; /** Non-null when every product is inactive and the backend serves the catalog anyway so the funnel is not bricked. */ catalogNotice?: string | null; }
+/**
+ * Fetch the loan product catalog.
+ * - `getLoanProducts()`                      -> full catalog (all admin-configured products)
+ * - `getLoanProducts({ type: "PERSONAL" })`  -> the SINGLE authoritative product for that borrower flow
+ * - `getLoanProducts({ productId })`         -> one exact product
+ */
+export async function getLoanProducts(params?: { type?: "PERSONAL" | "BUSINESS"; productId?: string }): Promise<LoanProductsResponse> {
+  const query = new URLSearchParams();
+  if (params?.type) query.set("type", params.type);
+  if (params?.productId) query.set("productId", params.productId);
+  const qs = query.toString();
+  return request(`/api/v1/borrower/loan-products${qs ? `?${qs}` : ""}`);
+}
 
 export interface LoanApplicationInput { applicationId?: string; applicantType: "PERSONAL" | "BUSINESS"; personalInfo: Record<string, unknown>; businessInfo: Record<string, unknown>; businessRep: Record<string, unknown>; personalFinancial: Record<string, unknown>; businessFinancial: Record<string, unknown>; kyc: Record<string, unknown>; disbursementAccount: Record<string, unknown>; loanRequest: { amount: number; tenure: number; purpose: string }; collateral: Record<string, unknown>; documents: Record<string, unknown>; witness: Record<string, unknown>; }
 export interface LoanApplicationResponse { ok: true; application: { id: string; applicationId: string; status: LoanStatus; createdAt: string; updatedAt: string; }; }
