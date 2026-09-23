@@ -15,18 +15,44 @@ type DisbursementAccount = {
 
 type Props = {
   userId?: string;
-  initial?: DisbursementAccount | null;
+  /** Saved account OR the account submitted with the loan application (fallback). */
+  initial?: DisbursementAccount | Record<string, unknown> | null;
   locked?: boolean;
   onSaved?: (acc: DisbursementAccount | null) => void;
   onError?: (msg: string) => void;
 };
 
+function asAccount(value: DisbursementAccount | Record<string, unknown> | null | undefined): DisbursementAccount | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const out: DisbursementAccount = {};
+  if (typeof v.id === "string") out.id = v.id;
+  if (typeof v.bankCode === "string") out.bankCode = v.bankCode;
+  if (typeof v.bankName === "string") out.bankName = v.bankName;
+  if (typeof v.accountNumber === "string") out.accountNumber = v.accountNumber;
+  if (typeof v.accountName === "string") out.accountName = v.accountName;
+  if (typeof v.status === "string") out.status = v.status;
+  return out;
+}
+
 export default function BorrowerDisbursementSection({ userId, initial, locked, onSaved, onError }: Props) {
+  const initialAccount = asAccount(initial);
   const [banks, setBanks] = useState<Array<{ id: number; name: string; code: string }>>([]);
-  const [account, setAccount] = useState<DisbursementAccount | null>(initial ?? null);
-  const [selectedBank, setSelectedBank] = useState(initial?.bankCode ?? "");
-  const [accountNumber, setAccountNumber] = useState(initial?.accountNumber ?? "");
-  const [resolvedName, setResolvedName] = useState<string | null>(initial?.accountName ?? null);
+  const [account, setAccount] = useState<DisbursementAccount | null>(initialAccount);
+  // "saved" = standalone settings account; "application" = account submitted
+  // WITH the loan application (surfaced so the borrower can see where the
+  // loan will be paid even while the settings form is locked).
+  const [accountSource, setAccountSource] = useState<"saved" | "application" | null>(
+    typeof (initial as Record<string, unknown> | null | undefined)?.id === "string" &&
+      String((initial as Record<string, unknown>).id).startsWith("application:")
+      ? "application"
+      : initial
+      ? "saved"
+      : null
+  );
+  const [selectedBank, setSelectedBank] = useState(initialAccount?.bankCode ?? "");
+  const [accountNumber, setAccountNumber] = useState(initialAccount?.accountNumber ?? "");
+  const [resolvedName, setResolvedName] = useState<string | null>(initialAccount?.accountName ?? null);
   const [resolveError, setResolveError] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
@@ -38,11 +64,18 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
   } | null>(null);
 
   useEffect(() => {
+    const next = asAccount(initial);
     if (initial) {
-      setAccount(initial);
-      setSelectedBank(initial.bankCode ?? "");
-      setAccountNumber(initial.accountNumber ?? "");
-      setResolvedName(initial.accountName ?? null);
+      setAccount(next);
+      setSelectedBank(next?.bankCode ?? "");
+      setAccountNumber(next?.accountNumber ?? "");
+      setResolvedName(next?.accountName ?? null);
+      setAccountSource(
+        typeof (initial as Record<string, unknown>).id === "string" &&
+          String((initial as Record<string, unknown>).id).startsWith("application:")
+          ? "application"
+          : "saved"
+      );
     }
   }, [initial]);
 
@@ -74,7 +107,8 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         headers: { Authorization: `Bearer ${getAccessToken()}` },
       }).then((r) => r.json());
       if (res.ok) {
-        setAccount(res.account ?? null);
+        setAccount(asAccount(res.account ?? null));
+        setAccountSource(res.accountSource ?? (res.account ? "saved" : null));
         setPendingRequest(res.pendingRequests?.[0] ?? null);
       }
     } catch (_e) {
@@ -213,7 +247,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="section-heading">
-              {account ? "Edit disbursement account" : "Add disbursement account"}
+              {locked ? "Your disbursement account" : account ? "Edit disbursement account" : "Add disbursement account"}
             </h2>
             <p className="section-subheading">
               Select your bank and verify the account name before saving.
@@ -233,10 +267,35 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         </div>
 
         {locked ? (
-          <p className="mt-5 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/30 dark:bg-amber-900/20 dark:text-amber-300">
-            This account is locked because you have a submitted loan application. Any change goes to
-            Velo for approval first — this protects the account your loan will be paid into.
-          </p>
+          <div className="mt-5 space-y-3">
+            {account ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/40">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-velo-900 dark:text-white">
+                      {account.bankName ?? "Bank"} ••••{String(account.accountNumber ?? "").slice(-4)}
+                    </div>
+                    <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                      {account.accountName || "Account name on file"}
+                      {account.bankCode ? ` · Bank code ${account.bankCode}` : ""}
+                    </div>
+                    <div className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                      {accountSource === "application" ? "Submitted with your loan application" : "Saved disbursement account"}
+                    </div>
+                  </div>
+                  <span className="badge badge-pending">Read-only during review</span>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
+                Your loan application has been submitted, but no disbursement account is attached to it yet. Add one below — it will be attached to your application automatically.
+              </div>
+            )}
+            <p className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/30 dark:bg-amber-900/20 dark:text-amber-300">
+              This account is locked because you have a submitted loan application. Any change goes to
+              Velo for approval first — this protects the account your loan will be paid into.
+            </p>
+          </div>
         ) : (
           <form
             onSubmit={saveAccount}
@@ -335,6 +394,9 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
               </div>
               <div className="text-xs text-slate-500 dark:text-slate-400">
                 {account.accountName} · Status: {account.status ?? "Pending"}
+              </div>
+              <div className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                {accountSource === "application" ? "Submitted with your loan application" : "Saved in settings"}
               </div>
             </div>
             {(account.status === "VERIFIED" || account.status === "ACTIVE") && (

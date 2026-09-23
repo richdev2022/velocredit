@@ -226,6 +226,59 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       } catch {
         // Local drafts remain available when the database is temporarily unavailable.
       }
+
+      // ----- server status sync: rejected / more-info applications are re-openable -----
+      // A submitted application that was later REJECTED (or flagged
+      // MORE_INFORMATION_REQUIRED) must be RE-OPENABLE: the customer has to
+      // re-access the loan, fill the failed information and resubmit. The
+      // stale SUBMITTED draft would otherwise trap them on the success page.
+      // When no draft exists at all (new device / cleared storage) we hydrate
+      // the most recent rejected application from its stored snapshot.
+      if (getAccessToken()) {
+        try {
+          const dashboard = await getBorrowerDashboard();
+          const apps = Array.isArray((dashboard as { applications?: unknown[] }).applications)
+            ? ((dashboard as { applications: unknown[] }).applications as Array<Record<string, unknown>>)
+            : [];
+          const reOpenableStatuses = ["REJECTED", "MORE_INFORMATION_REQUIRED"];
+          const serverNote = (row: Record<string, unknown>): string | null => {
+            const note = typeof row.manualNote === "string" ? row.manualNote.trim() : "";
+            return note ? note : null;
+          };
+          if (resumed) {
+            const serverApp = apps.find(
+              (row) => String(row.applicationId ?? "") === resumed!.applicationId || String(row.id ?? "") === resumed!.applicationId
+            );
+            if (serverApp && reOpenableStatuses.includes(String(serverApp.status ?? ""))) {
+              resumed = {
+                ...resumed,
+                status: String(serverApp.status) as ApplicationData["status"],
+                rejectionNote: serverNote(serverApp),
+                updatedAt: String(serverApp.updatedAt ?? resumed.updatedAt),
+              };
+              savedIndex = getSavedSectionIndex(resumed);
+              // Persist the re-opened state so a refresh keeps the wizard editable.
+              saveApplication(resumed, savedIndex);
+            }
+          } else {
+            const rejected = apps
+              .filter((row) => String(row.status ?? "") === "REJECTED")
+              .sort((a, b) =>
+                String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? ""))
+              )[0];
+            if (rejected) {
+              const hydrated = buildEditableApplicationFromServerRow(rejected);
+              if (hydrated) {
+                resumed = hydrated;
+                savedIndex = getSavedSectionIndex(resumed);
+              }
+            }
+          }
+        } catch {
+          // Dashboard unavailable — keep whatever draft we restored locally.
+        }
+      }
+
       if (!cancelled && resumed) {
         setApplication((current) => {
           if (current) return current;
@@ -749,6 +802,53 @@ function pickOptionalString(prior: unknown, data: unknown, fallback: string | nu
   if (nonEmptyStr(prior)) return prior;
   if (nonEmptyStr(data)) return data;
   return fallback;
+}
+
+/**
+ * Build an EDITABLE ApplicationData from a backend loan-application row whose
+ * status is REJECTED. Used when the customer has no local/remote draft (new
+ * device or cleared storage) but must still be able to re-access their
+ * rejected loan, fix the failed information and resubmit. Every section is
+ * restored from the immutable customerSnapshot captured at submission.
+ */
+function buildEditableApplicationFromServerRow(row: Record<string, unknown>): ApplicationData | null {
+  const applicantType = row.applicantType === "BUSINESS" ? "BUSINESS" : row.applicantType === "PERSONAL" ? "PERSONAL" : null;
+  const applicationId = String(row.applicationId ?? row.id ?? "").trim();
+  if (!applicantType || !applicationId) return null;
+  const snapshot = (row.customerSnapshot ?? {}) as Record<string, Record<string, unknown>>;
+  const now = new Date().toISOString();
+  const note = typeof row.manualNote === "string" && row.manualNote.trim() ? row.manualNote.trim() : null;
+  const base: ApplicationData = normalizeApplicationData(
+    {
+      applicationId,
+      applicantType,
+      status: "REJECTED",
+      personalInfo: (snapshot.personalInfo ?? {}) as unknown as ApplicationData["personalInfo"],
+      disbursementAccount: (snapshot.disbursementAccount ?? {}) as unknown as ApplicationData["disbursementAccount"],
+      personalFinancial: (snapshot.personalFinancial ?? {}) as unknown as ApplicationData["personalFinancial"],
+      businessInfo: (snapshot.businessInfo ?? {}) as unknown as ApplicationData["businessInfo"],
+      businessRep: (snapshot.businessRep ?? {}) as unknown as ApplicationData["businessRep"],
+      businessFinancial: (snapshot.businessFinancial ?? {}) as unknown as ApplicationData["businessFinancial"],
+      kyc: (snapshot.kyc ?? {}) as unknown as ApplicationData["kyc"],
+      loanRequest: (snapshot.loanRequest ?? {}) as unknown as ApplicationData["loanRequest"],
+      collateral: (snapshot.collateral ?? {}) as unknown as ApplicationData["collateral"],
+      calculation: (snapshot.calculation as unknown as ApplicationData["calculation"]) ?? null,
+      documents: (snapshot.documents ?? {}) as unknown as ApplicationData["documents"],
+      witness: (snapshot.witness ?? {}) as unknown as ApplicationData["witness"],
+      agreement: { generatedAt: null, executionDate: null, generatedHtml: null, signedAgreementAccepted: false },
+      createdAt: String(row.createdAt ?? now),
+      updatedAt: String(row.updatedAt ?? now),
+      submittedAt: row.submittedAt ? String(row.submittedAt) : null,
+      rejectionNote: note,
+      rejectedAt: row.updatedAt ? String(row.updatedAt) : null,
+    },
+    null
+  );
+  // The agreement must be re-signed for a new review round; documents keep
+  // their metadata so completed uploads still render, but the customer can
+  // re-upload any slot the reviewer flagged.
+  base.agreement = { generatedAt: null, executionDate: null, generatedHtml: null, signedAgreementAccepted: false };
+  return base;
 }
 
 function normalizeApplicationData(
