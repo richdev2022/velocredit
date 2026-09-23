@@ -402,7 +402,7 @@ export async function withdrawInvestorWallet(input: InvestorWithdrawalInput): Pr
   return request("/api/v1/investor/wallet/withdraw", { method: "POST", body: JSON.stringify(input) });
 }
 
-export async function getInvestorTransactions(limit = 100, offset = 0): Promise<{ ok: true; investments: unknown[]; payouts: unknown[]; ledger: unknown[]; walletTransactions: unknown[]; meta?: PaginationMeta; }> {
+export async function getInvestorTransactions(limit = 100, offset = 0): Promise<{ ok: true; investments: unknown[]; payouts: unknown[]; ledger: unknown[]; walletTransactions: unknown[]; withdrawals?: unknown[]; meta?: PaginationMeta; }> {
   return request(`/api/v1/investor/transactions?limit=${limit}&offset=${offset}`);
 }
 

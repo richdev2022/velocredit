@@ -32,6 +32,7 @@ import {
   wallets,
   users,
   appendAdminLedger,
+  adminLedger,
   seedAdminLedgerOpeningBalance,
   getPlatformSettings,
   notifications,
@@ -376,7 +377,19 @@ app.post(
             if (investment.planId || true) {
               const wallet = findWallet(payout.userId);
               const amountMinor = Math.round(Number(payout.amountNaira ?? 0) * 100);
-              appendAdminLedger({
+              // Ledger accuracy: the automatic maturity sweep ALREADY debited
+              // the admin ledger for this investment when it credited the
+              // investor's wallet internally (entryType INVESTMENT_RETURN /
+              // referenceId = investment.id). Only debit here when THIS payout
+              // has never been represented — otherwise webhook + sweep would
+              // double-charge the ledger for the same money.
+              const adminAlreadyDebited = adminLedger.some(
+                (entry) =>
+                  entry.direction === "DEBIT" &&
+                  (entry.referenceId === payout.id || (entry.entryType === "INVESTMENT_RETURN" && entry.referenceId === investment.id))
+              );
+              if (!adminAlreadyDebited) {
+                appendAdminLedger({
                   entryType: "INVESTMENT_PAYOUT",
                   referenceId: payout.id,
                   investorId: payout.userId,
@@ -390,6 +403,7 @@ app.post(
                     investmentId: investment.id,
                   },
                 });
+              }
                 const alreadyCredited = ledgerEntries.some((entry) => entry.entryType === "INVESTMENT_RETURN" && entry.referenceId === investment.id && entry.direction === "CREDIT");
                 if (!alreadyCredited) {
                   appendLedger(wallet, {

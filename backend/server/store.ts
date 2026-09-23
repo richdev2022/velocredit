@@ -230,7 +230,7 @@ export interface LoanDisbursement {
   retryCount?: number;
 }
 export type AccountChangeRequestType = "INVESTOR_PAYOUT_ACCOUNT" | "BORROWER_DISBURSEMENT_ACCOUNT";
-export type AccountChangeRequestStatus = "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
+export type AccountChangeRequestStatus = "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "AUTO_APPROVED";
 export interface AccountChangeRequest {
   id: string;
   userId: string;
@@ -394,6 +394,11 @@ export interface Loan {
   paidAt?: string;
   providerTransfer?: Record<string, unknown>;
   providerReference?: string;
+  /** Disbursement failed because Flutterwave rejected the borrower's bank
+   *  account — the customer must re-provide a valid account from Settings
+   *  (admin can also trigger this request explicitly). */
+  disbursementAccountNeedsUpdate?: boolean;
+  disbursementAccountRequestedAt?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -589,7 +594,7 @@ export interface Consent {
 
 export interface AdminLedgerEntry {
   id: string;
-  entryType: "INVESTOR_FUNDING" | "INVESTMENT_PAYOUT" | "INVESTMENT_RETURN_CREDIT" | "WITHDRAWAL_FEE" | "PLATFORM_EARNING" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "FUNDING_IN" | "WALLET_CREDIT" | "LOAN_DISBURSEMENT" | "LOAN_REPAYMENT_IN" | "INVESTMENT_RETURN";
+  entryType: "INVESTOR_FUNDING" | "INVESTMENT_PAYOUT" | "INVESTMENT_RETURN_CREDIT" | "WITHDRAWAL_FEE" | "PLATFORM_EARNING" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "FUNDING_IN" | "WALLET_CREDIT" | "LOAN_DISBURSEMENT" | "LOAN_DISBURSEMENT_REVERSAL" | "LOAN_REPAYMENT_IN" | "INVESTMENT_RETURN" | "WITHDRAWAL_OUT" | "WITHDRAWAL_OUT_REVERSAL";
   referenceId?: string;
   investorId?: string;
   borrowerId?: string;

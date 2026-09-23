@@ -23,6 +23,7 @@ import {
   adminPatchUserRoles,
   adminEditUser,
   adminResetKycCategory,
+  adminRequestDisbursementAccountUpdate,
   type KycResetCategory,
   type LoanDisbursement,
 } from "../../services/adminApi";
@@ -716,6 +717,25 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
       setBusy("");
     }
   }
+  async function requestAccountUpdate(loanApp: any) {
+    setBusy(`acct-${loanApp.id}`);
+    setActionError("");
+    setActionNotice("");
+    try {
+      const response = await adminRequestDisbursementAccountUpdate(loanApp.id);
+      setActionNotice(String(response.message || "Account update requested — the customer has been notified."));
+      const load = () => adminListLoans(size, page * size).then((resp) => {
+        setRows(resp.loans);
+        setLoanRecords(((resp as any).loanRecords) || []);
+        setTotal(resp.meta?.total || resp.loans.length);
+      }).catch(() => undefined);
+      void load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to send the account-update request");
+    } finally {
+      setBusy("");
+    }
+  }
   function disbursementsForLoan(loanAppId: string, loanRecordId?: string) {
     return disbursements
       .filter((d) => (loanRecordId && d.loanId === loanRecordId) || d.applicationId === loanAppId)
@@ -776,7 +796,14 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
             {loanApp.customerSnapshot?.email && <div className="text-[11px] text-slate-500 dark:text-slate-400">{loanApp.customerSnapshot.email}</div>}
           </td>
           <td className="px-3 py-3 font-semibold dark:text-slate-200">{formatNaira(Number(loanApp.principalNaira || loanApp.amountNaira || 0))}</td>
-          <td className="px-3 py-3"><StatusBadge status={matchingLoanRecord?.status || loanApp.status} /></td>
+          <td className="px-3 py-3">
+            <StatusBadge status={matchingLoanRecord?.status || loanApp.status} />
+            {matchingLoanRecord?.disbursementAccountNeedsUpdate === true && (
+              <div className="mt-1 inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+                Account update requested
+              </div>
+            )}
+          </td>
           <td className="px-3 py-3">
             {transfers.length > 0
               ? (<div className="space-y-2">
@@ -812,6 +839,19 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
           <td className="px-3 py-3">
             {action.kind === "ready" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Disbursing…" : "Disburse"}</button>}
             {action.kind === "failed" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Disbursing…" : "Retry disbursement"}</button>}
+            {(action.kind === "ready" || action.kind === "failed") && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  className="text-[11px] font-semibold text-amber-700 underline decoration-amber-400 underline-offset-2 hover:text-amber-800 disabled:opacity-50 dark:text-amber-400"
+                  disabled={busy === `acct-${appId}`}
+                  title="Notify the customer to re-provide a valid disbursement account from their dashboard settings"
+                  onClick={() => void requestAccountUpdate(loanApp)}
+                >
+                  {busy === `acct-${appId}` ? "Sending request…" : "Ask customer to update account"}
+                </button>
+              </div>
+            )}
             {action.kind === "inFlight" && (
               <span className="inline-flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
                 <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" aria-hidden="true"></span>

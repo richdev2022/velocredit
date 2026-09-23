@@ -333,8 +333,12 @@ export async function pollTransferUntilTerminal(
 // callers can distinguish a DEFINITIVE account rejection (4xx — the same
 // resolution runs inside transfer creation, so the transfer would fail too)
 // from a transient/infrastructure failure (5xx, network, timeout).
-export async function resolveBankAccount(accountNumber: string, bankCode: string) {
+// bankName (when known) lets an unrecognized legacy bank code be re-mapped onto
+// Flutterwave's live list before the call instead of failing with
+// "Unknown Bank Code".
+export async function resolveBankAccount(accountNumber: string, bankCode: string, bankName?: string) {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
+  const effectiveBankCode = await normalizeBankCodeForFlutterwave(bankCode, bankName);
   const response = await fetchWithTimeout(`${env.FLUTTERWAVE_BASE_URL}/accounts/resolve`, {
     method: "POST",
     headers: {
@@ -342,7 +346,7 @@ export async function resolveBankAccount(accountNumber: string, bankCode: string
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ account_number: accountNumber, account_bank: bankCode }),
+    body: JSON.stringify({ account_number: accountNumber, account_bank: effectiveBankCode }),
   });
   const text = await response.text();
   let data: { status?: string; data?: { account_name?: string; account_number?: string }; message?: string; code?: string };
@@ -354,6 +358,106 @@ export async function resolveBankAccount(accountNumber: string, bankCode: string
   if (!response.ok) throw new FlutterwaveError(data.message || `Account resolution failed (${response.status})`, response.status, data);
   if (String(data.status || "").toLowerCase() === "error") throw new FlutterwaveError(data.message || "Flutterwave could not resolve this account", response.status || 400, data);
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Bank-code normalization
+// ---------------------------------------------------------------------------
+// Some accounts were saved with codes from OTHER providers' conventions (e.g.
+// Paystack-style "999992" for OPay). Flutterwave rejects those with
+// "Unknown Bank Code" during account resolution AND transfer creation, which
+// used to brick loan disbursements. Fix: keep Flutterwave's live bank list
+// cached, and when an incoming code is not recognized, re-derive the correct
+// Flutterwave code by matching the BANK NAME against the live list (with a
+// static alias table for legacy codes that carries no name).
+
+export type FlutterwaveBank = { id?: number; code: string; name: string; is_nuban_bank?: boolean };
+
+let banksCache: { at: number; banks: FlutterwaveBank[] } | null = null;
+const BANKS_CACHE_TTL_MS = 10 * 60_000;
+
+export async function getFlutterwaveBanksCached(force = false): Promise<FlutterwaveBank[]> {
+  if (!force && banksCache && Date.now() - banksCache.at < BANKS_CACHE_TTL_MS) return banksCache.banks;
+  const result = await listBanks("NG");
+  const banks = Array.isArray(result.data)
+    ? result.data
+        .filter((b) => b && b.code && b.name)
+        .map((b) => ({ id: b.id, code: String(b.code).trim(), name: String(b.name).trim(), is_nuban_bank: b.is_nuban_bank ?? true }))
+    : [];
+  if (banks.length > 0) banksCache = { at: Date.now(), banks };
+  return banks.length > 0 ? banks : banksCache?.banks ?? [];
+}
+
+// Legacy / third-party-provider codes -> canonical bank names, so a code-only
+// record can still be mapped onto Flutterwave's list by name.
+const LEGACY_BANK_CODE_ALIASES: Record<string, string> = {
+  "999992": "opay",
+  "999991": "palmpay",
+  "999990": "moniepoint",
+  "50515": "moniepoint",
+  "50211": "kuda",
+  "100004": "opay",
+  "090110": "kuda",
+};
+
+function normalizeBankNameForMatchLocal(name: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\b(plc|ltd|limited|ng|nigeria|nigerian|microfinance|mfb|digital|bank|banks|services)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findBankByName(banks: FlutterwaveBank[], bankName?: string): FlutterwaveBank | null {
+  const target = normalizeBankNameForMatchLocal(bankName ?? "");
+  if (!target) return null;
+  // 1) exact normalized match, 2) containment either way (shortest first so
+  // "opay" wins over "opay business" style variants deterministically).
+  const sorted = banks.slice().sort((a, b) => a.name.length - b.name.length);
+  for (const bank of sorted) {
+    if (normalizeBankNameForMatchLocal(bank.name) === target) return bank;
+  }
+  for (const bank of sorted) {
+    const candidate = normalizeBankNameForMatchLocal(bank.name);
+    if (candidate && (candidate.includes(target) || target.includes(candidate))) return bank;
+  }
+  return null;
+}
+
+export function isKnownFlutterwaveBankCode(code: string, banks: FlutterwaveBank[]): boolean {
+  const normalized = String(code || "").trim();
+  if (!normalized) return false;
+  return banks.some((b) => b.code === normalized);
+}
+
+/**
+ * Resolve the bank code Flutterwave will actually accept.
+ * Order: code already valid on the live list -> alias code -> bank name on the
+ * live list -> legacy alias name matched on the live list. Falls back to the
+ * original code when nothing matches (the provider then reports its own error).
+ */
+export async function normalizeBankCodeForFlutterwave(bankCode: string, bankName?: string): Promise<string> {
+  const original = String(bankCode || "").trim();
+  if (!original) return original;
+  let banks: FlutterwaveBank[] = [];
+  try {
+    banks = await getFlutterwaveBanksCached();
+  } catch (_error) {
+    return original; // provider unreachable — keep the code, caller proceeds/warns
+  }
+  if (banks.length === 0) return original;
+  if (isKnownFlutterwaveBankCode(original, banks)) return original;
+
+  // The code is NOT on Flutterwave's list. Try the stored bank name first,
+  // then the name implied by a legacy alias table.
+  const aliasName = LEGACY_BANK_CODE_ALIASES[original];
+  const candidates = [bankName, aliasName].filter(Boolean) as string[];
+  for (const candidateName of candidates) {
+    const match = findBankByName(banks, candidateName);
+    if (match?.code) return match.code;
+  }
+  return original;
 }
 
 export async function listBanks(country = "NG") {

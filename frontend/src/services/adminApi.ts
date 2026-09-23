@@ -360,6 +360,12 @@ export async function adminListDisbursements(opts: { borrowerId?: string; status
 export async function adminRetryDisbursement(disbursementId: string): Promise<AdminDisbursementActionResponse> {
   return request(`/api/v1/admin/disbursements/${encodeURIComponent(disbursementId)}/retry`, { method: "POST" });
 }
+// Ask the customer to re-provide their disbursement account (their loan is
+// blocked because Flutterwave rejected the saved account). The customer sees an
+// urgent banner and their update is applied + mapped automatically.
+export async function adminRequestDisbursementAccountUpdate(loanId: string, opts: { note?: string; clear?: boolean } = {}): Promise<{ ok: true; loan: Record<string, unknown>; updateRequested: boolean; message: string }> {
+  return request(`/api/v1/admin/loans/${encodeURIComponent(loanId)}/request-account-update`, { method: "POST", body: JSON.stringify(opts) });
+}
 export interface AccountChangeRequest {
   id: string;
   userId: string;

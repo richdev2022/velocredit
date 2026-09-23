@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createInvestorPayout } from "./providers/flutterwave.js";
+import { createInvestorPayout, normalizeBankCodeForFlutterwave } from "./providers/flutterwave.js";
 import {
   investments,
   payoutAccounts,
@@ -93,11 +93,25 @@ export async function runInvestmentMaturitySweep(now = new Date(), batchSize = 2
       };
       payouts.push(payout);
       try {
+        // Bank-code normalization: legacy payout accounts may carry codes from
+        // other providers' conventions that Flutterwave rejects ("Unknown Bank
+        // Code") — re-map against Flutterwave's live bank list first.
+        let payoutBankCode = String(account.bankCode);
+        try {
+          const normalized = await normalizeBankCodeForFlutterwave(payoutBankCode, String(account.bankName ?? account.bankCode ?? ""));
+          if (normalized && normalized !== payoutBankCode) {
+            payoutBankCode = normalized;
+            account.bankCode = normalized;
+            account.updatedAt = now.toISOString();
+          }
+        } catch (_normError) {
+          // Bank list unavailable — proceed with the stored code.
+        }
         const transfer = await createInvestorPayout({
           txRef: `VELO-INVESTMENT-MATURITY-${investment.id}`,
           amountNaira,
           accountNumber: String(account.accountNumber),
-          accountBank: String(account.bankCode),
+          accountBank: payoutBankCode,
           beneficiaryName: String(account.accountName),
           narration: `Velo investment maturity payout ${investment.id}`,
         });

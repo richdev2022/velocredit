@@ -56,6 +56,7 @@ import {
   type Role,
   type CreditReport,
   type LoanStatus,
+  type AdminLedgerEntry,
   ADMIN_PERMISSIONS,
   getAdminLedgerBalanceMinor,
   adminLedger,
@@ -102,9 +103,10 @@ import {
   resolveBankAccount,
   listBanks,
   FlutterwaveError,
+  normalizeBankCodeForFlutterwave,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult } from "./store.js";
 
 const router = Router();
@@ -2628,11 +2630,19 @@ router.get("/investor/transactions", requireAuth, requireRole("INVESTOR"), (req:
   const userPayouts = indexes.payoutsByUserId.get(req.user!.id) ?? [];
   const userLedger = (indexes.ledgerEntriesByWalletId.get(wallet.id) ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const userWalletTxs = (indexes.walletTransactionsByUserId.get(req.user!.id) ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // Withdrawal records carry the LIVE transfer status (PROCESSING → SUCCESSFUL/
+  // FAILED) — the UI needs them so a settled withdrawal no longer renders as an
+  // eternal "PROCESSING" ledger row in the transaction history.
+  const userWithdrawals = investorWithdrawals
+    .filter((w) => w.investorId === req.user!.id)
+    .slice()
+    .sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
   const sliced = {
     investments: userInvestments.slice(offset, offset + limit),
     payouts: userPayouts.slice(offset, offset + limit),
     ledger: userLedger.slice(offset, offset + limit),
     walletTransactions: userWalletTxs.slice(offset, offset + limit),
+    withdrawals: userWithdrawals.slice(offset, offset + limit),
   };
   res.json({
     ok: true,
@@ -2645,12 +2655,14 @@ router.get("/investor/transactions", requireAuth, requireRole("INVESTOR"), (req:
         payouts: userPayouts.length,
         ledger: userLedger.length,
         walletTransactions: userWalletTxs.length,
+        withdrawals: userWithdrawals.length,
       },
       hasMore: {
         investments: offset + limit < userInvestments.length,
         payouts: offset + limit < userPayouts.length,
         ledger: offset + limit < userLedger.length,
         walletTransactions: offset + limit < userWalletTxs.length,
+        withdrawals: offset + limit < userWithdrawals.length,
       },
     },
   });
@@ -2705,6 +2717,11 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
   const userLoans = loans.filter((item) => item.borrowerId === req.user!.id);
   const userRepayments = repayments.filter((item) => item.borrowerId === req.user!.id);
   const disbursementAccount = disbursementAccounts.find((item) => item.borrowerId === req.user!.id) ?? null;
+  // Urgent-attention flag: a loan's disbursement is blocked on the borrower's
+  // bank account (provider rejected it, or the admin requested an update).
+  const accountUpdateLoans = userLoans
+    .filter((loan) => loan.disbursementAccountNeedsUpdate === true)
+    .map((loan) => ({ loanId: loan.id, applicationId: loan.applicationId, requestedAt: loan.disbursementAccountRequestedAt ?? null }));
   // Decorate every application/loan with resolved product fields so the UI can
   // always render loan information (name, interest, fees, range) — even for
   // applications created before products were linked, or whose product was
@@ -2721,6 +2738,8 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
     }) })),
     repayments: userRepayments,
     disbursementAccount,
+    accountUpdateRequested: accountUpdateLoans.length > 0,
+    accountUpdateLoans,
   });
 });
 
@@ -3810,11 +3829,23 @@ router.post("/admin/payouts/:payoutId/retry", requireAuth, requireRole("ADMIN"),
     return;
   }
   try {
+    // Bank-code normalization for legacy payout accounts (see maturity sweep).
+    let payoutBankCode = String(account.bankCode);
+    try {
+      const normalized = await normalizeBankCodeForFlutterwave(payoutBankCode, String(account.bankName ?? account.bankCode ?? ""));
+      if (normalized && normalized !== payoutBankCode) {
+        payoutBankCode = normalized;
+        account.bankCode = normalized;
+        account.updatedAt = new Date().toISOString();
+      }
+    } catch (_normError) {
+      // Bank list unavailable — proceed with the stored code.
+    }
     const transfer = await createInvestorPayout({
       txRef: `VELO-PAYOUT-RETRY-${payout.id}`,
       amountNaira: Number(payout.amountNaira),
       accountNumber: String(account.accountNumber),
-      accountBank: String(account.bankCode),
+      accountBank: payoutBankCode,
       beneficiaryName: String(account.accountName),
       narration: `Velo investor payout retry ${payout.id}`,
     });
@@ -4775,6 +4806,67 @@ function providerRefsFromResponse(payload: Record<string, unknown> | null): { re
   };
 }
 
+// ---- Admin-ledger helpers (loan disbursement accuracy) ---------------------
+// A LOAN_DISBURSEMENT DEBIT is written the moment Flutterwave accepts the
+// transfer. If that transfer later FAILS (poll/reconciliation), the debit must
+// be reversed — otherwise the ledger double-charges the loan on retry.
+function adminLedgerHasEntry(entryType: AdminLedgerEntry["entryType"], referenceId: string, direction: "DEBIT" | "CREDIT"): boolean {
+  return adminLedger.some((entry) => entry.entryType === entryType && entry.referenceId === referenceId && entry.direction === direction);
+}
+
+function reverseLoanDisbursementLedger(disbursementId: string, loanId: string, borrowerId: string, reason: string): void {
+  if (!adminLedgerHasEntry("LOAN_DISBURSEMENT", disbursementId, "DEBIT")) return; // never debited — nothing to reverse
+  if (adminLedgerHasEntry("LOAN_DISBURSEMENT_REVERSAL", disbursementId, "CREDIT")) return; // already reversed (idempotent)
+  const original = adminLedger.find((entry) => entry.entryType === "LOAN_DISBURSEMENT" && entry.referenceId === disbursementId && entry.direction === "DEBIT");
+  appendAdminLedger({
+    entryType: "LOAN_DISBURSEMENT_REVERSAL",
+    referenceId: disbursementId,
+    borrowerId,
+    loanId,
+    amountMinor: original?.amountMinor ?? 0,
+    direction: "CREDIT",
+    description: `Admin ledger reversal for failed loan disbursement - loan ${loanId} / disbursement ${disbursementId}`,
+    metadata: { reason, loanId, disbursementId },
+  });
+  schedulePersist();
+}
+
+function backfillLoanDisbursementLedger(disbursementId: string, loanId: string, borrowerId: string, amountNaira: number, note: string): void {
+  if (adminLedgerHasEntry("LOAN_DISBURSEMENT", disbursementId, "DEBIT")) return;
+  appendAdminLedger({
+    entryType: "LOAN_DISBURSEMENT",
+    referenceId: disbursementId,
+    borrowerId,
+    loanId,
+    amountMinor: Math.round(amountNaira * 100),
+    direction: "DEBIT",
+    description: `Admin ledger debit for loan disbursement (backfilled) - loan ${loanId}`,
+    metadata: { backfilled: true, note },
+  });
+  schedulePersist();
+}
+
+// Account-resolution rejections (“Unknown Bank Code”, “Account resolve failed”,
+// unresolvable NUBAN) will NEVER succeed on retry with the same account — flag
+// the loan so the admin can ask the customer to re-provide the disbursement
+// account and the customer's dashboard shows the urgent-action banner.
+function failureLooksLikeAccountProblem(message: string): boolean {
+  const haystack = String(message || "").toLowerCase();
+  return [
+    "unknown bank code",
+    "account resolve failed",
+    "could not verify the borrower's bank account",
+    "could not resolve this account",
+    "account_number",
+    "account_number_invalid",
+    "invalid account",
+    "beneficiary account",
+    "nuban",
+    "account does not exist",
+    "no account found",
+  ].some((needle) => haystack.includes(needle));
+}
+
 function finalizeFailedLoanDisbursement(params: {
   req: AuthRequest;
   loan: (typeof loans)[number];
@@ -4797,12 +4889,22 @@ function finalizeFailedLoanDisbursement(params: {
   }
   disbursement.processedAt = now;
   disbursement.updatedAt = now;
+  // Ledger accuracy: if the transfer had already been accepted (and the admin
+  // ledger debited) before failing, reverse the debit so the ledger reflects
+  // that the money never left — and a retry does not double-charge.
+  reverseLoanDisbursementLedger(disbursement.id, loan.id, loan.borrowerId, message);
+  // If the provider rejected the borrower's ACCOUNT itself, mark the loan so
+  // the admin gets a one-click CTA and the borrower sees the urgent banner.
+  if (failureLooksLikeAccountProblem(message)) {
+    loan.disbursementAccountNeedsUpdate = true;
+    loan.disbursementAccountRequestedAt = loan.disbursementAccountRequestedAt ?? now;
+  }
   // Give the loan back to the admin so the disbursement can be retried.
   if (loan.status === "DISBURSEMENT_PENDING") {
     loan.status = "APPROVED";
     loan.updatedAt = now;
   }
-  recordAdminAudit(req, "LOAN_DISBURSEMENT_FAILED", "LOAN", loan.id, { applicationId: application?.applicationId, disbursementId: disbursement.id, retryCount: Number(disbursement.retryCount ?? 0), error: message });
+  recordAdminAudit(req, "LOAN_DISBURSEMENT_FAILED", "LOAN", loan.id, { applicationId: application?.applicationId, disbursementId: disbursement.id, retryCount: Number(disbursement.retryCount ?? 0), error: message, accountNeedsUpdate: loan.disbursementAccountNeedsUpdate === true });
   schedulePersist();
   return { outcome: "FAILED", message, error: message };
 }
@@ -4817,13 +4919,40 @@ async function executeLoanTransferAttempt(params: {
   txRef: string;
 }): Promise<DisbursementAttemptOutcome> {
   const { req, loan, application, disbursement, narration, txRef } = params;
-  const account = params.account;
   const amountNaira = Number(disbursement.amountNaira ?? loan.principalNaira);
+  // Bank-code normalization: accounts saved with legacy/foreign-convention codes
+  // (e.g. Paystack-style 999992 for OPay) made Flutterwave reject transfers with
+  // "Unknown Bank Code". Re-map the code against Flutterwave's live bank list
+  // (by stored bank name / legacy alias) BEFORE resolving or transferring, and
+  // persist the corrected code so every later attempt uses it too.
+  let account = { ...params.account };
+  try {
+    const normalizedCode = await normalizeBankCodeForFlutterwave(String(account.bankCode ?? ""), account.bankName);
+    if (normalizedCode && normalizedCode !== String(account.bankCode ?? "")) {
+      console.info(`[routes] disbursement ${disbursement.id}: bank code remapped ${account.bankCode} -> ${normalizedCode} (${account.bankName ?? "name unknown"})`);
+      const nowRemap = new Date().toISOString();
+      account = { ...account, bankCode: normalizedCode };
+      disbursement.bankCode = normalizedCode;
+      disbursement.updatedAt = nowRemap;
+      const savedAccountRow = disbursementAccounts.find((item) => item.borrowerId === loan.borrowerId);
+      if (savedAccountRow && savedAccountRow.bankCode !== normalizedCode) {
+        savedAccountRow.bankCode = normalizedCode;
+        savedAccountRow.updatedAt = nowRemap;
+      }
+      if (application?.disbursementAccount && (application.disbursementAccount as Record<string, unknown>).bankCode) {
+        (application.disbursementAccount as unknown as Record<string, unknown>).bankCode = normalizedCode;
+        application.updatedAt = nowRemap;
+      }
+      schedulePersist();
+    }
+  } catch (remapError) {
+    console.warn(`[routes] disbursement ${disbursement.id}: bank-code normalization skipped (${remapError instanceof Error ? remapError.message : "unknown"})`);
+  }
   const accountLabel = `${account.bankName || account.bankCode || "bank"} · ${account.accountNumber ? `••••${String(account.accountNumber).slice(-4)}` : "—"}`;
 
   // ---- Step 1: pre-flight beneficiary account resolution (fail fast).
   try {
-    await resolveBankAccount(String(account.accountNumber ?? ""), String(account.bankCode ?? ""));
+    await resolveBankAccount(String(account.accountNumber ?? ""), String(account.bankCode ?? ""), account.bankName);
   } catch (resolveError) {
     const httpStatus = (resolveError as { httpStatus?: number }).httpStatus;
     const providerResponse = (resolveError as { providerResponse?: Record<string, unknown> }).providerResponse ?? null;
@@ -4883,6 +5012,9 @@ async function executeLoanTransferAttempt(params: {
       loan.status = "ACTIVE";
       loan.disbursedAt = settledAt;
       loan.updatedAt = settledAt;
+      // Money actually landed — any outstanding account-update attention flag
+      // is now moot.
+      loan.disbursementAccountNeedsUpdate = false;
       if (application) {
         // Canonical post-disbursement lifecycle status is ACTIVE (not DISBURSED).
         application.status = "ACTIVE";
@@ -4962,6 +5094,7 @@ async function reconcileStaleDisbursements(): Promise<void> {
       loan.status = "ACTIVE";
       loan.disbursedAt = loan.disbursedAt ?? settledAt;
       loan.updatedAt = settledAt;
+      loan.disbursementAccountNeedsUpdate = false;
       if (application) {
         application.status = "ACTIVE";
         application.updatedAt = settledAt;
@@ -4970,6 +5103,10 @@ async function reconcileStaleDisbursements(): Promise<void> {
       row.error = null;
       row.processedAt = settledAt;
       row.updatedAt = settledAt;
+      // Ledger accuracy: if the process died between transfer creation and the
+      // ledger write, backfill the LOAN_DISBURSEMENT debit now so every settled
+      // disbursement is represented exactly once on the admin ledger.
+      backfillLoanDisbursementLedger(row.id, loan.id, loan.borrowerId, Number(row.amountNaira), `reconciled via Flutterwave ${reference || providerId}`);
       creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave reconciliation (${reference || providerId})`, occurredAt: settledAt, createdAt: settledAt });
       schedulePersist();
     } else if (verification.failed) {
@@ -5133,6 +5270,80 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
       error: errMsg,
     });
   }
+});
+
+// ---------------- Admin CTA: ask the customer to re-provide the disbursement
+// account. Used when Flutterwave rejected the saved account (the loan cannot
+// be disbursed until the customer updates it from their Settings). The
+// customer's dashboard then shows an "urgent attention" banner and their
+// disbursement-account form is unlocked; the update applies IMMEDIATELY
+// (auto-approved) and is mapped onto this loan automatically.
+router.post("/admin/loans/:loanId/request-account-update", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
+  const loan = loans.find((l) => l.applicationId === req.params.loanId || l.applicationId === application?.id || l.id === req.params.loanId);
+  if (!loan) {
+    res.status(404).json({ ok: false, error: "Loan record not found" });
+    return;
+  }
+  const schema = z.object({
+    note: z.string().max(500).optional(),
+    clear: z.boolean().optional(),
+  });
+  const parsed = schema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const now = new Date().toISOString();
+  const borrower = users.find((u) => u.id === loan.borrowerId);
+  if (parsed.data.clear) {
+    clearBorrowerAccountUpdateFlags(loan.borrowerId);
+    schedulePersist();
+    recordAdminAudit(req, "DISBURSEMENT_ACCOUNT_UPDATE_CLEARED", "LOAN", loan.id, { borrowerId: loan.borrowerId });
+    res.json({ ok: true, loan, updateRequested: false, message: "Account-update request cleared for this borrower." });
+    return;
+  }
+  loan.disbursementAccountNeedsUpdate = true;
+  loan.disbursementAccountRequestedAt = now;
+  loan.updatedAt = now;
+  recordAdminAudit(req, "DISBURSEMENT_ACCOUNT_UPDATE_REQUESTED", "LOAN", loan.id, {
+    borrowerId: loan.borrowerId,
+    applicationId: application?.applicationId,
+    principalNaira: Number(loan.principalNaira),
+    note: parsed.data.note ?? null,
+  });
+  if (borrower) {
+    const template = disbursementAccountUpdateRequestedEmail({
+      name: borrower.fullName,
+      applicationId: application?.applicationId ?? loan.id,
+      amountNaira: Number(loan.principalNaira),
+      note: parsed.data.note,
+    });
+    void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+    notifications.push({
+      id: randomUUID(),
+      userId: borrower.id,
+      channel: "EMAIL" as const,
+      kind: "DISBURSEMENT_ACCOUNT_UPDATE_REQUESTED" as const,
+      subject: template.subject,
+      recipientMasked: borrower.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+      status: "SENT",
+      retryCount: 0,
+      relatedEntityType: "LOAN",
+      relatedEntityId: loan.id,
+      createdAt: now,
+      sentAt: now,
+    });
+  }
+  schedulePersist();
+  res.json({
+    ok: true,
+    loan,
+    updateRequested: true,
+    message: borrower
+      ? `Requested. ${borrower.fullName} has been notified by email and will see an urgent banner on their dashboard — their account update will attach to this loan automatically.`
+      : "Requested. The borrower will see the urgent banner on their dashboard.",
+  });
 });
 
 router.get("/admin/investment-plans", requireAuth, requireRole("ADMIN"), (_req, res) => {
@@ -5425,11 +5636,19 @@ router.post("/admin/payouts/:payoutId/approve", requireAuth, requireRole("ADMIN"
     return;
   }
   try {
+    // Bank-code normalization for legacy payout accounts (see maturity sweep).
+    let approveBankCode = String(bankCode);
+    try {
+      const normalized = await normalizeBankCodeForFlutterwave(approveBankCode, String(accountName ?? ""));
+      if (normalized && normalized !== approveBankCode) approveBankCode = normalized;
+    } catch (_normError) {
+      // Bank list unavailable — proceed with the stored code.
+    }
     const transfer = await createInvestorPayout({
       txRef: `VELO-PAYOUT-${payout.id}`,
       amountNaira: Number(payout.amountNaira),
       accountNumber,
-      accountBank: bankCode,
+      accountBank: approveBankCode,
       beneficiaryName: accountName ?? `Investor ${payout.userId}`,
       narration: `Velo ${payout.payoutType ?? "payout"} ${payout.id}`,
     });
@@ -5473,15 +5692,27 @@ router.get("/payments/flutterwave/return", (req, res) => {
 
 function reverseInvestorWithdrawal(withdrawal: (typeof investorWithdrawals)[number], reason: string): void {
   const wallet = findWallet(withdrawal.investorId);
+  const amountMinor = Math.round(Number(withdrawal.amountNaira) * 100);
   if (wallet) {
     appendLedger(wallet, {
       entryType: "WITHDRAWAL_REVERSAL",
       referenceId: withdrawal.id,
-      amountMinor: Math.round(Number(withdrawal.amountNaira) * 100),
+      amountMinor,
       direction: "CREDIT",
       description: `Withdrawal reversal - ${reason}`,
     });
   }
+  // Mirror reversal: the WITHDRAWAL_OUT admin credit taken at initiation is
+  // charged back so the ledger stays consistent with the restored wallet.
+  appendAdminLedger({
+    entryType: "WITHDRAWAL_OUT_REVERSAL",
+    investorId: withdrawal.investorId,
+    referenceId: withdrawal.id,
+    amountMinor,
+    direction: "DEBIT",
+    description: `Reverse admin ledger credit for failed withdrawal - ${reason}`,
+    metadata: { reason },
+  });
   const feeMinor = Math.round(Number(withdrawal.feeNaira) * 100);
   if (feeMinor > 0) {
     appendAdminLedger({
@@ -5502,11 +5733,28 @@ async function executeInvestorWithdrawal(withdrawal: (typeof investorWithdrawals
   withdrawal.updatedAt = withdrawal.lastAttemptAt;
   let initialTransfer: Record<string, unknown> | null = null;
   try {
+    // Bank-code normalization: legacy withdrawal records may carry codes from
+    // other providers' conventions that Flutterwave rejects ("Unknown Bank
+    // Code"). Re-map against Flutterwave's live bank list first.
+    let effectiveBankCode = String(withdrawal.bankCode);
+    try {
+      effectiveBankCode = await normalizeBankCodeForFlutterwave(effectiveBankCode, withdrawal.bankName || withdrawal.bankCode);
+      if (effectiveBankCode !== String(withdrawal.bankCode)) {
+        withdrawal.bankCode = effectiveBankCode;
+        // If bankName was just echoing the (bad) code, clean it up so the UI
+        // shows a real bank label.
+        if (!withdrawal.bankName || withdrawal.bankName === withdrawal.bankCode) withdrawal.bankName = effectiveBankCode;
+        withdrawal.updatedAt = new Date().toISOString();
+        schedulePersist();
+      }
+    } catch (_normError) {
+      // Provider bank list unavailable — proceed with the stored code.
+    }
     const transfer = await createInvestorPayout({
       txRef: `WITHDRAWAL-${withdrawal.id}`,
       amountNaira: Number(withdrawal.netNaira),
       accountNumber: String(withdrawal.accountNumber),
-      accountBank: String(withdrawal.bankCode),
+      accountBank: effectiveBankCode,
       beneficiaryName: String(withdrawal.accountName),
       narration: withdrawal.narration || `Velo investor withdrawal ${withdrawal.id}`,
     });
@@ -5677,6 +5925,24 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
       metadata: { feeType: "PERCENT", percent: feePercent, amountMinor: feePercentMinor },
     });
   }
+  // Mirror the investor wallet debit on the admin ledger: the wallet was
+  // debited for the GROSS amount (net + fees), so the admin ledger is credited
+  // with the same gross amount — fees included — keeping both sides of the
+  // movement visible and auditable. Reversed if the transfer fails.
+  appendAdminLedger({
+    entryType: "WITHDRAWAL_OUT",
+    investorId: userId,
+    amountMinor,
+    direction: "CREDIT",
+    description: `Admin ledger credit for investor withdrawal (wallet debited incl. fees) — ${resolvedBankName} ••••${parsed.data.accountNumber.slice(-4)}`,
+    metadata: {
+      grossMinor: amountMinor,
+      feeMinor: totalFeeMinor,
+      netMinor,
+      bankCode: parsed.data.bankCode,
+      accountNumber: parsed.data.accountNumber,
+    },
+  });
   const withdrawalId = randomUUID();
   const withdrawalEntry = {
     id: withdrawalId,
@@ -6012,6 +6278,22 @@ router.post("/admin/withdrawals/:withdrawalId/retry", requireAuth, requireRole("
       description: "Withdrawal fee collected on retry",
     });
   }
+  // Mirror the retry's wallet debit on the admin ledger (gross, fees included),
+  // same as the original initiation — reversed automatically on failure.
+  appendAdminLedger({
+    entryType: "WITHDRAWAL_OUT",
+    investorId: withdrawal.investorId,
+    referenceId: withdrawal.id,
+    amountMinor,
+    direction: "CREDIT",
+    description: `Admin ledger credit for investor withdrawal retry (wallet debited incl. fees) — ${withdrawal.bankName || withdrawal.bankCode} ••••${String(withdrawal.accountNumber).slice(-4)}`,
+    metadata: {
+      grossMinor: amountMinor,
+      feeMinor: retryFeeMinor,
+      netMinor: Math.round(Number(withdrawal.netNaira) * 100),
+      retry: true,
+    },
+  });
   const execution = await executeInvestorWithdrawal(withdrawal);
   if (!(await persistMutation(res))) return;
   const finalStatus = execution.finalStatus ?? (execution.error ? "FAILED" : "PROCESSING");
@@ -6184,6 +6466,49 @@ router.put("/investor/payout-accounts/:accountId/default", requireAuth, requireR
   res.json({ ok: true, account: target });
 });
 
+// ---------- Urgent disbursement-account update flow (borrower side) --------
+// When a loan carries disbursementAccountNeedsUpdate (provider rejected the
+// saved account, or the admin explicitly requested it), the borrower's settings
+// update must apply IMMEDIATELY (auto-approved), map onto every open
+// application/loan, and clear the attention flags — otherwise the customer
+// would be stuck behind the standard admin-approval queue while their
+// disbursement is blocked.
+
+function borrowerHasAccountUpdateRequest(borrowerId: string): boolean {
+  return loans.some((l) => l.borrowerId === borrowerId && l.disbursementAccountNeedsUpdate === true);
+}
+
+function clearBorrowerAccountUpdateFlags(borrowerId: string): void {
+  const now = new Date().toISOString();
+  for (const loan of loans) {
+    if (loan.borrowerId !== borrowerId) continue;
+    if (loan.disbursementAccountNeedsUpdate) {
+      loan.disbursementAccountNeedsUpdate = false;
+      loan.updatedAt = now;
+    }
+  }
+}
+
+// Stamp a freshly applied account onto every open application of the borrower
+// (replacing any previous account) so the disbursement resolution order —
+// saved account first, then application account — can never fall back to the
+// stale/rejected one.
+function stampAccountOnOpenApplications(borrowerId: string, accountPayload: { accountName: string; accountNumber: string; bankCode: string; bankName?: string }): number {
+  const openStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSEMENT_PENDING"];
+  const now = new Date().toISOString();
+  let stamped = 0;
+  for (const application of loanApplications) {
+    if (application.borrowerId !== borrowerId || !openStatuses.includes(String(application.status))) continue;
+    const snap = (application.customerSnapshot ?? {}) as Record<string, unknown>;
+    const accountWithMeta = { ...accountPayload, institution: "VELO" };
+    application.disbursementAccount = accountWithMeta as typeof application.disbursementAccount;
+    application.customerSnapshot = { ...snap, disbursementAccount: accountWithMeta } as typeof application.customerSnapshot;
+    application.updatedAt = now;
+    stamped += 1;
+  }
+  return stamped;
+}
+
 router.get("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
   const borrowerId = req.user!.id;
   const saved = disbursementAccounts.find((a) => a.borrowerId === borrowerId) ?? null;
@@ -6227,7 +6552,7 @@ router.get("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"
       }
     }
   }
-  res.json({ ok: true, account: account ?? null, accountSource, pendingRequests });
+  res.json({ ok: true, account: account ?? null, accountSource, pendingRequests, updateRequested: borrowerHasAccountUpdateRequest(borrowerId) });
 });
 
 router.post("/borrower/disbursement-account/resolve", requireAuth, requireRole("BORROWER"), async (req, res) => {
@@ -6262,10 +6587,11 @@ router.post("/borrower/disbursement-account/resolve", requireAuth, requireRole("
   }
 });
 
-router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const schema = z.object({
     accountName: z.string().min(2),
-    accountNumber: z.string().regex(/^\d{10}$/, "10-digit account number required"),
+    accountNumber: z.string().regex(/^\d{10}$/,
+      "10-digit account number required"),
     bankCode: z.string().min(1),
     bankName: z.string().optional(),
   });
@@ -6276,6 +6602,82 @@ router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER
   }
   const borrowerId = req.user!.id;
   const now = new Date().toISOString();
+  if (borrowerHasAccountUpdateRequest(borrowerId)) {
+    // URGENT path (loan disbursal blocked on this account): verify the new
+    // account with Flutterwave first — a definitive rejection means the
+    // customer mistyped something and we must NOT map a broken account.
+    try {
+      await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode, parsed.data.bankName);
+    } catch (error) {
+      const httpStatus = (error as { httpStatus?: number }).httpStatus;
+      const message = error instanceof Error ? error.message : "Could not verify the account";
+      if (env.FLUTTERWAVE_SECRET_KEY && (typeof httpStatus !== "number" || httpStatus < 500)) {
+        res.status(400).json({ ok: false, error: `Flutterwave rejected this account: ${message}. Please check the account number and bank, then try again.` });
+        return;
+      }
+      // Provider outage (5xx/network) — accept but note it in the logs;
+      // blocking the customer on an outage would be worse.
+      console.warn(`[routes] urgent disbursement-account update accepted without verification for user=${borrowerId}: ${message}`);
+    }
+    // Bank-code normalization: the saved account must always carry a
+    // Flutterwave-native code (prevents a repeat of "Unknown Bank Code").
+    let normalizedBankCode = parsed.data.bankCode;
+    try {
+      normalizedBankCode = await normalizeBankCodeForFlutterwave(parsed.data.bankCode, parsed.data.bankName);
+    } catch (_normError) {
+      // Keep the provided code if the live list is unavailable.
+    }
+    const accountPayload = { ...parsed.data, bankCode: normalizedBankCode };
+    const existingAccount = disbursementAccounts.find((a) => a.borrowerId === borrowerId);
+    let savedAccount: (typeof disbursementAccounts)[number];
+    if (existingAccount) {
+      Object.assign(existingAccount, {
+        ...accountPayload,
+        status: "ACTIVE",
+        rejectionReason: null,
+        updatedAt: now,
+      });
+      savedAccount = existingAccount;
+    } else {
+      savedAccount = {
+        id: randomUUID(),
+        borrowerId,
+        ...accountPayload,
+        status: "ACTIVE" as const,
+        createdAt: now,
+        updatedAt: now,
+        rejectionReason: null,
+      } as (typeof disbursementAccounts)[number];
+      disbursementAccounts.push(savedAccount);
+    }
+    const stamped = stampAccountOnOpenApplications(borrowerId, accountPayload);
+    // Audit trail: recorded as AUTO_APPROVED (urgency-verified path).
+    accountChangeRequests.push({
+      id: randomUUID(),
+      userId: borrowerId,
+      type: "BORROWER_DISBURSEMENT_ACCOUNT" as const,
+      status: "AUTO_APPROVED" as const,
+      existingSnapshot: existingAccount ? JSON.parse(JSON.stringify(existingAccount)) : null,
+      newSnapshot: accountPayload as unknown as Record<string, unknown>,
+      reason: "Urgent update — loan disbursal was blocked on the previous account; applied immediately",
+      reviewedBy: "system:auto-approved",
+      reviewedAt: now,
+      rejectionReason: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    clearBorrowerAccountUpdateFlags(borrowerId);
+    schedulePersist();
+    console.info(`[routes] urgent disbursement-account update applied for user=${borrowerId} (stamped onto ${stamped} open application(s))`);
+    res.json({
+      ok: true,
+      account: savedAccount,
+      applied: true,
+      stampedApplications: stamped,
+      message: "Your new disbursement account has been verified and attached to your loan. Disbursement can now proceed.",
+    });
+    return;
+  }
   const existing = disbursementAccounts.find((a) => a.borrowerId === borrowerId);
   if (!existing) {
     const account = {
@@ -6339,7 +6741,7 @@ router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER
   });
 });
 
-router.put("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+router.put("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const schema = z.object({
     accountName: z.string().min(2),
     accountNumber: z.string().regex(/^\d{10}$/, "10-digit account number required"),
@@ -6358,6 +6760,60 @@ router.put("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"
     return;
   }
   const now = new Date().toISOString();
+  if (borrowerHasAccountUpdateRequest(borrowerId)) {
+    // URGENT path — mirror of the POST handler: verify, apply immediately,
+    // stamp onto open applications, clear the attention flags.
+    try {
+      await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode, parsed.data.bankName);
+    } catch (error) {
+      const httpStatus = (error as { httpStatus?: number }).httpStatus;
+      const message = error instanceof Error ? error.message : "Could not verify the account";
+      if (env.FLUTTERWAVE_SECRET_KEY && (typeof httpStatus !== "number" || httpStatus < 500)) {
+        res.status(400).json({ ok: false, error: `Flutterwave rejected this account: ${message}. Please check the account number and bank, then try again.` });
+        return;
+      }
+      console.warn(`[routes] urgent disbursement-account update accepted without verification for user=${borrowerId}: ${message}`);
+    }
+    let normalizedBankCode = parsed.data.bankCode;
+    try {
+      normalizedBankCode = await normalizeBankCodeForFlutterwave(parsed.data.bankCode, parsed.data.bankName);
+    } catch (_normError) {
+      // Keep the provided code if the live list is unavailable.
+    }
+    const accountPayload = { ...parsed.data, bankCode: normalizedBankCode };
+    Object.assign(existing, {
+      ...accountPayload,
+      status: "ACTIVE",
+      rejectionReason: null,
+      updatedAt: now,
+    });
+    const stamped = stampAccountOnOpenApplications(borrowerId, accountPayload);
+    accountChangeRequests.push({
+      id: randomUUID(),
+      userId: borrowerId,
+      type: "BORROWER_DISBURSEMENT_ACCOUNT" as const,
+      status: "AUTO_APPROVED" as const,
+      existingSnapshot: JSON.parse(JSON.stringify(existing)),
+      newSnapshot: accountPayload as unknown as Record<string, unknown>,
+      reason: "Urgent update — loan disbursal was blocked on the previous account; applied immediately",
+      reviewedBy: "system:auto-approved",
+      reviewedAt: now,
+      rejectionReason: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    clearBorrowerAccountUpdateFlags(borrowerId);
+    schedulePersist();
+    console.info(`[routes] urgent disbursement-account update (PUT) applied for user=${borrowerId} (stamped onto ${stamped} open application(s))`);
+    res.json({
+      ok: true,
+      account: existing,
+      applied: true,
+      stampedApplications: stamped,
+      message: "Your new disbursement account has been verified and attached to your loan. Disbursement can now proceed.",
+    });
+    return;
+  }
   const request = {
     id: randomUUID(),
     userId: borrowerId,
@@ -6457,6 +6913,19 @@ function applyAccountChange(request: (typeof accountChangeRequests)[number]): { 
       };
       disbursementAccounts.push(account);
     }
+    // Map the approved account onto the borrower's open applications and clear
+    // any outstanding account-update attention flags, so an approved change
+    // unblocks disbursement exactly like the urgent (auto-approved) path.
+    const accountPayload = {
+      accountName: String(account.accountName ?? snapshot.accountName ?? ""),
+      accountNumber: String(account.accountNumber ?? snapshot.accountNumber ?? ""),
+      bankCode: String(account.bankCode ?? snapshot.bankCode ?? ""),
+      bankName: account.bankName ?? snapshot.bankName,
+    };
+    if (accountPayload.accountNumber && accountPayload.bankCode) {
+      stampAccountOnOpenApplications(request.userId, accountPayload);
+    }
+    clearBorrowerAccountUpdateFlags(request.userId);
     return { ok: true };
   }
   return { ok: false, reason: `Unknown request type: ${request.type}` };
@@ -6557,14 +7026,22 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     res.status(404).json({ ok: false, error: "Loan not found" });
     return;
   }
-  if (!prev.accountNumber || !prev.bankCode) {
+  // Account freshness: prefer the borrower's CURRENT saved disbursement account
+  // (they may have re-provided it after the failure — the urgent update flow),
+  // falling back to the failed attempt's details only when no saved account
+  // exists. Retrying into the stale account would repeat the same rejection.
+  const savedActiveAccount = disbursementAccounts.find(
+    (item) => item.borrowerId === loan.borrowerId && item.status === "ACTIVE" && item.accountNumber && item.bankCode
+  );
+  const retrySource = savedActiveAccount ?? prev;
+  if (!retrySource.accountNumber || !retrySource.bankCode) {
     res.status(400).json({ ok: false, error: "Previous disbursement is missing bank/account details" });
     return;
   }
   // Narrowed copies for the background closure (TS cannot carry the guard's
   // narrowing into the async IIFE below).
-  const retryAccountNumber = prev.accountNumber;
-  const retryBankCode = prev.bankCode;
+  const retryAccountNumber = retrySource.accountNumber;
+  const retryBankCode = retrySource.bankCode;
   const now = new Date().toISOString();
   const retryCount = (prev.retryCount ?? 0) + 1;
   const retry: (typeof loanDisbursements)[number] = {
@@ -6574,10 +7051,10 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     borrowerId: prev.borrowerId,
     amountNaira: prev.amountNaira,
     currency: prev.currency,
-    bankCode: prev.bankCode,
-    bankName: prev.bankName,
-    accountNumber: prev.accountNumber,
-    accountName: prev.accountName,
+    bankCode: String(retryBankCode),
+    bankName: retrySource.bankName ?? prev.bankName,
+    accountNumber: String(retryAccountNumber),
+    accountName: retrySource.accountName ?? prev.accountName,
     status: "PROCESSING",
     narration: prev.narration ? `${prev.narration} (retry #${retryCount})` : undefined,
     providerTransfer: null,
@@ -6604,10 +7081,10 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     application: retryLoanApp,
     disbursement: retry,
     account: {
-      accountName: prev.accountName,
+      accountName: retrySource.accountName ?? prev.accountName,
       accountNumber: retryAccountNumber,
       bankCode: retryBankCode,
-      bankName: prev.bankName,
+      bankName: retrySource.bankName ?? prev.bankName,
     },
     narration: retry.narration ?? `Velo loan disbursement retry ${loan.id}`,
     txRef: `VELO-DISBURSE-${loan.id}-${retry.id.slice(0, 8)}`,

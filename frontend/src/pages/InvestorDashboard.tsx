@@ -56,6 +56,7 @@ type TransactionData = {
   investments?: Array<Record<string, unknown>>;
   ledger?: Array<Record<string, unknown>>;
   walletTransactions?: Array<Record<string, unknown>>;
+  withdrawals?: Array<Record<string, unknown>>;
 };
 type KycData = {
   status?: string;
@@ -2026,8 +2027,20 @@ function InvestorKyc(props: any) {
 function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
   const out: UnifiedTx[] = [];
   if (!data) return out;
+  // Withdrawal records first: they carry the LIVE transfer status
+  // (PROCESSING -> SUCCESSFUL/FAILED). Used both for first-class rows below and
+  // to upgrade the matching WITHDRAWAL_INITIATED ledger rows (which would
+  // otherwise render as an eternal "PROCESSING" entry even after the money
+  // actually arrived in the investor's bank account).
+  const withdrawalById = new Map<string, Record<string, unknown>>();
+  (data.withdrawals || []).forEach((w: Record<string, unknown>) => {
+    if (w && typeof w.id === "string") withdrawalById.set(w.id, w);
+  });
   (data.ledger || []).forEach((entry: any) => {
     const entryType = String(entry.entryType || "");
+    // Bookkeeping marker (always ₦0) — the real movement is on the
+    // WITHDRAWAL_INITIATED row and the withdrawal record itself.
+    if (/WITHDRAWAL_SETTLEMENT/.test(entryType) && Number(entry.amountMinor ?? 0) === 0) return;
     const direction: "CREDIT" | "DEBIT" = entry.direction === "CREDIT" ? "CREDIT" : entry.direction === "DEBIT" ? "DEBIT" : (["INVESTOR_FUNDING", "INVESTMENT_RETURN", "DEPOSIT_CREDIT", "FUNDING"].some(k => entryType.includes(k)) ? "CREDIT" : "DEBIT");
     let kind: UnifiedTx["kind"] = "OTHER";
     if (/FUNDING|DEPOSIT/.test(entryType)) kind = "FUNDING";
@@ -2036,19 +2049,25 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
     else if (/PAYOUT|WITHDRAWAL/.test(entryType)) kind = "PAYOUT";
     else if (/FEE/.test(entryType)) kind = "FEE";
     // Ledger entries are bookkeeping records: settled by definition, but
-    // initiated withdrawals are still in flight and reversals are reversed.
-    const ledgerStatus = /WITHDRAWAL_INITIATED/.test(entryType)
-      ? "PROCESSING"
-      : /REVERSAL/.test(entryType)
-        ? "REVERSED"
-        : "COMPLETED";
+    // initiated withdrawals inherit the LIVE withdrawal status when available
+    // (matched via referenceId), reversals are reversed.
+    const linkedWithdrawal = entry.referenceId ? withdrawalById.get(String(entry.referenceId)) : undefined;
+    const ledgerStatus = linkedWithdrawal
+      ? txStatus(linkedWithdrawal.status) ?? (/WITHDRAWAL_INITIATED/.test(entryType) ? "PROCESSING" : "COMPLETED")
+      : /WITHDRAWAL_INITIATED/.test(entryType)
+        ? "PROCESSING"
+        : /REVERSAL/.test(entryType)
+          ? "REVERSED"
+          : "COMPLETED";
     out.push({
       id: String(entry.id || `ledger-${entry.createdAt}-${entry.amountMinor}`),
       kind,
       direction,
       amountMinor: Number(entry.amountMinor ?? 0),
       label: String(entry.entryType || "Ledger entry").replace(/_/g, " "),
-      narration: entry.description || entry.narration,
+      narration: linkedWithdrawal && /WITHDRAWAL_INITIATED/.test(entryType)
+        ? (String(linkedWithdrawal.error ?? "") || `Withdrawal to ${linkedWithdrawal.bankName ?? linkedWithdrawal.bankCode ?? "bank"} ••••${String(linkedWithdrawal.accountNumber ?? "").slice(-4)}`)
+        : entry.description || entry.narration,
       referenceId: entry.referenceId,
       createdAt: entry.createdAt || new Date().toISOString(),
       balanceAfterMinor: entry.balanceAfterMinor != null ? Number(entry.balanceAfterMinor) : undefined,
@@ -2101,6 +2120,30 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
       createdAt: p.createdAt || new Date().toISOString(),
       status: txStatus(p.status),
       raw: p,
+    });
+  });
+  // First-class withdrawal rows: one per withdrawal attempt with its live
+  // status — so SUCCESSFUL withdrawals finally render as successful in the
+  // history (dedup: a row whose referenceId matches an already-added
+  // withdrawal is skipped).
+  const addedWithdrawalRefs = new Set<string>();
+  (data.withdrawals || []).forEach((w: any, i: number) => {
+    const amountMinor = w.amountMinor != null ? Number(w.amountMinor) : w.amountNaira != null ? Number(w.amountNaira) * 100 : 0;
+    const refKey = String(w.id ?? `withdrawal-${i}`);
+    if (addedWithdrawalRefs.has(refKey)) return;
+    addedWithdrawalRefs.add(refKey);
+    const bankLabel = w.bankName || w.bankCode || "bank";
+    out.push({
+      id: `withdrawal-${refKey}`,
+      kind: "PAYOUT",
+      direction: "DEBIT",
+      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
+      label: `Withdrawal · ${bankLabel}`,
+      narration: `To ${bankLabel} ••••${String(w.accountNumber ?? "").slice(-4)}${w.accountName ? ` · ${w.accountName}` : ""}${w.error ? ` — ${w.error}` : ""}`,
+      referenceId: w.id,
+      createdAt: w.createdAt || new Date().toISOString(),
+      status: txStatus(w.status) ?? "PROCESSING",
+      raw: w,
     });
   });
   // React silently drops list rows whose keys collide — and collisions DO occur

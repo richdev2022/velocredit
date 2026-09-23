@@ -18,7 +18,10 @@ type Props = {
   /** Saved account OR the account submitted with the loan application (fallback). */
   initial?: DisbursementAccount | Record<string, unknown> | null;
   locked?: boolean;
-  onSaved?: (acc: DisbursementAccount | null) => void;
+  /** Urgent-attention mode: a loan's disbursement is blocked on this account —
+   *  the form unlocks and the update applies IMMEDIATELY (no admin queue). */
+  updateRequested?: boolean;
+  onSaved?: (acc: DisbursementAccount | null, meta?: { applied?: boolean }) => void;
   onError?: (msg: string) => void;
 };
 
@@ -35,7 +38,7 @@ function asAccount(value: DisbursementAccount | Record<string, unknown> | null |
   return out;
 }
 
-export default function BorrowerDisbursementSection({ userId, initial, locked, onSaved, onError }: Props) {
+export default function BorrowerDisbursementSection({ userId, initial, locked, updateRequested, onSaved, onError }: Props) {
   const initialAccount = asAccount(initial);
   const [banks, setBanks] = useState<Array<{ id: number; name: string; code: string }>>([]);
   const [account, setAccount] = useState<DisbursementAccount | null>(initialAccount);
@@ -62,6 +65,8 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
     newSnapshot?: DisbursementAccount;
     reason?: string;
   } | null>(null);
+  const [updateRequestedLive, setUpdateRequestedLive] = useState<boolean>(updateRequested ?? false);
+  const urgent = updateRequested || updateRequestedLive;
 
   useEffect(() => {
     const next = asAccount(initial);
@@ -110,6 +115,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         setAccount(asAccount(res.account ?? null));
         setAccountSource(res.accountSource ?? (res.account ? "saved" : null));
         setPendingRequest(res.pendingRequests?.[0] ?? null);
+        if (typeof res.updateRequested === "boolean") setUpdateRequestedLive(res.updateRequested);
       }
     } catch (_e) {
       /* ignore */
@@ -170,19 +176,30 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         }),
       }).then((r) => r.json());
       if (res.ok) {
-        if (res.pendingApproval) {
+        if (res.applied) {
+          // URGENT path — applied immediately and mapped to the loan(s).
+          const saved = res.account ?? res.disbursementAccount ?? null;
+          setAccount(asAccount(saved));
+          setUpdateRequestedLive(false);
+          setMessage(res.message || "Your new disbursement account has been verified and attached to your loan. Disbursement can now proceed.");
+          onSaved?.(saved, { applied: true });
+          setSelectedBank("");
+          setAccountNumber("");
+          setResolvedName(null);
+          reloadAccount();
+        } else if (res.pendingApproval) {
           const msg = res.message || "Update submitted. Awaiting admin approval.";
           setMessage(msg);
           setPendingRequest(res.request || null);
           onSaved?.(account);
         } else {
-          setMessage("Disbursement account saved.");
+          setMessage(res.message || "Disbursement account saved.");
           const saved = res.account ?? res.disbursementAccount ?? null;
           setAccount(saved);
           onSaved?.(saved);
           reloadAccount();
         }
-        if (!res.pendingApproval) {
+        if (!res.pendingApproval && !res.applied) {
           setSelectedBank("");
           setAccountNumber("");
           setResolvedName(null);
@@ -243,11 +260,32 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
         </div>
       )}
 
+      {urgent && (
+        <div className="rounded-xl border border-red-300 bg-red-50 p-4 dark:border-red-900/50 dark:bg-red-950/30">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400">
+              <Icon name="alert" size={18} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-red-800 dark:text-red-300">
+                Urgent attention needed — your loan disbursement is on hold
+              </div>
+              <p className="mt-1 text-xs leading-5 text-red-700 dark:text-red-300/90">
+                The bank account saved on your profile could not be verified by our payment provider,
+                so your approved loan cannot be paid out yet. Provide a valid account below — it is
+                verified instantly and attached to your loan automatically, and disbursement can
+                proceed right after.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <section className="velo-card p-5 sm:p-6">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="section-heading">
-              {locked ? "Your disbursement account" : account ? "Edit disbursement account" : "Add disbursement account"}
+              {locked ? "Your disbursement account" : account ? (urgent ? "Update disbursement account" : "Edit disbursement account") : "Add disbursement account"}
             </h2>
             <p className="section-subheading">
               Select your bank and verify the account name before saving.
@@ -361,11 +399,13 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
               >
                 {busy === "save"
                   ? "Saving…"
+                  : urgent
+                  ? "Verify & update account"
                   : account
                   ? "Submit changes for approval"
                   : "Save account"}
               </button>
-              {account && (
+              {account && !urgent && (
                 <div className="inline-flex items-center gap-1 text-xs text-slate-500">
                   <Icon name="alert" size={14} className="text-amber-500" />Subsequent edits require admin approval.
                 </div>

@@ -61,6 +61,8 @@ type DashboardData = {
     dueAt?: string;
     totalRepaymentNaira?: number;
     schedule?: Array<{ totalDueNaira?: number }>;
+    disbursementAccountNeedsUpdate?: boolean;
+    disbursementAccountRequestedAt?: string;
   }>;
   payments?: Array<{ status?: string; amountNaira?: number }>;
   repayments?: Array<{
@@ -81,6 +83,10 @@ type DashboardData = {
     status?: string;
   } | null;
   creditHistory?: unknown[];
+  /** Urgent-attention flags (backend-driven): loan disbursal is blocked on the
+   *  borrower's bank account — update required from the Disbursement section. */
+  accountUpdateRequested?: boolean;
+  accountUpdateLoans?: Array<{ loanId?: string; applicationId?: string; requestedAt?: string | null }>;
 };
 type CreditData = {
   score?: {
@@ -240,6 +246,13 @@ export default function BorrowerDashboard() {
     return merged.accountNumber ? merged : null;
   })();
   const visibleDisbursementAccount = data?.disbursementAccount ?? openApplicationAccount;
+  // Urgent-attention flag (backend-driven): a loan's disbursement is blocked on
+  // the borrower's bank account — either the provider rejected it or the admin
+  // explicitly requested an update. The settings form is UNLOCKED while this is
+  // active so the customer can immediately fix it.
+  const accountUpdateRequested = data?.accountUpdateRequested === true
+    || (Array.isArray(data?.accountUpdateLoans) && (data?.accountUpdateLoans as unknown[]).length > 0)
+    || (Array.isArray(data?.loans) && (data?.loans as Array<Record<string, unknown>>).some((loan) => loan.disbursementAccountNeedsUpdate === true));
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const repayments = data?.repayments ?? data?.payments ?? [];
@@ -555,6 +568,37 @@ export default function BorrowerDashboard() {
             </div>
           )}
 
+          {accountUpdateRequested && (
+            <div className="mb-5 rounded-xl border border-red-300 bg-red-50 p-4 dark:border-red-900/50 dark:bg-red-950/30">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                      <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-red-800 dark:text-red-300">
+                      Urgent attention needed to effect your loan disbursal
+                    </div>
+                    <p className="mt-0.5 text-xs leading-5 text-red-700 dark:text-red-300/90">
+                      Your approved loan could not be paid out because the disbursement account on
+                      your profile could not be verified. Please update it now — your loan is
+                      waiting.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setView("account")}
+                  className="shrink-0 rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-red-700"
+                >
+                  Update disbursement account
+                </button>
+              </div>
+            </div>
+          )}
+
           {view === "overview" && (
             <BorrowerOverview
               user={user}
@@ -603,14 +647,20 @@ export default function BorrowerDashboard() {
               // application) — the account the loan will be paid into must not
               // change mid-review. If NO account exists anywhere, the borrower
               // MUST be able to add one — even with a submitted application —
-              // otherwise disbursement would be impossible.
-              locked={hasSubmittedApplication && Boolean(visibleDisbursementAccount)}
-              onSaved={(acc) => {
+              // otherwise disbursement would be impossible. The lock is also
+              // lifted while an URGENT account update is requested: Flutterwave
+              // rejected the saved account, so the customer must be able to
+              // re-provide one for their loan to be paid.
+              locked={hasSubmittedApplication && Boolean(visibleDisbursementAccount) && !accountUpdateRequested}
+              updateRequested={accountUpdateRequested}
+              onSaved={(acc, meta) => {
                 setData((d) => (d ? { ...d, disbursementAccount: acc } : d));
                 setSuccessMsg(
-                  acc?.status === "PENDING_APPROVAL"
-                    ? "Your disbursement account update has been submitted for admin approval."
-                    : "Disbursement account saved successfully."
+                  meta?.applied
+                    ? "Your new disbursement account has been verified and attached to your loan — disbursement can now proceed."
+                    : acc?.status === "PENDING_APPROVAL"
+                      ? "Your disbursement account update has been submitted for admin approval."
+                      : "Disbursement account saved successfully."
                 );
               }}
               onError={(msg) => setError(msg)}

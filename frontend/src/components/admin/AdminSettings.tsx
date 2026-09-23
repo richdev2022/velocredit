@@ -1345,7 +1345,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     <option value="">All</option>
                     <option value="INVESTOR_FUNDING">Investor Funding</option>
                     <option value="INVESTMENT_PAYOUT">Investment Payouts</option>
+                    <option value="WITHDRAWAL_OUT">Withdrawals (wallet debited)</option>
                     <option value="WITHDRAWAL_FEE">Withdrawal Fees</option>
+                    <option value="LOAN_DISBURSEMENT">Loan Disbursements</option>
+                    <option value="LOAN_REPAYMENT_IN">Loan Repayments</option>
                     <option value="REVERSAL">Reversals</option>
                   </select>
                 }
