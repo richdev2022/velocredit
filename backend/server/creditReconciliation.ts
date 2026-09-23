@@ -30,6 +30,7 @@ import {
   extractReportScore,
   recomputeInternalCreditScore,
   syncApplicationCreditSnapshots,
+  isCreditBureauCheckInFlight,
 } from "./creditBureau.js";
 import type { VerificationResult } from "./providers/prembly.js";
 
@@ -48,6 +49,11 @@ export async function runCreditReportReconciliationSweep(): Promise<{ retried: n
 
     for (const report of pendingReports) {
       try {
+        // A background check is already running for this report (started by
+        // submission / the admin trigger / the borrower request) — retrying
+        // it now would double-pull (and double-bill) the bureau.
+        if (isCreditBureauCheckInFlight(report.id)) continue;
+
         const user = users.find((u) => u.id === report.userId);
         if (!user) {
           report.status = "FAILED";

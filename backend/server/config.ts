@@ -39,6 +39,11 @@ const envSchema = z.object({
   PREMBLY_CREDIT_REPORT_PATH: z.string().startsWith("/").default("/verification/credit_bureau/consumer/advance"),
   PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH: z.string().startsWith("/").default("/verification/credit_bureau/commercial/advance"),
   PREMBLY_CREDIT_DATA_MODE: z.enum(["BASIC", "ADVANCE"]).default("ADVANCE"),
+  // Credit-bureau lookups are SLOW — a real FirstCentral consumer pull takes
+  // ~25-30s (measured live 2026-09) and commercial ADVANCE can take longer.
+  // The 15s KYC timeout aborts them mid-flight ("The operation was aborted
+  // due to timeout"), so bureau calls get their own, much larger budget.
+  PREMBLY_CREDIT_TIMEOUT_MS: z.coerce.number().int().positive().max(300_000).default(90_000),
   PREMBLY_LIVENESS_PATH: z.string().startsWith("/").default("/identitypass/face-verification/liveness"),
   PREMBLY_WEBHOOK_SECRET: z.string().optional(),
   KUDI_BASE_URL: z.string().url().default("https://my.kudisms.net/api"),

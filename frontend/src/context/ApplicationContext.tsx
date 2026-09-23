@@ -183,6 +183,11 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const skipNextAutoSave = useRef(false);
   const currentIndexRef = useRef(0);
   const restoredUserIdRef = useRef<string | null>(null);
+  // Reapply-prefill bookkeeping: one in-flight request per application ID
+  // (concurrent callers share the promise) + a completed set so the safety-net
+  // effect never re-fetches for an application that was already prefilled.
+  const prefillInFlightRef = useRef<Map<string, Promise<ApplicationData | null>>>(new Map());
+  const prefilledApplicationIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!user) return;
@@ -420,65 +425,96 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     const current = applicationRef.current;
     if (!current || current.status === "SUBMITTED") return null;
     if (!getAccessToken()) return null;
-    try {
-      // 1) Server-merged prefill (richest source).
+    const appKey = current.applicationId;
+    // Already prefilled for this application (or a fetch is running for it) —
+    // concurrent callers share the same promise; completed ones short-circuit.
+    if (prefilledApplicationIdsRef.current.has(appKey)) return null;
+    const running = prefillInFlightRef.current.get(appKey);
+    if (running) return running;
+    const promise = (async (): Promise<ApplicationData | null> => {
       try {
-        const response = await getReapplyPrefill();
-        const prefill = response?.prefill;
-        if (response?.ok && prefill && response.meta?.hasPreviousApplication) {
-          const updated = mergePrefillIntoDraft(current, prefill);
-          if (applicationRef.current?.applicationId !== current.applicationId) return null;
-          applicationRef.current = updated;
-          setApplication(updated);
-          setPrefilledFrom(response.meta?.sourceApplicationId || "previous-application");
-          return updated;
+        // 1) Server-merged prefill (richest source).
+        try {
+          const response = await getReapplyPrefill();
+          const prefill = response?.prefill;
+          if (response?.ok && prefill && response.meta?.hasPreviousApplication) {
+            const { application: merged, changed } = mergePrefillIntoDraft(current, prefill);
+            if (applicationRef.current?.applicationId !== current.applicationId) return null;
+            if (!changed) return current; // everything already filled — no churn
+            applicationRef.current = merged;
+            setApplication(merged);
+            setPrefilledFrom(response.meta?.sourceApplicationId || "previous-application");
+            return merged;
+          }
+          if (response?.ok && response.meta && response.meta.hasPreviousApplication === false) {
+            return null; // genuinely a first-time borrower
+          }
+        } catch {
+          // Endpoint unavailable (older backend deployment) — fall through.
         }
-        if (response?.ok && response.meta && response.meta.hasPreviousApplication === false) {
-          return null; // genuinely a first-time borrower
-        }
-      } catch {
-        // Endpoint unavailable (older backend deployment) — fall through.
-      }
 
-      // 2) Fallback: most recent dashboard application snapshot.
-      const dashboard = await getBorrowerDashboard();
-      const applications = Array.isArray((dashboard as { applications?: unknown[] }).applications)
-        ? ((dashboard as { applications: unknown[] }).applications as Array<Record<string, unknown>>)
-        : [];
-      const relevantStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "REJECTED", "CANCELLED", "WRITTEN_OFF"];
-      const previous = applications
-        .filter((app) => relevantStatuses.includes(String(app.status ?? "")))
-        .filter((app) => String(app.id ?? "") !== current.applicationId && String(app.applicationId ?? "") !== current.applicationId)
-        .sort((a, b) =>
-          String(b.submittedAt ?? b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.submittedAt ?? a.updatedAt ?? a.createdAt ?? ""))
-        )[0];
-      if (!previous) return null;
-      const snapshot = (previous.customerSnapshot ?? {}) as Record<string, unknown>;
-      const updated = mergePrefillIntoDraft(current, {
-        personalInfo: snapshot.personalInfo as Record<string, unknown> | undefined,
-        disbursementAccount: snapshot.disbursementAccount as Record<string, unknown> | undefined,
-        personalFinancial: snapshot.personalFinancial as Record<string, unknown> | undefined,
-        businessInfo: snapshot.businessInfo as Record<string, unknown> | undefined,
-        businessRep: snapshot.businessRep as Record<string, unknown> | undefined,
-        businessFinancial: snapshot.businessFinancial as Record<string, unknown> | undefined,
-        kyc: snapshot.kyc as Record<string, unknown> | undefined,
-        collateral: snapshot.collateral as Record<string, unknown> | undefined,
-        witness: snapshot.witness as Record<string, unknown> | undefined,
-        loanRequest: snapshot.loanRequest as Record<string, unknown> | undefined,
-      });
-      // Commit the prefill ONLY if the fresh draft we started from is still
-      // the active application — if the dashboard call raced with another
-      // start/resume, silently dropping the prefill would leave the wizard
-      // empty and the returning borrower would have to re-type everything.
-      if (applicationRef.current?.applicationId !== current.applicationId) return null;
-      applicationRef.current = updated;
-      setApplication(updated);
-      setPrefilledFrom(String(previous.applicationId ?? previous.id ?? "previous-application"));
-      return updated;
-    } catch (_e) {
-      return null;
-    }
+        // 2) Fallback: most recent dashboard application snapshot.
+        const dashboard = await getBorrowerDashboard();
+        const applications = Array.isArray((dashboard as { applications?: unknown[] }).applications)
+          ? ((dashboard as { applications: unknown[] }).applications as Array<Record<string, unknown>>)
+          : [];
+        const relevantStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "REJECTED", "CANCELLED", "WRITTEN_OFF"];
+        const previous = applications
+          .filter((app) => relevantStatuses.includes(String(app.status ?? "")))
+          .filter((app) => String(app.id ?? "") !== current.applicationId && String(app.applicationId ?? "") !== current.applicationId)
+          .sort((a, b) =>
+            String(b.submittedAt ?? b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.submittedAt ?? a.updatedAt ?? a.createdAt ?? ""))
+          )[0];
+        if (!previous) return null;
+        const snapshot = (previous.customerSnapshot ?? {}) as Record<string, unknown>;
+        const { application: merged, changed } = mergePrefillIntoDraft(current, {
+          personalInfo: snapshot.personalInfo as Record<string, unknown> | undefined,
+          disbursementAccount: snapshot.disbursementAccount as Record<string, unknown> | undefined,
+          personalFinancial: snapshot.personalFinancial as Record<string, unknown> | undefined,
+          businessInfo: snapshot.businessInfo as Record<string, unknown> | undefined,
+          businessRep: snapshot.businessRep as Record<string, unknown> | undefined,
+          businessFinancial: snapshot.businessFinancial as Record<string, unknown> | undefined,
+          kyc: snapshot.kyc as Record<string, unknown> | undefined,
+          collateral: snapshot.collateral as Record<string, unknown> | undefined,
+          witness: snapshot.witness as Record<string, unknown> | undefined,
+          loanRequest: snapshot.loanRequest as Record<string, unknown> | undefined,
+        });
+        // Commit the prefill ONLY if the fresh draft we started from is still
+        // the active application — if the dashboard call raced with another
+        // start/resume, silently dropping the prefill would leave the wizard
+        // empty and the returning borrower would have to re-type everything.
+        if (applicationRef.current?.applicationId !== current.applicationId) return null;
+        if (!changed) return current;
+        applicationRef.current = merged;
+        setApplication(merged);
+        setPrefilledFrom(String(previous.applicationId ?? previous.id ?? "previous-application"));
+        return merged;
+      } catch (_e) {
+        return null;
+      } finally {
+        prefillInFlightRef.current.delete(appKey);
+        prefilledApplicationIdsRef.current.add(appKey);
+      }
+    })();
+    prefillInFlightRef.current.set(appKey, promise);
+    return promise;
   }, []);
+
+  // ----- SAFETY NET: prefill EVERY active application -----
+  // Whatever navigation path produced the active draft — the dashboard
+  // "Apply Again" CTA, a draft restored from this browser or the server, a
+  // direct /apply?type=… link, or the wizard's type selection — a returning
+  // customer must land in a pre-filled wizard. This effect fires the prefill
+  // for any active non-submitted application; prefillFromPrevious dedups
+  // concurrent + repeat calls per application ID, and only fills EMPTY
+  // fields, so it can never overwrite what the customer typed.
+  useEffect(() => {
+    if (!user) return;
+    const app = applicationRef.current;
+    if (!app || app.status === "SUBMITTED") return;
+    void prefillFromPrevious();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, application?.applicationId]);
 
   // ----- lifecycle: resume -----
   const resumeApplication = useCallback(async (email: string, phone: string): Promise<LookupDraftResponse> => {
@@ -789,19 +825,15 @@ function pickOptionalString(prior: unknown, data: unknown, fallback: string | nu
 }
 
 /**
- * Build an EDITABLE ApplicationData from a backend loan-application row whose
- * status is REJECTED. Used when the customer has no local/remote draft (new
- * device or cleared storage) but must still be able to re-access their
- * rejected loan, fix the failed information and resubmit. Every section is
- * restored from the immutable customerSnapshot captured at submission.
- */
-/**
  * Merge a server-provided prefill payload (from the reapply-prefill endpoint
  * or a dashboard application snapshot) into a fresh draft. Every still-empty
  * field is filled; values the customer has already typed in this draft are
  * never overwritten (except the loan request, which restores the previous
  * amount/tenure clamped to the CURRENT product limits). Used by BOTH prefill
  * sources so the behaviour is identical whichever one serves the data.
+ * Returns `changed: false` (and the ORIGINAL draft) when the merge would not
+ * alter anything, so callers can skip needless state updates and only show
+ * the prefill banner when something was actually filled.
  */
 function mergePrefillIntoDraft(
   current: ApplicationData,
@@ -817,7 +849,7 @@ function mergePrefillIntoDraft(
     witness?: Record<string, unknown> | null;
     loanRequest?: Record<string, unknown> | null;
   }
-): ApplicationData {
+): { application: ApplicationData; changed: boolean } {
   const str = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
   const fillStrings = <T extends object>(base: T, incoming: Record<string, unknown> | undefined | null, fields: Array<keyof T & string>): T => {
     const next = { ...base } as Record<string, unknown>;
@@ -861,7 +893,7 @@ function mergePrefillIntoDraft(
   }
   if (str(prevKyc.identityPhotoUrl)) kyc.identityPhotoUrl = str(prevKyc.identityPhotoUrl);
 
-  return {
+  const merged: ApplicationData = {
     ...current,
     updatedAt: new Date().toISOString(),
     personalInfo: fillStrings(current.personalInfo, prefill.personalInfo, ["fullName", "phone", "email", "dateOfBirth", "residentialAddress", "state", "lga"]),
@@ -894,8 +926,34 @@ function mergePrefillIntoDraft(
     loanRequest: { amount, tenure, purpose },
     calculation: calculateLoan(amount, tenure, { loanType: current.applicantType || "PERSONAL" }),
   };
+
+  // `changed` detection: compare every prefill-affected slice (excluding
+  // updatedAt, which always changes) between the incoming draft and the
+  // merged one.
+  const fingerprint = (a: ApplicationData): string =>
+    JSON.stringify({
+      personalInfo: a.personalInfo,
+      disbursementAccount: a.disbursementAccount,
+      personalFinancial: a.personalFinancial,
+      businessInfo: a.businessInfo,
+      businessRep: a.businessRep,
+      businessFinancial: a.businessFinancial,
+      kyc: a.kyc,
+      collateral: a.collateral,
+      witness: a.witness,
+      loanRequest: a.loanRequest,
+      calculation: a.calculation,
+    });
+  return { application: merged, changed: fingerprint(current) !== fingerprint(merged) };
 }
 
+/**
+ * Build an EDITABLE ApplicationData from a backend loan-application row whose
+ * status is REJECTED. Used when the customer has no local/remote draft (new
+ * device or cleared storage) but must still be able to re-access their
+ * rejected loan, fix the failed information and resubmit. Every section is
+ * restored from the immutable customerSnapshot captured at submission.
+ */
 function buildEditableApplicationFromServerRow(row: Record<string, unknown>): ApplicationData | null {
   const applicantType = row.applicantType === "BUSINESS" ? "BUSINESS" : row.applicantType === "PERSONAL" ? "PERSONAL" : null;
   const applicationId = String(row.applicationId ?? row.id ?? "").trim();

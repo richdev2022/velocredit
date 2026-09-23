@@ -92,7 +92,7 @@ import { calculateCreditScore } from "./credit.js";
 import {
   externalReportPayload,
   recomputeInternalCreditScore,
-  runCreditBureauCheck,
+  startCreditBureauCheck,
   type CreditBureauCheckOutcome,
 } from "./creditBureau.js";
 import { evaluateLoanEligibility } from "./loanDecision.js";
@@ -3731,28 +3731,20 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     // is not blocked waiting on Prembly. Business customers run the
     // COMMERCIAL (Business) Advance bureau product with the RC number +
     // company name from their application/profile; customers without an RC
-    // number fall back to the consumer product via their verified BVN. The
-    // creditReconciliation cron retries PENDING reports until they resolve.
-    const creditBureauPromise: Promise<CreditBureauCheckOutcome> = runCreditBureauCheck(req.user!.id, {
+    // number fall back to the consumer product via their verified BVN/NIN.
+    // The report row exists immediately as PENDING (visible on the admin
+    // card + borrower credit page) and the provider call completes in the
+    // background; the creditReconciliation cron retries anything left
+    // PENDING.
+    const bureauStart: CreditBureauCheckOutcome = await startCreditBureauCheck(req.user!.id, {
       source: "SUBMISSION",
       snapshot: { businessInfo: input.businessInfo, personalInfo: input.personalInfo, kyc: input.kyc },
     });
-
-    // Wait briefly (max 8 seconds) for the credit bureau to respond. If it
-    // takes longer, we proceed with submission and let the cron pick up the
-    // PENDING report later.
-    let currentExternalCredit: CreditReport | null = null;
-    try {
-      const outcome = await Promise.race([
-        creditBureauPromise,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
-      ]);
-      if (outcome && outcome.ok) currentExternalCredit = outcome.report;
-    } catch {
-      currentExternalCredit = null;
-    }
+    // A PENDING row must not REPLACE an already-RECEIVED scored report for
+    // scoring purposes — the background completion recomputes the internal
+    // score with the fresh bureau data anyway.
+    const currentExternalCredit: CreditReport | null = bureauStart.ok && !latestExternalCredit ? bureauStart.report : null;
     if (currentExternalCredit) latestExternalCredit = currentExternalCredit;
-    void creditBureauPromise.catch(() => undefined);
 
     const customerSnapshot = {
       userId: req.user!.id,
@@ -3857,25 +3849,27 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       submittedAt: now,
     });
     loanApplications.push(application);
-    // If the bureau report lands AFTER the application row exists (slow
-    // provider, or the 8s race expired), sync the freshly created
-    // application's credit snapshot so the admin card never sticks on
-    // PENDING while the report has actually resolved.
-    void creditBureauPromise
-      .then((outcome) => {
-        if (!outcome.ok) return;
-        const report = outcome.report;
-        if (report.status === "RECEIVED") {
+    // If the bureau report lands AFTER the application row exists (fast
+    // provider, or the background call finished before this row was pushed),
+    // sync the freshly created application's credit snapshot so the admin
+    // card never sticks on PENDING while the report has actually resolved.
+    // (Slow providers are covered by executeCreditBureauCheck's own
+    // syncApplicationCreditSnapshots, which runs once the row exists.)
+    if (bureauStart.ok) {
+      void bureauStart.completion
+        .then(() => {
+          const report = bureauStart.report;
+          if (report.status !== "RECEIVED") return;
           application.creditReportSnapshot = {
             ...(application.creditReportSnapshot ?? {}),
             external: externalReportPayload(report),
-            ...(outcome.internal ? { internal: outcome.internal } : {}),
+            internal: recomputeInternalCreditScore(req.user!.id, report.score ?? null) ?? (application.creditReportSnapshot as { internal?: unknown } | undefined)?.internal,
           };
           application.updatedAt = new Date().toISOString();
           void persistStore().catch(() => undefined);
-        }
-      })
-      .catch(() => undefined);
+        })
+        .catch(() => undefined);
+    }
     creditHistory.push({
       id: randomUUID(),
       userId: req.user!.id,
@@ -4186,23 +4180,28 @@ router.post("/borrower/credit-report/request", requireAuth, requireRole("BORROWE
     return;
   }
   // Shared bureau flow: commercial (RC + company name) first, consumer via
-  // BVN as fallback; stores the report, recomputes the internal score and
-  // syncs the borrower's loan application snapshots.
-  const outcome = await runCreditBureauCheck(req.user!.id, { source: "BORROWER_REQUEST" });
-  if (!outcome.ok) {
-    res.status(409).json({ ok: false, error: outcome.message });
+  // verified BVN/NIN as fallback. The report row is created immediately as
+  // PENDING and the provider call runs in the background (real lookups take
+  // 25-90s) — the borrower's credit page reflects the final state when it
+  // lands, and the reconciliation cron self-heals anything left PENDING.
+  const started = await startCreditBureauCheck(req.user!.id, { source: "BORROWER_REQUEST" });
+  if (!started.ok) {
+    res.status(409).json({ ok: false, error: started.message });
     return;
   }
+  // Brief inline window for fast provider answers; slow ones stay PENDING.
+  await Promise.race([started.completion, new Promise((resolve) => setTimeout(resolve, 3000))]);
+  const report = started.report;
   res.json({
     ok: true,
-    report: outcome.report,
-    creditScore: outcome.internal,
+    report,
+    creditScore: recomputeInternalCreditScore(req.user!.id, report.status === "RECEIVED" ? report.score ?? null : null),
     message:
-      outcome.report.status === "RECEIVED"
+      report.status === "RECEIVED"
         ? "Credit report received."
-        : outcome.report.status === "PENDING"
+        : report.status === "PENDING"
         ? "Credit report request is processing; it will complete automatically."
-        : (outcome.report.normalizedFields as { reason?: string } | undefined)?.reason ?? "Credit report request could not be completed.",
+        : (report.normalizedFields as { reason?: string } | undefined)?.reason ?? "Credit report request could not be completed.",
   });
 });
 
@@ -5229,10 +5228,13 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req
 
 // Admin: trigger a Prembly credit-bureau check for a specific loan
 // application's borrower. Identity (RC number + company name for the
-// COMMERCIAL (Business) Advance product, or verified BVN for the consumer
-// product) is resolved from the customer's application snapshot and profile.
-// Stores a creditReports row, refreshes the application's
-// creditReportSnapshot (external + recomputed internal) and returns both.
+// COMMERCIAL (Business) Advance product, or the verified BVN/NIN for the
+// consumer product) is resolved from the customer's application snapshot,
+// KYC case and profile. The report row is created immediately (PENDING) and
+// the provider call runs in the BACKGROUND — real bureau lookups take
+// 25-90s, far beyond what an HTTP request should stay open for. The endpoint
+// waits up to ~3s so fast responses come back inline; otherwise the admin
+// card polls every 3s and the reconciliation cron self-heals PENDING rows.
 router.post("/admin/loan-applications/:applicationId/credit-bureau", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const application = loanApplications.find(
     (a) => a.id === req.params.applicationId || a.applicationId === req.params.applicationId
@@ -5243,16 +5245,24 @@ router.post("/admin/loan-applications/:applicationId/credit-bureau", requireAuth
   }
   const dataMode = typeof req.body?.dataMode === "string" && req.body.dataMode.toUpperCase() === "BASIC" ? "BASIC" as const : "ADVANCE" as const;
   try {
-    const outcome = await runCreditBureauCheck(application.borrowerId, {
+    const started = await startCreditBureauCheck(application.borrowerId, {
       applicationId: application.applicationId || application.id,
       snapshot: application.customerSnapshot as Record<string, unknown> | undefined,
       source: "ADMIN_TRIGGER",
       dataMode,
     });
-    if (!outcome.ok) {
-      res.status(409).json({ ok: false, error: outcome.message });
+    if (!started.ok) {
+      res.status(409).json({ ok: false, error: started.message });
       return;
     }
+    // Give fast provider responses a brief window to land inline so the
+    // admin usually sees RECEIVED/FAILED right away; slow lookups (the norm)
+    // return the PENDING report and the card keeps polling.
+    await Promise.race([
+      started.completion,
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    const report = started.report;
     auditLogs.push({
       id: randomUUID(),
       userId: req.user!.id,
@@ -5261,10 +5271,10 @@ router.post("/admin/loan-applications/:applicationId/credit-bureau", requireAuth
       resourceId: application.applicationId || application.id,
       metadata: {
         borrowerId: application.borrowerId,
-        reportId: outcome.report.id,
-        reportStatus: outcome.report.status,
-        reportScore: outcome.report.score ?? null,
-        product: (outcome.report.normalizedFields as { reportType?: string } | undefined)?.reportType ?? "CONSUMER_ADVANCE",
+        reportId: report.id,
+        reportStatus: report.status,
+        reportScore: report.score ?? null,
+        product: (report.normalizedFields as { reportType?: string } | undefined)?.reportType ?? "CONSUMER_ADVANCE",
       },
       ipAddress: req.ip,
       userAgent: req.get("user-agent") ?? undefined,
@@ -5272,14 +5282,14 @@ router.post("/admin/loan-applications/:applicationId/credit-bureau", requireAuth
     });
     res.json({
       ok: true,
-      report: outcome.report,
+      report,
       creditReportSnapshot: application.creditReportSnapshot ?? null,
       message:
-        outcome.report.status === "RECEIVED"
-          ? `Credit bureau report received${outcome.report.score != null ? ` — bureau-equivalent score ${outcome.report.score}` : ""}.`
-          : outcome.report.status === "PENDING"
-          ? "The credit bureau is still processing this report — it will complete automatically and the cron retries PENDING reports every 10 minutes."
-          : ((outcome.report.normalizedFields as { reason?: string } | undefined)?.reason ?? "The credit bureau lookup failed — see the report details."),
+        report.status === "RECEIVED"
+          ? `Credit bureau report received${report.score != null ? ` — bureau-equivalent score ${report.score}` : ""}.`
+          : report.status === "PENDING"
+          ? "Credit bureau check started — the bureau usually answers within a minute and this card refreshes automatically while the check runs."
+          : ((report.normalizedFields as { reason?: string } | undefined)?.reason ?? "The credit bureau lookup failed — see the report details."),
     });
   } catch (error) {
     console.error("[routes] admin credit-bureau check failed:", error);

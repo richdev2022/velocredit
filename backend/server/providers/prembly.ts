@@ -20,6 +20,21 @@ import { env } from "../config.js";
 const BASE = env.PREMBLY_BASE_URL.replace(/\/$/, "");
 const TIMEOUT_MS = 15_000;
 
+/**
+ * Credit-bureau calls get their OWN, much larger timeout: a real FirstCentral
+ * consumer pull measured ~27s live (2026-09) and commercial ADVANCE reports
+ * can take longer — the 15s KYC budget aborted them every single time
+ * ("The operation was aborted due to timeout").
+ */
+function creditTimeoutMs(): number {
+  return env.PREMBLY_CREDIT_TIMEOUT_MS ?? 90_000;
+}
+
+/** undici/nodes fetch aborts from AbortSignal.timeout surface as TimeoutError. */
+export function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError" || /aborted due to timeout/i.test(error.message));
+}
+
 export type VerificationStatus = "SUCCESS" | "FAILED" | "PENDING" | "MANUAL_REVIEW";
 
 export interface VerificationResult {
@@ -40,19 +55,21 @@ function headers(): Record<string, string> {
   return h;
 }
 
-async function premblyPost(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function premblyPost(path: string, body: Record<string, unknown>, timeoutMs: number = TIMEOUT_MS): Promise<Record<string, unknown>> {
   if (!env.PREMBLY_API_KEY) throw new Error("Prembly is not configured.");
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
   let data: Record<string, unknown> = {};
   try { data = text ? (JSON.parse(text) as Record<string, unknown>) : {}; } catch (_e) { data = { rawText: text }; }
   if (!res.ok) {
     const rawMsg = String(((data as { message?: unknown; detail?: unknown }).message ?? (data as { detail?: unknown }).detail ?? text) || `HTTP ${res.status}`);
+    const fieldErrors = (data as { errors?: unknown }).errors;
+    const errorsSuffix = fieldErrors ? ` (${JSON.stringify(fieldErrors).slice(0, 200)})` : "";
     if (res.status === 401 && /Invalid API key|inactive organisation|inactive.?org/i.test(rawMsg)) {
       const hint =
         " Prembly returned HTTP 401 (Unauthorized): the API key in PREMBLY_API_KEY was rejected or the linked Organisation is inactive. " +
@@ -62,7 +79,7 @@ async function premblyPost(path: string, body: Record<string, unknown>): Promise
         `Key currently in use has ${env.PREMBLY_API_KEY?.length ?? 0} chars.`;
       throw new Error(`Prembly ${path} failed: ${rawMsg.slice(0, 180)}.${hint}`);
     }
-    throw new Error(`Prembly ${path} failed: ${rawMsg.slice(0, 180)}`);
+    throw new Error(`Prembly ${path} failed: ${rawMsg.slice(0, 180)}${errorsSuffix}`);
   }
   return data;
 }
@@ -432,13 +449,16 @@ export async function requestCommercialCreditReport(input: CommercialCreditRepor
   if (!companyName) {
     return { status: "FAILED", errorMessage: "The registered business name is required for a commercial credit bureau check." };
   }
+  // LIVE API CONTRACT (verified 2026-09 against api.prembly.com): rc_number
+  // must be a STRING — the docs claim integer, but the live validator returns
+  // 400 `errors: { rc_number: ["Expected string, got int"] }` for numbers.
   const body: Record<string, unknown> = {
-    rc_number: Number(rcDigits),
+    rc_number: rcDigits,
     company_name: companyName,
     data_mode: input.dataMode ?? env.PREMBLY_CREDIT_DATA_MODE ?? "ADVANCE",
   };
   try {
-    const response = await premblyPost(env.PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH, body);
+    const response = await premblyPost(env.PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH, body, creditTimeoutMs());
     const responseCode = String((response as { response_code?: unknown }).response_code ?? "").trim();
     const detail = String((response as { detail?: unknown }).detail ?? (response as { message?: unknown }).message ?? "").trim();
     const ok = (response as { status?: unknown }).status === true && responseCode === "00";
@@ -498,6 +518,16 @@ export async function requestCommercialCreditReport(input: CommercialCreditRepor
       rawResponse: response,
     };
   } catch (error) {
+    // A timeout does NOT mean the bureau failed — the report is usually still
+    // being generated. Return PENDING so the reconciliation cron retries it
+    // instead of stamping the report FAILED and leaving the admin card stuck.
+    if (isTimeoutError(error)) {
+      return {
+        status: "PENDING",
+        errorMessage: `The credit bureau did not respond within ${Math.round(creditTimeoutMs() / 1000)}s — the report is still processing and will be retried automatically.`,
+        normalizedFields: { reportType: "COMMERCIAL_ADVANCE", rcNumber: rcDigits, companyName },
+      };
+    }
     return {
       status: "FAILED",
       errorMessage: error instanceof Error ? error.message : "Commercial credit report unavailable",
@@ -512,8 +542,13 @@ export async function requestCreditReport(input: CreditReportInput): Promise<Ver
     const body: Record<string, unknown> =
       input.mode === "ID"
         ? { number: input.number, mode: "ID", crb_provider: provider, ...(input.customer_name ? { customer_name: input.customer_name } : {}) }
-        : { customer_name: input.customer_name, dob: input.dob, mode: "BIO", crb_provider: provider };
-    const response = await premblyPost(env.PREMBLY_CREDIT_REPORT_PATH, body);
+        : { customer_name: input.customer_name, dob: input.dob, mode: "BIO", crb_provider: provider, ...(input.number ? { number: input.number } : {}) };
+    // NOTE: the live consumer endpoint REQUIRES `number` in EVERY mode — a
+    // name+DOB-only BIO request 400s with errors.number = "This field is
+    // required" (verified live 2026-09). The credit bureau flow therefore
+    // always supplies the verified BVN/NIN; BIO mode is only used when an
+    // identifier is also available.
+    const response = await premblyPost(env.PREMBLY_CREDIT_REPORT_PATH, body, creditTimeoutMs());
     const ok = successFromResponse(response);
     const data = responseRecord(response);
     const normalized: Record<string, unknown> = { ...response };
@@ -564,6 +599,16 @@ export async function requestCreditReport(input: CreditReportInput): Promise<Ver
       if (fromNested !== undefined) { foundScore = fromNested; break; }
     }
     if (foundScore !== undefined) normalized.score = foundScore;
+    // Thin-file marker: a successful (code 00) lookup for someone with no
+    // bureau history returns `data.message = "There is no record for this
+    // borrower"` and NO numeric score. Surface that honestly instead of
+    // leaving the admin card blank at score "—" with no explanation.
+    const thinFileNotice = String((responseRecord(response) as { message?: unknown }).message ?? "").trim();
+    if (/no record/i.test(thinFileNotice)) normalized.bureauNotice = thinFileNotice;
+    // Friendly mapping for the explicit not-found code (01): the bureau has
+    // no file for this identity — not a system failure.
+    const responseCode = String((response as { response_code?: unknown }).response_code ?? "").trim();
+    if (responseCode === "01") normalized.notFound = true;
     const nestedScoreObj = (data as Record<string, unknown>).score ?? (response as Record<string, unknown>).score;
     if (nestedScoreObj && typeof nestedScoreObj === "object") {
       const s = nestedScoreObj as Record<string, unknown>;
@@ -604,12 +649,21 @@ export async function requestCreditReport(input: CreditReportInput): Promise<Ver
     }
     return {
       status: ok ? "SUCCESS" : providerStatus((response as { verification_status?: unknown }).verification_status),
-      errorMessage: ok ? undefined : String(((response as { message?: unknown; detail?: unknown }).message ?? (response as { detail?: unknown }).detail ?? "Credit bureau lookup failed") as unknown as string),
+      errorMessage: ok
+        ? undefined
+        : responseCode === "01"
+        ? `No credit record was found at the bureau for this customer${input.customer_name ? ` (${input.customer_name})` : ""} — they have no bureau history yet.`
+        : String(((response as { message?: unknown; detail?: unknown }).message ?? (response as { detail?: unknown }).detail ?? "Credit bureau lookup failed") as unknown as string),
       normalizedFields: normalized,
       rawResponse: response,
       providerReference: (String(((response as { transaction_id?: unknown }).transaction_id ?? (response as { reference_id?: unknown }).reference_id ?? "") as unknown as string) || undefined),
     };
   } catch (error) {
+    // Timeouts leave the report PENDING (bureau still processing — the
+    // reconciliation cron retries) instead of FAILED.
+    if (isTimeoutError(error)) {
+      return { status: "PENDING", errorMessage: `The credit bureau did not respond within ${Math.round(creditTimeoutMs() / 1000)}s — the report is still processing and will be retried automatically.` };
+    }
     return { status: "FAILED", errorMessage: error instanceof Error ? error.message : "Credit report unavailable" };
   }
 }

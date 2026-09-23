@@ -116,32 +116,30 @@ export default function ApplicantTypeSection() {
   async function handleContinue() {
     if (!selected || busyResuming) return;
     let workingApp = application;
-    if (!workingApp) {
-      workingApp = startNewApplication(selected);
-      // Returning borrower: pull their previous application details into this
-      // fresh draft BEFORE computing where to resume, so prefilled sections
-      // count as complete and they skip straight to what's missing.
-      setBusyResuming(true);
-      try {
-        workingApp = (await prefillFromPrevious()) ?? workingApp;
-      } finally {
-        setBusyResuming(false);
-      }
-    } else {
-      if (workingApp.applicantType !== selected) {
+    setBusyResuming(true);
+    try {
+      if (!workingApp) {
+        workingApp = startNewApplication(selected);
+      } else if (workingApp.applicantType !== selected) {
         update("applicantType", selected);
+        workingApp = { ...workingApp, applicantType: selected };
       }
+      // Returning borrower: pull their previous application details into this
+      // draft BEFORE computing where to resume, so prefilled sections count as
+      // complete and they skip straight to what's missing. This runs on EVERY
+      // continue — not just brand-new drafts — because a restored draft (from
+      // this browser or the server) may never have been prefilled. The merge
+      // only fills EMPTY fields, so nothing the customer typed is overwritten,
+      // and prefillFromPrevious dedups concurrent/repeat calls.
+      workingApp = (await prefillFromPrevious()) ?? workingApp;
+    } finally {
+      setBusyResuming(false);
     }
     markSectionStatus("applicantType", "completed");
     const switchingType = Boolean(application && application.applicantType && application.applicantType !== selected);
     let targetIndex = 1;
     if (!switchingType) {
-      setBusyResuming(true);
-      try {
-        targetIndex = computeResumeSectionIndex(workingApp, selected);
-      } finally {
-        setBusyResuming(false);
-      }
+      targetIndex = computeResumeSectionIndex(workingApp, selected);
     }
     void (async () => {
       try { await saveNow(); } catch (_e) { /* ignore */ }

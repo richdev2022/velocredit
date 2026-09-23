@@ -144,12 +144,15 @@ function Wizard() {
   } = useApplication();
 
   // A draft can outlive its own application: if the server has already moved
-  // the application to a terminal state (repaid / cancelled / written off),
-  // the wizard must NOT keep showing the stale "submitted" screen — drop the
-  // stale draft so a new loan request starts with a NEW application ID.
+  // the application behind this draft to a terminal state (repaid / cancelled
+  // / written off), the draft is stale — drop it so a new loan request starts
+  // with a NEW application ID and the customer re-enters through the (then
+  // pre-filled) wizard. This must run for NON-submitted drafts too: a stale
+  // IN_PROGRESS draft restored from this browser or the server would
+  // otherwise skip the applicant-type step entirely and never re-prefill.
   const staleCheckedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!application || application.status !== "SUBMITTED") return;
+    if (!application) return;
     if (staleCheckedRef.current === application.applicationId) return;
     staleCheckedRef.current = application.applicationId;
     let cancelled = false;

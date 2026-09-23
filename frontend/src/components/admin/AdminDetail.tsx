@@ -102,11 +102,21 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     setBureauBusy(true);
     setBureauMsg(null);
     try {
+      // The endpoint starts the bureau check in the BACKGROUND (real bureau
+      // lookups take 25-90s) and returns the report row immediately —
+      // PENDING first, or the final state when the provider answered within
+      // the inline window. The 3s polling below keeps the card fresh either
+      // way, so the result appears here without any further action.
       const response = await adminRunCreditBureauCheck(app.applicationId);
       if (response.creditReportSnapshot) {
         setApp((current) => (current ? { ...current, creditReportSnapshot: response.creditReportSnapshot } : current));
       }
-      setBureauMsg(response.message || "Credit bureau check finished.");
+      setBureauMsg(
+        response.message ||
+          (response.report?.status === "PENDING"
+            ? "Credit bureau check started — the report will refresh automatically."
+            : "Credit bureau check finished."),
+      );
     } catch (err: any) {
       setBureauMsg(err?.message || "Unable to run the credit bureau check.");
     } finally {
@@ -430,9 +440,18 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
                 {app.creditReportSnapshot?.external?.status || "NOT_REQUESTED"}
               </span>
             </div>
-            <div className="text-3xl font-semibold text-emerald-900 mb-2">
+            <div className="text-3xl font-semibold text-emerald-900 mb-2 flex items-center gap-2">
               {app.creditReportSnapshot?.external?.score ?? "—"}
+              {app.creditReportSnapshot?.external?.status === "PENDING" && (
+                <svg className="animate-spin text-amber-500" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-label="Credit bureau check running">
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.25" />
+                  <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                </svg>
+              )}
             </div>
+            {app.creditReportSnapshot?.external?.status === "PENDING" && (
+              <p className="mb-2 text-xs font-medium text-amber-700">Bureau check running — this card refreshes itself every few seconds.</p>
+            )}
             <div className="text-xs text-slate-500 mb-3">
               Provider: {app.creditReportSnapshot?.external?.provider || "Prembly"}
               {app.creditReportSnapshot?.external?.product && app.creditReportSnapshot.external.product !== "CONSUMER_ADVANCE" && (
@@ -467,7 +486,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
                 )}
               </button>
               <p className="mt-1.5 text-[11px] text-slate-500">
-                Pulls a fresh Prembly report — Commercial (Business) Advance with the customer&apos;s RC number and registered name when available, otherwise the consumer check via their verified BVN.
+                Pulls a fresh Prembly report — Commercial (Business) Advance with the customer&apos;s RC number and registered name when available, otherwise the consumer check via their verified BVN or NIN. Real bureau lookups can take up to a minute; the result appears here automatically.
               </p>
               {bureauMsg && (
                 <p className={`mt-2 rounded-lg px-3 py-2 text-xs font-medium ${app.creditReportSnapshot?.external?.status === "RECEIVED" ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-700"}`}>

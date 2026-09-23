@@ -46,6 +46,7 @@ export interface CreditBureauIdentity {
   rcNumber?: string;
   companyName?: string;
   bvn?: string;
+  nin?: string;
   fullName?: string;
   dateOfBirth?: string;
 }
@@ -54,6 +55,23 @@ function digitsOnly(value: unknown): string {
   return String(value ?? "")
     .replace(/\D/g, "")
     .trim();
+}
+
+/** A usable government identifier: exactly 11 digits (masked values like
+ *  "***-***-1234" stored for display do NOT qualify). */
+function fullIdentifier(value: unknown): string | undefined {
+  const digits = digitsOnly(value);
+  return /^\d{11}$/.test(digits) ? digits : undefined;
+}
+
+/** Normalize NIN birthdates ("DD-MM-YYYY" from NIMC) to YYYY-MM-DD. */
+function normalizeDob(value: unknown): string | undefined {
+  const raw = String(value ?? "").trim();
+  if (!raw) return undefined;
+  const dmy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(raw);
+  if (dmy) return `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return undefined;
 }
 
 function bvnVerifiedName(kycRaw: Record<string, unknown> | undefined): string | undefined {
@@ -70,11 +88,32 @@ function bvnVerifiedName(kycRaw: Record<string, unknown> | undefined): string | 
   return name || undefined;
 }
 
+/** Identity payload from the NIN Advance verification (providerRaw.nin). */
+function ninIdentity(kycRaw: Record<string, unknown> | undefined): { nin?: string; fullName?: string; dateOfBirth?: string } {
+  const ninNode = (kycRaw as { nin?: Record<string, unknown> | undefined } | undefined)?.nin;
+  if (!ninNode || typeof ninNode !== "object") return {};
+  const data = ((ninNode.nin_data ?? ninNode.data ?? {}) as Record<string, unknown>);
+  const fullName = [data.firstname, data.middlename, data.surname]
+    .filter((v) => v && String(v).trim())
+    .map((v) => String(v).trim())
+    .join(" ").trim() || undefined;
+  return {
+    nin: fullIdentifier(data.nin ?? data.vnin ?? ninNode.nin_number),
+    fullName,
+    dateOfBirth: normalizeDob(data.birthdate ?? data.dateOfBirth ?? data.dob),
+  };
+}
+
 /**
  * Walk every identity source we hold for the borrower and return the richest
  * available identity. Business identity wins (Velocity lends to businesses,
- * so the bureau product is Commercial Advance); the consumer identity (BVN /
- * name / DOB) is always attached as fallback.
+ * so the bureau product is Commercial Advance); the consumer identity (full
+ * BVN / NIN / verified name / DOB) is always attached as fallback.
+ *
+ * Consumer identifier priority: a FULL 11-digit BVN first (per Prembly docs),
+ * then the NIN from the NIN-Advance verification. The display BVN stored on
+ * the KYC case is often masked ("***-***-1234") and does NOT qualify — the
+ * NIMC/NIBSS raw response is the source of truth for the real number.
  */
 export function resolveCreditBureauIdentity(
   userId: string,
@@ -83,15 +122,18 @@ export function resolveCreditBureauIdentity(
   const user = users.find((u) => u.id === userId);
   const kyc = kycCases.find((k) => k.userId === userId);
   const kycRaw = kyc?.providerRaw as Record<string, unknown> | undefined;
-  const hasBvn = typeof kyc?.bvn === "string" && kyc.bvn.length === 11;
+  const bvnFromKyc = fullIdentifier(kyc?.bvn);
+  const bvnFromRaw = fullIdentifier((kycRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data?.bvn);
+  const fromNin = ninIdentity(kycRaw);
 
   const baseIdentity: CreditBureauIdentity = {
-    bvn: hasBvn ? kyc!.bvn : undefined,
-    fullName: bvnVerifiedName(kycRaw) ?? user?.fullName ?? undefined,
+    bvn: bvnFromKyc ?? bvnFromRaw,
+    nin: fromNin.nin,
+    fullName: bvnVerifiedName(kycRaw) ?? fromNin.fullName ?? user?.fullName ?? undefined,
     dateOfBirth:
-      typeof ((kycRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data?.dateOfBirth) === "string"
-        ? String(((kycRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)!.bvn!.data!).dateOfBirth)
-        : user?.dateOfBirth ?? undefined,
+      normalizeDob((kycRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data?.dateOfBirth) ??
+      fromNin.dateOfBirth ??
+      (typeof user?.dateOfBirth === "string" && user.dateOfBirth ? user.dateOfBirth : undefined),
   };
 
   // Candidate snapshots, most authoritative first.
@@ -199,7 +241,12 @@ export function externalReportPayload(report: CreditReport): Record<string, unkn
     consentGrantedAt: report.consentGrantedAt ?? null,
     pulledAt: report.createdAt,
     normalizedFields: report.normalizedFields,
-    reason: typeof normalized.reason === "string" ? normalized.reason : undefined,
+    // Provider reason OR the thin-file notice ("There is no record for this
+    // borrower") so the admin card always explains a null score.
+    reason:
+      (typeof normalized.reason === "string" && normalized.reason) ||
+      (typeof normalized.bureauNotice === "string" && normalized.bureauNotice) ||
+      undefined,
   };
 }
 
@@ -242,16 +289,31 @@ export function syncApplicationCreditSnapshots(
 }
 
 export type CreditBureauCheckOutcome =
-  | { ok: true; report: CreditReport; internal: CreditScoreResult | null }
+  | { ok: true; report: CreditReport; internal: CreditScoreResult | null; completion: Promise<void> }
   | { ok: false; reason: "NO_USER" | "NO_IDENTITY"; message: string };
 
+// Reports whose provider call is running in the background right now. The
+// reconciliation cron must NOT retry these (double pull = double billing),
+// and tests poll this set to await completion.
+const inFlightChecks = new Set<string>();
+
+export function isCreditBureauCheckInFlight(reportId: string): boolean {
+  return inFlightChecks.has(reportId);
+}
+
 /**
- * Run a full bureau check for a borrower: resolve identity → record consent →
- * call Prembly (Commercial Advance when an RC number + company name are
- * known, consumer advance otherwise) → store the report → recompute the
- * internal score → sync application snapshots → persist.
+ * Start a bureau check for a borrower WITHOUT waiting for the provider:
+ * resolve identity → record consent → create the report row as PENDING (with
+ * the resolved identity + product metadata) → persist → run the provider
+ * call in the background. The caller gets the PENDING report immediately —
+ * the admin card / borrower credit page poll or refresh to see the final
+ * state, and the reconciliation cron self-heals anything left PENDING.
+ *
+ * Why: real bureau lookups take 25-90s (FirstCentral consumer measured ~27s
+ * live). A synchronous endpoint would hang the HTTP request and get cut off
+ * by proxies/browsers long before Prembly answers.
  */
-export async function runCreditBureauCheck(
+export async function startCreditBureauCheck(
   userId: string,
   opts: {
     applicationId?: string;
@@ -262,72 +324,118 @@ export async function runCreditBureauCheck(
 ): Promise<CreditBureauCheckOutcome> {
   const user = users.find((u) => u.id === userId);
   if (!user) return { ok: false, reason: "NO_USER", message: "Borrower account was not found." };
-  const { identity } = resolveCreditBureauIdentity(userId, opts);
-  if (!identity.rcNumber && !identity.bvn && !identity.fullName) {
+  const { identity, sourceApplicationId } = resolveCreditBureauIdentity(userId, opts);
+  if (!identity.rcNumber && !identity.bvn && !identity.nin) {
     return {
       ok: false,
       reason: "NO_IDENTITY",
       message:
-        "No usable identity for a credit bureau check — the customer profile has no business RC number, verified BVN or full name.",
+        "No usable identity for a credit bureau check — the customer needs a business RC number (commercial product) or a verified BVN/NIN (consumer product). Name-only profiles cannot be matched at the bureau.",
     };
   }
 
   recordConsent(userId, "CREDIT_REPORT");
   const now = new Date().toISOString();
-
-  let result: VerificationResult;
-  if (identity.rcNumber && identity.companyName) {
-    result = await requestCommercialCreditReport({
-      rcNumber: identity.rcNumber,
-      companyName: identity.companyName,
-      dataMode: opts.dataMode,
-    });
-  } else if (identity.bvn) {
-    result = await requestCreditReport({
-      mode: "ID",
-      number: identity.bvn,
-      customer_name: identity.fullName,
-      dob: identity.dateOfBirth,
-    });
-  } else {
-    result = await requestCreditReport({
-      mode: "BIO",
-      customer_name: identity.fullName,
-      dob: identity.dateOfBirth,
-    });
-  }
-
-  const normalized = { ...(result.normalizedFields ?? {}) } as Record<string, unknown>;
-  if (opts.source) normalized.source = opts.source;
-  if (result.errorMessage) normalized.reason = result.errorMessage;
-  const raw = result.rawResponse ?? {};
-  const status = mapProviderStatus(result.status);
-  const score = extractReportScore(result);
+  const reportType = identity.rcNumber && identity.companyName ? "COMMERCIAL_ADVANCE" : "CONSUMER_ADVANCE";
   const report: CreditReport = {
     id: randomUUID(),
     userId,
     provider: "prembly",
     consentGrantedAt: now,
     requestedAt: now,
-    reportReference: result.providerReference,
-    status,
-    score,
-    normalizedFields: normalized,
-    redactedRaw: raw,
+    reportReference: undefined,
+    status: "PENDING",
+    score: undefined,
+    normalizedFields: {
+      reportType,
+      source: opts.source ?? "UNKNOWN",
+      identitySource: sourceApplicationId,
+      ...(identity.rcNumber ? { rcNumber: identity.rcNumber } : {}),
+      ...(identity.companyName ? { companyName: identity.companyName } : {}),
+      ...(opts.dataMode ? { dataMode: opts.dataMode } : {}),
+      note: "Credit bureau lookup in progress — this report updates automatically when the provider responds.",
+    },
+    redactedRaw: {},
     createdAt: now,
   };
   creditReports.push(report);
-
-  const internal = recomputeInternalCreditScore(userId, status === "RECEIVED" ? score ?? null : null);
-  syncApplicationCreditSnapshots(userId, report, internal, opts.applicationId);
   await persistStore().catch(() => undefined);
-  return { ok: true, report, internal };
+
+  const completion = executeCreditBureauCheck(report, userId, identity, opts).catch((error) => {
+    console.error("[creditBureau] background bureau check failed:", error);
+  });
+  return { ok: true, report, internal: null, completion };
+}
+
+/**
+ * Run the provider call for an already-created PENDING report and finalize
+ * it: update the row in place, recompute the internal score on success and
+ * sync the loan application credit snapshots.
+ */
+async function executeCreditBureauCheck(
+  report: CreditReport,
+  userId: string,
+  identity: CreditBureauIdentity,
+  opts: { applicationId?: string; dataMode?: "BASIC" | "ADVANCE" } = {}
+): Promise<void> {
+  inFlightChecks.add(report.id);
+  try {
+    let result: VerificationResult;
+    if (identity.rcNumber && identity.companyName) {
+      result = await requestCommercialCreditReport({
+        rcNumber: identity.rcNumber,
+        companyName: identity.companyName,
+        dataMode: opts.dataMode,
+      });
+    } else if (identity.bvn) {
+      // Consumer product, ID mode with the full BVN (per Prembly docs).
+      result = await requestCreditReport({
+        mode: "ID",
+        number: identity.bvn,
+        customer_name: identity.fullName,
+        dob: identity.dateOfBirth,
+      });
+    } else if (identity.nin) {
+      // Consumer product, ID mode with the NIN — verified working against the
+      // live API (2026-09): NIN-verified customers without a full BVN would
+      // otherwise have no path to a bureau check at all.
+      result = await requestCreditReport({
+        mode: "ID",
+        number: identity.nin,
+        customer_name: identity.fullName,
+        dob: identity.dateOfBirth,
+      });
+    } else {
+      result = { status: "FAILED", errorMessage: "A verified BVN or NIN is required for a consumer credit bureau check." };
+    }
+
+    const normalized = { ...(result.normalizedFields ?? {}) } as Record<string, unknown>;
+    // Preserve the trigger metadata stored at creation time.
+    for (const key of ["source", "identitySource", "rcNumber", "companyName", "dataMode"] as const) {
+      const existing = (report.normalizedFields as Record<string, unknown> | undefined)?.[key];
+      if (existing != null && normalized[key] == null) normalized[key] = existing;
+    }
+    if (result.errorMessage) normalized.reason = result.errorMessage;
+    const status = mapProviderStatus(result.status);
+    const score = extractReportScore(result);
+    report.status = status;
+    report.score = status === "RECEIVED" ? score : undefined;
+    report.reportReference = result.providerReference ?? report.reportReference;
+    report.normalizedFields = normalized;
+    report.redactedRaw = result.rawResponse ?? {};
+
+    const internal = recomputeInternalCreditScore(userId, status === "RECEIVED" ? score ?? null : null);
+    syncApplicationCreditSnapshots(userId, report, internal, opts.applicationId);
+    await persistStore().catch(() => undefined);
+  } finally {
+    inFlightChecks.delete(report.id);
+  }
 }
 
 /**
  * Re-run the provider lookup for an existing (PENDING) report. Commercial
  * reports retry with the RC number / company name stored in the report;
- * consumer reports re-resolve the borrower's BVN + name + DOB.
+ * consumer reports re-resolve the borrower's BVN / NIN + name + DOB.
  */
 export async function retryCreditReport(report: CreditReport): Promise<VerificationResult> {
   const normalized = (report.normalizedFields ?? {}) as Record<string, unknown>;
@@ -347,5 +455,33 @@ export async function retryCreditReport(report: CreditReport): Promise<Verificat
       dob: identity.dateOfBirth,
     });
   }
-  return requestCreditReport({ mode: "BIO", customer_name: identity.fullName, dob: identity.dateOfBirth });
+  if (identity.nin) {
+    return requestCreditReport({
+      mode: "ID",
+      number: identity.nin,
+      customer_name: identity.fullName,
+      dob: identity.dateOfBirth,
+    });
+  }
+  return { status: "FAILED", errorMessage: "A verified BVN or NIN is required to retry this consumer credit bureau check." };
+}
+
+/**
+ * Back-compat full check: start the bureau check and WAIT for the provider
+ * to answer. Used by tests and any caller that genuinely needs the final
+ * result inline. New code should prefer startCreditBureauCheck().
+ */
+export async function runCreditBureauCheck(
+  userId: string,
+  opts: {
+    applicationId?: string;
+    source?: string;
+    snapshot?: Record<string, unknown>;
+    dataMode?: "BASIC" | "ADVANCE";
+  } = {}
+): Promise<{ ok: true; report: CreditReport; internal: CreditScoreResult | null } | { ok: false; reason: "NO_USER" | "NO_IDENTITY"; message: string }> {
+  const started = await startCreditBureauCheck(userId, opts);
+  if (!started.ok) return started;
+  await started.completion;
+  return { ok: true, report: started.report, internal: recomputeInternalCreditScore(userId, started.report.status === "RECEIVED" ? started.report.score ?? null : null) };
 }

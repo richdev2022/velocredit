@@ -4,18 +4,22 @@
 // Business Advance + consumer fallback) against a MOCK Prembly server:
 //
 //   1. Admin trigger on a BUSINESS application uses the COMMERCIAL ADVANCE
-//      endpoint with rc_number + company_name from the customer snapshot;
-//      the documented sample response is parsed into a derived bureau score,
-//      a creditReports row is stored, the application creditReportSnapshot
-//      is refreshed (external RECEIVED + recomputed internal score).
+//      endpoint with rc_number (STRING — the live API rejects integers) +
+//      company_name from the customer snapshot; the documented sample
+//      response is parsed into a derived bureau score, a creditReports row is
+//      stored, the application creditReportSnapshot is refreshed (external
+//      RECEIVED + recomputed internal score).
 //   2. Response code 01 (record not found) → report FAILED with the friendly
 //      message; snapshot reflects FAILED.
 //   3. Response code 02 → report PENDING; the reconciliation sweep retries
 //      the stored commercial identity and resolves the report.
-//   4. Consumer fallback: a borrower with only a verified BVN goes through
-//      the consumer advance endpoint.
-//   5. A borrower with NO identity at all → 409 with a helpful message.
-//   6. Submission-time background pull for a business applicant also hits
+//   4. Consumer fallback: a borrower with a full 11-digit BVN goes through
+//      the consumer advance endpoint in ID mode.
+//   5. NIN-verified borrower (masked BVN only) → consumer advance in ID mode
+//      with the NIN from the NIN-Advance verification raw response.
+//   6. A borrower with NO identity at all → 409 with a helpful message.
+//   7. Provider timeout → report PENDING (NOT failed) + cron retry resolves.
+//   8. Submission-time background pull for a business applicant also hits
 //      the commercial endpoint (the "stays PENDING forever" fix).
 // ============================================================================
 
@@ -25,6 +29,9 @@ process.env.API_HOST = "127.0.0.1";
 process.env.API_PUBLIC_URL = "http://127.0.0.1:4402";
 process.env.PREMBLY_API_KEY = "test-key-e2e";
 process.env.PREMBLY_CREDIT_DATA_MODE = "ADVANCE";
+// Short credit timeout so the timeout test (mock sleeps 2.5s) aborts fast;
+// the other tests' mock responses are instant and unaffected.
+process.env.PREMBLY_CREDIT_TIMEOUT_MS = "800";
 process.env.PREMBLY_BASE_URL = "http://127.0.0.1:4403"; // mock server (started below)
 delete process.env.DATABASE_URL;
 
@@ -96,14 +103,16 @@ const state = {
   commercialCalls: [] as Array<Record<string, unknown>>,
   consumerCalls: [] as Array<Record<string, unknown>>,
   commercialMode: "ok" as "ok" | "not_found" | "pending" | "processing_then_ok",
-  consumerMode: "ok" as "ok" | "pending",
+  consumerMode: "ok" as "ok" | "pending" | "slow",
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function startMockPrembly(): Promise<void> {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
+    req.on("end", async () => {
       const payload = body ? (JSON.parse(body) as Record<string, unknown>) : {};
       const apiKey = req.headers["x-api-key"];
       const ok401 = () => {
@@ -135,7 +144,12 @@ async function startMockPrembly(): Promise<void> {
       if (String(req.url).includes("/credit_bureau/consumer/advance")) {
         state.consumerCalls.push(payload);
         res.writeHead(200, { "Content-Type": "application/json" });
-        if (state.consumerMode === "pending") {
+        if (state.consumerMode === "slow") {
+          // Real-world latency simulation: the bureau answers AFTER the
+          // client's AbortSignal.timeout fired → fetch throws TimeoutError.
+          await sleep(2500);
+          res.end(JSON.stringify({ status: true, response_code: "00", data: { message: "late answer" } }));
+        } else if (state.consumerMode === "pending") {
           res.end(JSON.stringify({ status: false, response_code: "02", detail: "Verification can't be completed by this time, kindly retry later." }));
         } else {
           res.end(JSON.stringify({
@@ -167,6 +181,7 @@ async function main(): Promise<void> {
   const store = await import("../backend/server/store.js");
   const auth = await import("../backend/server/auth.js");
   const creditRecon = await import("../backend/server/creditReconciliation.js");
+  const creditBureau = await import("../backend/server/creditBureau.js");
 
   const deadline = Date.now() + 30_000;
   let up = false;
@@ -257,23 +272,36 @@ async function main(): Promise<void> {
   const res1 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(applicationId)}/credit-bureau`, {
     method: "POST", headers: adminHeaders, body: JSON.stringify({}),
   });
-  const out1 = (await res1.json()) as { ok?: boolean; report?: { status?: string; score?: number; normalizedFields?: Record<string, unknown> }; creditReportSnapshot?: any; message?: string; error?: string };
-  report("admin trigger returns 200", res1.ok, res1.status === 200 ? "" : JSON.stringify(out1).slice(0, 200));
-  report("report status RECEIVED", out1.report?.status === "RECEIVED", String(out1.report?.status));
-  report("derived bureau score 635 (620 base + 1 performing facility)", out1.report?.score === 635, `score=${out1.report?.score} breakdown=${JSON.stringify(out1.report?.normalizedFields?.scoreBreakdown ?? {})}`);
-  report("report type COMMERCIAL_ADVANCE", out1.report?.normalizedFields?.reportType === "COMMERCIAL_ADVANCE", "");
-  report("rc_number sent as integer digits", state.commercialCalls.length === 1 && state.commercialCalls[0].rc_number === 1234567, JSON.stringify(state.commercialCalls[0] ?? {}));
+  const out1 = (await res1.json()) as { ok?: boolean; report?: { id?: string; status?: string; score?: number; normalizedFields?: Record<string, unknown> }; creditReportSnapshot?: any; message?: string; error?: string };
+  report("admin trigger returns 200 immediately", res1.ok, res1.status === 200 ? "" : JSON.stringify(out1).slice(0, 200));
+  // The provider call runs in the background — wait for it to finish (the
+  // mock answers instantly, so this is normally already done).
+  if (out1.report?.id) {
+    for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out1.report.id!); i++) {
+      await sleep(100);
+    }
+  }
+  const stored1 = (store.creditReports as unknown as Array<{ id?: string; status?: string; score?: number; normalizedFields?: Record<string, unknown> }>).find((r) => r.id === out1.report?.id);
+  report("report status RECEIVED", stored1?.status === "RECEIVED", String(stored1?.status));
+  report("derived bureau score 635 (620 base + 1 performing facility)", stored1?.score === 635, `score=${stored1?.score} breakdown=${JSON.stringify(stored1?.normalizedFields?.scoreBreakdown ?? {})}`);
+  report("report type COMMERCIAL_ADVANCE", stored1?.normalizedFields?.reportType === "COMMERCIAL_ADVANCE", "");
+  report("trigger source recorded", stored1?.normalizedFields?.source === "ADMIN_TRIGGER", String(stored1?.normalizedFields?.source));
+  report("rc_number sent as string (live API rejects integers)", state.commercialCalls.length === 1 && state.commercialCalls[0].rc_number === "1234567", JSON.stringify(state.commercialCalls[0] ?? {}));
   report("company_name sent from snapshot", String(state.commercialCalls[0]?.company_name ?? "") === "Ada Fabrics Ventures", "");
   report("data_mode ADVANCE", state.commercialCalls[0]?.data_mode === "ADVANCE", "");
-  report("snapshot external RECEIVED + score", out1.creditReportSnapshot?.external?.status === "RECEIVED" && out1.creditReportSnapshot?.external?.score === 635, JSON.stringify({ status: out1.creditReportSnapshot?.external?.status, score: out1.creditReportSnapshot?.external?.score }));
-  const internalScore = out1.creditReportSnapshot?.internal?.score;
+  // Re-read the application detail: the background execute syncs the snapshot.
+  const detail1 = await fetch(`${BASE}/api/v1/admin/loans/${encodeURIComponent(applicationId)}`, { headers: adminHeaders });
+  const detail1Body = (await detail1.json()) as { application?: Record<string, any>; loan?: Record<string, any> };
+  const app1Snapshot = ((detail1Body.application ?? detail1Body.loan ?? {}) as Record<string, any>).creditReportSnapshot;
+  report("snapshot external RECEIVED + score", app1Snapshot?.external?.status === "RECEIVED" && app1Snapshot?.external?.score === 635, JSON.stringify({ status: app1Snapshot?.external?.status, score: app1Snapshot?.external?.score }));
+  const internalScore = app1Snapshot?.internal?.score;
   // Fresh internal calculation from real factors: 500 base − 120 (no repayment
   // history) + 30 (KYC) = 410, plus bureau impact (635 − 500) × 0.2 = +27 → 437.
   report("internal score recomputed with bureau input", internalScore === 437, `internal=${internalScore} (no-bureau base would be 410)`);
-  const bureauFactor = (out1.creditReportSnapshot?.internal?.factors ?? []).find((f: { code?: string }) => f.code === "BUREAU_INPUT");
+  const bureauFactor = (app1Snapshot?.internal?.factors ?? []).find((f: { code?: string }) => f.code === "BUREAU_INPUT");
   report("internal factors include BUREAU_INPUT", Boolean(bureauFactor) && bureauFactor.impact === 27, JSON.stringify(bureauFactor ?? {}));
-  report("business data parsed", (out1.report?.normalizedFields?.businessName as string) === "OCH TEST DUMMY 5", "");
-  report("monthly payment history parsed", Array.isArray(out1.report?.normalizedFields?.monthlyPaymentHistory) && out1.report!.normalizedFields!.monthlyPaymentHistory.length === 1, "");
+  report("business data parsed", (stored1?.normalizedFields?.businessName as string) === "OCH TEST DUMMY 5", "");
+  report("monthly payment history parsed", Array.isArray(stored1?.normalizedFields?.monthlyPaymentHistory) && stored1!.normalizedFields!.monthlyPaymentHistory.length === 1, "");
 
   // =================== TEST 2: record not found (code 01) ===================
   const borrower2 = {
@@ -295,10 +323,14 @@ async function main(): Promise<void> {
   const res2 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(app2Id)}/credit-bureau`, {
     method: "POST", headers: adminHeaders, body: JSON.stringify({}),
   });
-  const out2 = (await res2.json()) as { ok?: boolean; report?: { status?: string; normalizedFields?: Record<string, unknown> }; message?: string };
-  report("record-not-found → report FAILED (not stuck PENDING)", out2.report?.status === "FAILED", String(out2.report?.status));
-  report("friendly message mentions RC", /RC number 9999999/.test(out2.message ?? ""), out2.message ?? "");
-  report("snapshot reflects FAILED with reason", out2.report?.status === "FAILED", "");
+  const out2 = (await res2.json()) as { ok?: boolean; report?: { id?: string; status?: string; normalizedFields?: Record<string, unknown> }; message?: string };
+  if (out2.report?.id) {
+    for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out2.report.id!); i++) await sleep(100);
+  }
+  const stored2 = (store.creditReports as unknown as Array<{ id?: string; status?: string; normalizedFields?: Record<string, unknown> }>).find((r) => r.id === out2.report?.id);
+  report("record-not-found → report FAILED (not stuck PENDING)", stored2?.status === "FAILED", String(stored2?.status));
+  report("friendly message mentions RC", /RC number 9999999/.test(out2.message ?? "") || /RC number 9999999/.test(String(stored2?.normalizedFields?.reason ?? "")), out2.message ?? String(stored2?.normalizedFields?.reason ?? ""));
+  report("snapshot reflects FAILED with reason", stored2?.status === "FAILED", "");
 
   // =================== TEST 3: pending (code 02) + reconciliation sweep ===================
   const borrower3 = {
@@ -322,9 +354,16 @@ async function main(): Promise<void> {
   });
   const out3 = (await res3.json()) as { ok?: boolean; report?: { id?: string; status?: string; score?: number }; message?: string };
   report("processing → report PENDING (cron will retry)", out3.report?.status === "PENDING", String(out3.report?.status));
+  // Wait for the background execute to finish (mock is instant, but the
+  // endpoint returns as soon as the row exists) before sweeping.
+  if (out3.report?.id) {
+    for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out3.report.id!); i++) {
+      await sleep(100);
+    }
+  }
   const sweep1 = await creditRecon.runCreditReportReconciliationSweep();
   report("reconciliation retried the pending report", sweep1.retried >= 1, JSON.stringify(sweep1));
-  report("reconciliation resolved it", sweep1.resolved >= 1 && state.commercialCalls.filter((c) => c.rc_number === 7777777).length === 2, JSON.stringify(sweep1));
+  report("reconciliation resolved it", sweep1.resolved >= 1 && state.commercialCalls.filter((c) => c.rc_number === "7777777").length === 2, JSON.stringify(sweep1));
   const storedReport3 = (store.creditReports as unknown as Array<{ id?: string; status?: string; score?: number }>).find((r) => r.id === out3.report?.id);
   report("stored report now RECEIVED with score", storedReport3?.status === "RECEIVED" && storedReport3?.score === 635, JSON.stringify({ status: storedReport3?.status, score: storedReport3?.score }));
 
@@ -341,31 +380,115 @@ async function main(): Promise<void> {
   const res4 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(consumerAppId)}/credit-bureau`, {
     method: "POST", headers: adminHeaders, body: JSON.stringify({}),
   });
-  const out4 = (await res4.json()) as { ok?: boolean; report?: { status?: string; score?: number; normalizedFields?: Record<string, unknown> } };
+  const out4 = (await res4.json()) as { ok?: boolean; report?: { id?: string; status?: string; score?: number; normalizedFields?: Record<string, unknown> } };
+  if (out4.report?.id) {
+    for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out4.report.id!); i++) await sleep(100);
+  }
+  const stored4 = (store.creditReports as unknown as Array<{ id?: string; status?: string; score?: number; normalizedFields?: Record<string, unknown> }>).find((r) => r.id === out4.report?.id);
   report("consumer fallback hits consumer advance endpoint", state.consumerCalls.length === 1, `${state.consumerCalls.length} consumer call(s)`);
-  report("consumer report RECEIVED with provider score 680", out4.report?.status === "RECEIVED" && out4.report?.score === 680, `status=${out4.report?.status} score=${out4.report?.score}`);
+  report("consumer ID mode with the full BVN", String(state.consumerCalls[0]?.mode ?? "") === "ID" && state.consumerCalls[0]?.number === "22299988877", JSON.stringify(state.consumerCalls[0] ?? {}));
+  report("consumer report RECEIVED with provider score 680", stored4?.status === "RECEIVED" && stored4?.score === 680, `status=${stored4?.status} score=${stored4?.score}`);
 
-  // =================== TEST 5: no usable identity → 409 ===================
-  const res5 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(bareAppId)}/credit-bureau`, {
+  // ============ TEST 5: NIN-verified borrower (masked BVN only) ============
+  // Production reality: the KYC case stores a DISPLAY-masked BVN and the
+  // verification raw response is NIN-Advance. The consumer bureau lookup
+  // must use the NIN from providerRaw (verified working live).
+  const ninBorrower = {
+    id: randomUUID(), email: "nin@example.com", phone: "08100000007",
+    fullName: "Sunday Itodo", passwordHash: "x", roles: ["BORROWER"],
+    kycStatus: "VERIFIED", createdAt: now, isActive: true,
+  } as never;
+  (store.users as unknown as Array<Record<string, unknown>>).push(ninBorrower);
+  (store.kycCases as unknown as Array<Record<string, unknown>>).push({
+    id: randomUUID(), userId: ninBorrower.id, status: "VERIFIED",
+    bvn: "***-***-6804", // display-masked — must NOT be used as the bureau ID
+    checklist: { bvn: false, nin: true, liveness: true },
+    providerRaw: {
+      nin: {
+        nin_data: {
+          nin: "52312345678",
+          firstname: "SUNDAY",
+          middlename: "GIDEON",
+          surname: "ITODO",
+          birthdate: "22-07-1998",
+        },
+      },
+    },
+    createdAt: now,
+  });
+  const ninAppId = "VEL-LN-2026-000782";
+  (store.loanApplications as unknown as Array<Record<string, unknown>>).push({
+    id: randomUUID(), applicationId: ninAppId, borrowerId: ninBorrower.id,
+    applicantType: "PERSONAL", customerSnapshot: { personalInfo: { fullName: "Sunday Itodo" } },
+    amountNaira: 90000, tenureDays: 30, status: "UNDER_REVIEW",
+    creditReportSnapshot: {}, stageStatuses: {}, stageRejectionNotes: {}, manualDecision: "PENDING",
+    createdAt: now, updatedAt: now, submittedAt: now,
+  });
+  const res5 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(ninAppId)}/credit-bureau`, {
     method: "POST", headers: adminHeaders, body: JSON.stringify({}),
   });
-  const out5 = (await res5.json()) as { ok?: boolean; error?: string };
-  report("no identity → 409 with helpful message", res5.status === 409 && /No usable identity/.test(out5.error ?? ""), `${res5.status} ${out5.error ?? ""}`);
+  const out5 = (await res5.json()) as { ok?: boolean; report?: { id?: string; status?: string } };
+  if (out5.report?.id) {
+    for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out5.report.id!); i++) await sleep(100);
+  }
+  const stored5 = (store.creditReports as unknown as Array<{ id?: string; status?: string; score?: number; normalizedFields?: Record<string, unknown> }>).find((r) => r.id === out5.report?.id);
+  report("NIN borrower resolved (not 409)", res5.status === 200 && Boolean(out5.report?.id), `${res5.status} ${JSON.stringify(out5).slice(0, 160)}`);
+  report("NIN lookup in ID mode with the NIN number", String(state.consumerCalls[1]?.mode ?? "") === "ID" && state.consumerCalls[1]?.number === "52312345678", JSON.stringify(state.consumerCalls[1] ?? {}));
+  report("NIN-verified name passed as customer_name", state.consumerCalls[1]?.customer_name === "SUNDAY GIDEON ITODO", String(state.consumerCalls[1]?.customer_name ?? ""));
+  report("NIN borrower report RECEIVED", stored5?.status === "RECEIVED", JSON.stringify({ status: stored5?.status, reason: stored5?.normalizedFields?.reason }));
 
-  // =================== TEST 6: borrower-facing consent-gated request ===================
+  // ============ TEST 6: no usable identity → 409 ============
+  const res6 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(bareAppId)}/credit-bureau`, {
+    method: "POST", headers: adminHeaders, body: JSON.stringify({}),
+  });
+  const out6 = (await res6.json()) as { ok?: boolean; error?: string };
+  report("no identity → 409 with helpful message", res6.status === 409 && /No usable identity/.test(out6.error ?? ""), `${res6.status} ${out6.error ?? ""}`);
+
+  // ============ TEST 7: provider timeout → PENDING + cron resolves ==========
+  // The mock sleeps 2.5s; the credit timeout is 800ms → fetch aborts → the
+  // report must land PENDING (bureau still processing), NOT FAILED, and the
+  // reconciliation sweep must resolve it on the next pass.
+  const timeoutAppId = "VEL-LN-2026-000783";
+  (store.loanApplications as unknown as Array<Record<string, unknown>>).push({
+    id: randomUUID(), applicationId: timeoutAppId, borrowerId: consumerBorrower.id,
+    applicantType: "PERSONAL", customerSnapshot: { personalInfo: { fullName: "John Doe" } },
+    amountNaira: 70000, tenureDays: 30, status: "UNDER_REVIEW",
+    creditReportSnapshot: {}, stageStatuses: {}, stageRejectionNotes: {}, manualDecision: "PENDING",
+    createdAt: now, updatedAt: now, submittedAt: now,
+  });
+  state.consumerMode = "slow";
+  const res7 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(timeoutAppId)}/credit-bureau`, {
+    method: "POST", headers: adminHeaders, body: JSON.stringify({}),
+  });
+  const out7 = (await res7.json()) as { ok?: boolean; report?: { id?: string; status?: string; normalizedFields?: Record<string, unknown> }; message?: string };
+  report("timeout → HTTP still 200 (async trigger)", res7.ok, String(res7.status));
+  report("timeout → report PENDING with retry reason", out7.report?.status === "PENDING" && /retried automatically|did not respond/.test(String(out7.report?.normalizedFields?.reason ?? out7.message ?? "")), JSON.stringify({ status: out7.report?.status, msg: (out7.message ?? "").slice(0, 120) }));
+  if (out7.report?.id) {
+    for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out7.report.id!); i++) await sleep(100);
+  }
+  state.consumerMode = "ok";
+  const sweep2 = await creditRecon.runCreditReportReconciliationSweep();
+  const stored7 = (store.creditReports as unknown as Array<{ id?: string; status?: string; score?: number }>).find((r) => r.id === out7.report?.id);
+  report("cron resolved the timed-out report", sweep2.resolved >= 1 && stored7?.status === "RECEIVED" && stored7?.score === 680, JSON.stringify({ sweep: sweep2, status: stored7?.status, score: stored7?.score }));
+
+  // ============ TEST 8: borrower-facing consent-gated request ==============
   const borrowerToken = auth.issueToken({ id: borrower.id, email: borrower.email, fullName: borrower.fullName, roles: ["BORROWER"] } as never);
-  const res6a = await fetch(`${BASE}/api/v1/borrower/credit-report/request`, {
+  const res8a = await fetch(`${BASE}/api/v1/borrower/credit-report/request`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${borrowerToken}` }, body: JSON.stringify({}),
   });
-  report("borrower request without consent → 400", res6a.status === 400, String(res6a.status));
+  report("borrower request without consent → 400", res8a.status === 400, String(res8a.status));
   state.commercialMode = "ok";
-  const res6b = await fetch(`${BASE}/api/v1/borrower/credit-report/request`, {
+  const res8b = await fetch(`${BASE}/api/v1/borrower/credit-report/request`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${borrowerToken}` }, body: JSON.stringify({ consent: true }),
   });
-  const out6b = (await res6b.json()) as { ok?: boolean; report?: { status?: string } };
-  report("borrower request with consent → RECEIVED", res6b.ok && out6b.report?.status === "RECEIVED", String(out6b.report?.status));
+  const out8b = (await res8b.json()) as { ok?: boolean; report?: { id?: string; status?: string } };
+  if (out8b.report?.id) {
+    for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out8b.report.id!); i++) await sleep(100);
+  }
+  const stored8 = (store.creditReports as unknown as Array<{ id?: string; status?: string }>).find((r) => r.id === out8b.report?.id);
+  report("borrower request with consent → RECEIVED", res8b.ok && stored8?.status === "RECEIVED", String(stored8?.status));
 
-  // =================== TEST 7: non-admin cannot trigger ===================
+  // ============ TEST 9: non-admin cannot trigger ==============
   const borrowerRes = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(applicationId)}/credit-bureau`, {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${borrowerToken}` }, body: JSON.stringify({}),
   });
