@@ -1410,14 +1410,20 @@ function BorrowerOverview(props: any) {
           )}
 
           <div className="mt-6 flex flex-wrap gap-3">
-            {hasSubmittedApplication && !["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(String(applicationStatus)) ? (
+            {hasSubmittedApplication &&
+            !["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(String(applicationStatus)) &&
+            !["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(String(applicationStatus)) ? (
               <span className="rounded-xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                Application under review — no new loan applications until repayment
+                {["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "APPROVED", "DISBURSEMENT_PENDING"].includes(String(applicationStatus))
+                  ? "Application under review — no new loan applications until repayment"
+                  : "Your current loan must be fully repaid before requesting a new one"}
               </span>
             ) : (
               <Link to="/apply" className="btn-primary inline-flex items-center gap-2">
                 {["REJECTED", "MORE_INFORMATION_REQUIRED"].includes(String(applicationStatus))
                   ? "Fix & Resubmit Application"
+                  : ["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(String(applicationStatus))
+                  ? "Apply Again"
                   : data?.applications?.[0]
                   ? "Continue Application"
                   : "New Application"}

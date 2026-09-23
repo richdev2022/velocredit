@@ -7,10 +7,11 @@
 //   /apply/dashboard          → show section dashboard (after first save)
 // ============================================================================
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useSearchParams, useNavigate, Routes, Route, Navigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import { useApplication, canSubmitApplication } from "../context/ApplicationContext";
+import { getBorrowerDashboard } from "../services/apiClient";
 import type { ApplicationData } from "../types/application";
 import ApplicantTypeSection from "../sections/ApplicantTypeSection";
 import PersonalInfoSection from "../sections/PersonalInfoSection";
@@ -105,7 +106,39 @@ function Wizard() {
     lastSavedAt,
     navigate,
     submit,
+    resetApplication,
   } = useApplication();
+
+  // A draft can outlive its own application: if the server has already moved
+  // the application to a terminal state (repaid / cancelled / written off),
+  // the wizard must NOT keep showing the stale "submitted" screen — drop the
+  // stale draft so a new loan request starts with a NEW application ID.
+  const staleCheckedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!application || application.status !== "SUBMITTED") return;
+    if (staleCheckedRef.current === application.applicationId) return;
+    staleCheckedRef.current = application.applicationId;
+    let cancelled = false;
+    getBorrowerDashboard()
+      .then((dashboard) => {
+        if (cancelled) return;
+        const rows = Array.isArray((dashboard as { applications?: unknown[] }).applications)
+          ? ((dashboard as { applications: unknown[] }).applications as Array<Record<string, unknown>>)
+          : [];
+        const match = rows.find(
+          (row) =>
+            String(row.applicationId ?? "") === application.applicationId ||
+            String(row.id ?? "") === application.applicationId,
+        );
+        if (match && ["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(String(match.status))) {
+          resetApplication();
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [application?.applicationId, application?.status, resetApplication]);
 
   // No active application — show applicant type selection
   if (!application) {

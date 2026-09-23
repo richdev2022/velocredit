@@ -249,7 +249,8 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
             const serverApp = apps.find(
               (row) => String(row.applicationId ?? "") === resumed!.applicationId || String(row.id ?? "") === resumed!.applicationId
             );
-            if (serverApp && reOpenableStatuses.includes(String(serverApp.status ?? ""))) {
+            const serverStatus = String(serverApp?.status ?? "");
+            if (serverApp && reOpenableStatuses.includes(serverStatus)) {
               resumed = {
                 ...resumed,
                 status: String(serverApp.status) as ApplicationData["status"],
@@ -259,6 +260,15 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
               savedIndex = getSavedSectionIndex(resumed);
               // Persist the re-opened state so a refresh keeps the wizard editable.
               saveApplication(resumed, savedIndex);
+            } else if (serverApp && ["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(serverStatus)) {
+              // The application behind this draft already reached a terminal
+              // state. Resuming it would reuse the OLD application ID on the
+              // customer's NEXT loan request — purge the stale draft from the
+              // browser and the server so /apply starts genuinely fresh.
+              deleteApplication(resumed.applicationId);
+              void deleteApplicationDraft(resumed.applicationId).catch(() => {});
+              resumed = null;
+              savedIndex = 0;
             }
           } else {
             const rejected = apps

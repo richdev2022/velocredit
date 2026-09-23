@@ -3457,9 +3457,34 @@ router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), asyn
   res.json({ ok: true, ...catalog });
 });
 
+// Application statuses where the loan lifecycle has materially ended. A draft
+// pointing at such an application is stale junk: resuming it would reuse the
+// OLD application ID on the customer's next loan request.
+const TERMINAL_APPLICATION_STATUSES = ["REPAID", "CANCELLED", "WRITTEN_OFF"];
+
 router.get("/borrower/application-draft", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
-  const drafts = applicationDrafts
-    .filter((draft) => draft.userId === req.user!.id)
+  const mine = applicationDrafts.filter((draft) => draft.userId === req.user!.id);
+  // Self-heal: drop drafts whose application already reached a terminal state
+  // (repaid / cancelled / written off). Returning them would resurrect the
+  // old application for a customer who is starting a NEW loan request.
+  const staleIds = new Set(
+    mine
+      .filter((draft) => {
+        const application = loanApplications.find(
+          (item) => item.applicationId === draft.applicationId || item.id === draft.applicationId,
+        );
+        return application ? TERMINAL_APPLICATION_STATUSES.includes(String(application.status)) : false;
+      })
+      .map((draft) => draft.id),
+  );
+  if (staleIds.size > 0) {
+    for (let index = applicationDrafts.length - 1; index >= 0; index -= 1) {
+      if (staleIds.has(applicationDrafts[index].id)) applicationDrafts.splice(index, 1);
+    }
+    void persistStore().catch(() => undefined);
+  }
+  const drafts = mine
+    .filter((draft) => !staleIds.has(draft.id))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   res.json({ ok: true, draft: drafts[0] ?? null });
 });
@@ -3522,15 +3547,22 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     const input = { ...parsed.data, ...compactApplicationPayload(parsed.data) };
     if (input.applicationId) {
       const existingApplication = loanApplications.find((item) => item.applicationId === input.applicationId);
-      if (existingApplication) {
-        if (existingApplication.borrowerId !== req.user!.id) {
-          res.status(409).json({ ok: false, error: "That application reference ID is already in use." });
-        } else {
-          const reconciled = synchronizeLoanApplicationStatus(existingApplication);
-          if (reconciled) await persistStore().catch(() => undefined);
-          res.status(200).json({ ok: true, application: existingApplication, duplicate: true });
-        }
+      if (existingApplication && existingApplication.borrowerId !== req.user!.id) {
+        res.status(409).json({ ok: false, error: "That application reference ID is already in use." });
         return;
+      }
+      if (existingApplication && !TERMINAL_APPLICATION_STATUSES.includes(String(existingApplication.status))) {
+        const reconciled = synchronizeLoanApplicationStatus(existingApplication);
+        if (reconciled) await persistStore().catch(() => undefined);
+        res.status(200).json({ ok: true, application: existingApplication, duplicate: true });
+        return;
+      }
+      if (existingApplication) {
+        // The old application reached a terminal state (REPAID / CANCELLED /
+        // WRITTEN_OFF). The customer is requesting a NEW loan — it must get a
+        // FRESH application ID and a brand-new application record, never
+        // inherit the finished one.
+        input.applicationId = randomUUID();
       }
     }
     let dbBorrowing: boolean | null = null;
