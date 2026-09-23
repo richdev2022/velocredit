@@ -476,7 +476,16 @@ const loanApplicationSchema = z.object({
   personalFinancial: z.record(z.unknown()).default({}),
   businessFinancial: z.record(z.unknown()).default({}),
   kyc: z.record(z.unknown()).default({}),
-  disbursementAccount: z.record(z.unknown()).default({}),
+  // A loan application can NEVER be submitted without a complete disbursement
+  // account — this is the account the loan is paid into. Requiring it here
+  // (server-side, in addition to the frontend gate) prevents applications that
+  // would later fail admin disbursement with "No disbursement account found".
+  disbursementAccount: z.object({
+    accountName: z.string({ required_error: "Disbursement account name is required" }).trim().min(2, "Disbursement account name is required"),
+    accountNumber: z.string({ required_error: "Disbursement account number is required" }).trim().regex(/^\d{10}$/, "Disbursement account number must be exactly 10 digits"),
+    bankCode: z.string({ required_error: "Disbursement bank code is required" }).trim().min(2, "Select a valid disbursement bank"),
+    bankName: z.string().trim().optional(),
+  }),
   loanRequest: z
     .object({ amount: z.number().positive(), tenure: z.number().int().positive(), purpose: z.string().min(1) })
     .optional(),
@@ -2838,7 +2847,19 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
   try {
     const parsed = loanApplicationSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ ok: false, error: parsed.error.flatten() });
+      // Surface a single readable message — the frontend shows body.error verbatim.
+      const flat = parsed.error.flatten();
+      const accountMissing = Array.isArray(flat.fieldErrors?.disbursementAccount) && flat.fieldErrors!.disbursementAccount.length > 0;
+      let message: string;
+      if (accountMissing) {
+        message = "A complete disbursement account (verified account name, 10-digit account number and bank) is required to submit your loan application — this is where your loan will be paid.";
+      } else {
+        const firstFieldError = Object.values(flat.fieldErrors ?? {}).flat()[0];
+        message = typeof firstFieldError === "string"
+          ? firstFieldError
+          : (flat.formErrors[0] || "Some required information is missing or invalid. Please review your application and try again.");
+      }
+      res.status(400).json({ ok: false, error: message, details: flat });
       return;
     }
     const input = { ...parsed.data, ...compactApplicationPayload(parsed.data) };
@@ -4559,6 +4580,66 @@ router.post("/admin/loans/:loanId/stages/approve-all", requireAuth, requireRole(
   res.json({ ok: true, application });
 });
 
+// Fuzzy bank-name -> Flutterwave bank-code recovery for legacy applications
+// that stored a bankName without bankCode. Normalizes punctuation and common
+// suffixes, then matches on the static NIBSS/Flutterwave code table.
+const NG_BANK_CODE_BY_NAME: Array<[string, string]> = [
+  ["access bank", "044"],
+  ["citibank", "023"],
+  ["diamond bank", "063"],
+  ["ecobank", "050"],
+  ["fcmb", "214"],
+  ["first city monument bank", "214"],
+  ["fidelity bank", "070"],
+  ["first bank", "011"],
+  ["first bank of nigeria", "011"],
+  ["gtb", "058"],
+  ["gtbank", "058"],
+  ["guaranty trust bank", "058"],
+  ["heritage bank", "030"],
+  ["jaiz bank", "301"],
+  ["keystone bank", "082"],
+  ["kuda", "50211"],
+  ["kuda microfinance bank", "50211"],
+  ["moniepoint", "50515"],
+  ["moniepoint mfb", "50515"],
+  ["opay", "999992"],
+  ["palmpay", "999991"],
+  ["polaris bank", "076"],
+  ["providus bank", "101"],
+  ["stanbic ibtc", "221"],
+  ["standard chartered", "068"],
+  ["sterling bank", "232"],
+  ["titan trust bank", "102"],
+  ["uba", "033"],
+  ["united bank for africa", "033"],
+  ["union bank", "032"],
+  ["unity bank", "215"],
+  ["wema bank", "035"],
+  ["zenith bank", "057"],
+];
+
+function normalizeBankNameForMatch(name: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\b(plc|ltd|limited|ng|nigeria|nigerian|microfinance|mfb|digital|bank|banks)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function guessBankCodeFromName(bankName: string): string | undefined {
+  const normalized = normalizeBankNameForMatch(bankName);
+  if (!normalized) return undefined;
+  for (const [name, code] of NG_BANK_CODE_BY_NAME) {
+    const normalizedCandidate = normalizeBankNameForMatch(name);
+    if (normalized === normalizedCandidate || normalized.includes(normalizedCandidate) || normalizedCandidate.includes(normalized)) {
+      return code;
+    }
+  }
+  return undefined;
+}
+
 router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
   const loan = loans.find((l) => l.applicationId === req.params.loanId || l.applicationId === application?.id || l.id === req.params.loanId);
@@ -4575,20 +4656,65 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     disbursementAccount?: { accountName?: string; accountNumber?: string; bankCode?: string; bankName?: string };
   };
   const savedAccount = disbursementAccounts.find((item) => item.borrowerId === loan.borrowerId);
-  const applicationAccount = snapshot.disbursementAccount;
+  // Resolution order (widest possible so an application-submitted account is
+  // ALWAYS picked up): saved ACTIVE account -> the account captured on the
+  // application itself (top-level or customerSnapshot) -> saved account that
+  // merely lacks ACTIVE status (it exists and was verified at submission).
+  type AccountView = { accountName?: string; accountNumber?: string; bankCode?: string; bankName?: string };
+  const asAccountView = (value: unknown): AccountView | null =>
+    value && typeof value === "object" ? (value as AccountView) : null;
+  const snapshotAccount =
+    asAccountView(snapshot.disbursementAccount?.accountNumber ? snapshot.disbursementAccount : null) ??
+    asAccountView(application?.disbursementAccount) ??
+    asAccountView(snapshot.disbursementAccount);
+  const applicationAccount: AccountView | null = snapshotAccount;
+  // Some legacy applications captured a bankName but no bankCode (older draft
+  // normalizer dropped it) — recover the code from the bank name when possible.
+  const bankCodeFromName = applicationAccount && !applicationAccount.bankCode && applicationAccount.bankName
+    ? guessBankCodeFromName(applicationAccount.bankName)
+    : undefined;
+  const applicationAccountNumber = applicationAccount?.accountNumber ? String(applicationAccount.accountNumber) : "";
+  const applicationBankCode = applicationAccount?.bankCode ? String(applicationAccount.bankCode) : "";
+  const applicationBankName = applicationAccount?.bankName ? String(applicationAccount.bankName) : undefined;
+  const applicationAccountName = applicationAccount?.accountName ? String(applicationAccount.accountName) : "";
+  const candidateFromApplication = applicationAccountNumber && (applicationBankCode || bankCodeFromName)
+    ? {
+        accountName: applicationAccountName || snapshot.fullName || "Borrower",
+        accountNumber: applicationAccountNumber,
+        bankCode: (applicationBankCode || bankCodeFromName)!,
+        bankName: applicationBankName,
+      }
+    : null;
   const account = savedAccount?.status === "ACTIVE"
     ? savedAccount
-    : applicationAccount?.accountNumber && applicationAccount.bankCode
-      ? {
-          accountName: applicationAccount.accountName || snapshot.fullName || "Borrower",
-          accountNumber: applicationAccount.accountNumber,
-          bankCode: applicationAccount.bankCode,
-          bankName: applicationAccount.bankName,
-        }
-      : null;
+    : candidateFromApplication
+      ? candidateFromApplication
+      : savedAccount?.accountNumber && savedAccount.bankCode
+        ? savedAccount
+        : null;
   if (!account) {
-    res.status(400).json({ ok: false, error: "An active, verified borrower disbursement account is required" });
+    res.status(400).json({
+      ok: false,
+      error: "No disbursement account found for this borrower. The loan application must carry a complete disbursement account, or the borrower must add one from their dashboard (Disbursement section) — it will attach to this loan automatically.",
+    });
     return;
+  }
+  // Promote the application-captured account to the borrower's saved account so
+  // future disbursements (and the settings UI) see one consistent record.
+  if (!savedAccount && candidateFromApplication && account === candidateFromApplication) {
+    const nowPromote = new Date().toISOString();
+    disbursementAccounts.push({
+      id: randomUUID(),
+      borrowerId: loan.borrowerId,
+      accountName: candidateFromApplication.accountName,
+      accountNumber: candidateFromApplication.accountNumber,
+      bankCode: candidateFromApplication.bankCode,
+      bankName: candidateFromApplication.bankName,
+      status: "ACTIVE",
+      createdAt: nowPromote,
+      updatedAt: nowPromote,
+      rejectionReason: null,
+    } as (typeof disbursementAccounts)[number]);
   }
   const existingTransfer = loanDisbursements.find((item) => item.loanId === loan.id && ["PROCESSING", "PENDING", "SUCCESSFUL"].includes(item.status));
   if (existingTransfer) {
@@ -5826,7 +5952,32 @@ router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER
       rejectionReason: null,
     };
     disbursementAccounts.push(account);
-    res.json({ ok: true, account, message: "Disbursement account saved successfully" });
+    // Self-healing: attach this account to every open loan application that
+    // has no disbursement account (e.g. legacy applications submitted before
+    // the account was enforced). Admin disbursement then works immediately —
+    // the borrower must NOT be trapped between "application already submitted"
+    // and "no disbursement account found".
+    const openStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED"];
+    let stamped = 0;
+    for (const application of loanApplications) {
+      if (application.borrowerId !== borrowerId || !openStatuses.includes(String(application.status))) continue;
+      const snap = (application.customerSnapshot ?? {}) as Record<string, unknown>;
+      const hasAccount = Boolean(
+        ((application.disbursementAccount ?? {}) as Record<string, unknown>).accountNumber ||
+        ((snap.disbursementAccount ?? {}) as Record<string, unknown>).accountNumber
+      );
+      if (hasAccount) continue;
+      const accountPayload = { ...parsed.data, institution: "VELO" };
+      application.disbursementAccount = accountPayload as typeof application.disbursementAccount;
+      application.customerSnapshot = { ...snap, disbursementAccount: accountPayload } as typeof application.customerSnapshot;
+      application.updatedAt = now;
+      stamped += 1;
+    }
+    if (stamped > 0) {
+      schedulePersist();
+      console.info(`[routes] stamped borrower disbursement account onto ${stamped} open application(s) user=${borrowerId}`);
+    }
+    res.json({ ok: true, account, message: "Disbursement account saved successfully", stampedApplications: stamped });
     return;
   }
   const request = {

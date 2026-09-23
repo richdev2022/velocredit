@@ -54,12 +54,12 @@ export default function Layout({ children, showHomeLink = true }: LayoutProps) {
               </>
             ) : (
               <>
-                <Link to="/account?mode=login" className="btn-ghost px-3 text-sm sm:px-4">
+                <Link to="/account?mode=login#signin" className="btn-ghost px-3 text-sm sm:px-4">
                   <span className="sm:hidden">Login</span>
                   <span className="hidden sm:inline">Sign in</span>
                 </Link>
                 <Link
-                  to="/account?mode=register"
+                  to="/account?mode=register#register"
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-velo-600 to-velo-500 text-white text-sm font-semibold shadow-sm shadow-velo-500/20 hover:shadow-md hover:shadow-velo-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all"
                 >
                   <span className="sm:hidden">Join</span>

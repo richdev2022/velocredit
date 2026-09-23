@@ -82,7 +82,36 @@ type UnifiedTx = {
   referenceId?: string;
   createdAt: string;
   balanceAfterMinor?: number;
+  status?: string;
   raw: Record<string, unknown>;
+};
+
+// Normalize any provider/store status string for display (e.g.
+// "PENDING_PROVIDER_CONFIRMATION" -> "PENDING PROVIDER CONFIRMATION").
+function txStatus(raw: unknown): string | undefined {
+  if (raw == null || raw === "") return undefined;
+  return String(raw).toUpperCase().replace(/_/g, " ");
+}
+
+const TX_STATUS_TONES: Array<{ tone: "emerald" | "amber" | "red" | "slate"; match: string[] }> = [
+  { tone: "emerald", match: ["SUCCESSFUL", "COMPLETED", "ACTIVE", "PAID OUT", "VERIFIED", "MATURED"] },
+  { tone: "amber", match: ["PENDING", "PROCESSING", "LIQUIDITY REQUESTED", "LIQUIDITY APPROVED", "MATURITY PENDING", "PAYOUT PENDING", "PENDING REVIEW", "PENDING APPROVAL", "UNDER REVIEW"] },
+  { tone: "red", match: ["FAILED", "REJECTED", "REVERSED", "CANCELLED", "DISPUTED", "DEFAULTED", "PAYOUT FAILED", "WRITTEN OFF", "PROVIDER NOT CONFIGURED"] },
+];
+
+function txStatusTone(status?: string): "emerald" | "amber" | "red" | "slate" {
+  if (!status) return "slate";
+  for (const { tone, match } of TX_STATUS_TONES) {
+    if (match.some((m) => status === m || status.startsWith(m))) return tone;
+  }
+  return "slate";
+}
+
+const TX_TONE_CLASS: Record<string, string> = {
+  emerald: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+  amber: "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+  red: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+  slate: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
 };
 
 export default function InvestorDashboard() {
@@ -1999,6 +2028,13 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
     else if (/INVESTMENT.*RETURN|INVESTMENT_CREDIT|MATURITY/.test(entryType)) kind = "INVESTMENT_RETURN";
     else if (/PAYOUT|WITHDRAWAL/.test(entryType)) kind = "PAYOUT";
     else if (/FEE/.test(entryType)) kind = "FEE";
+    // Ledger entries are bookkeeping records: settled by definition, but
+    // initiated withdrawals are still in flight and reversals are reversed.
+    const ledgerStatus = /WITHDRAWAL_INITIATED/.test(entryType)
+      ? "PROCESSING"
+      : /REVERSAL/.test(entryType)
+        ? "REVERSED"
+        : "COMPLETED";
     out.push({
       id: String(entry.id || `ledger-${entry.createdAt}-${entry.amountMinor}`),
       kind,
@@ -2009,6 +2045,7 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
       referenceId: entry.referenceId,
       createdAt: entry.createdAt || new Date().toISOString(),
       balanceAfterMinor: entry.balanceAfterMinor != null ? Number(entry.balanceAfterMinor) : undefined,
+      status: ledgerStatus,
       raw: entry,
     });
   });
@@ -2025,6 +2062,7 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
       referenceId: tx.reference || tx.txRef || tx.transactionId,
       createdAt: tx.createdAt || new Date().toISOString(),
       balanceAfterMinor: tx.balanceAfterMinor != null ? Number(tx.balanceAfterMinor) : undefined,
+      status: txStatus(tx.status),
       raw: tx,
     });
   });
@@ -2039,6 +2077,7 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
       narration: `Investment created · Status: ${inv.status || "PENDING"}`,
       referenceId: inv.id,
       createdAt: inv.createdAt || new Date().toISOString(),
+      status: txStatus(inv.status),
       raw: inv,
     });
   });
@@ -2053,6 +2092,7 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
       narration: `Payout status: ${p.status || "PENDING"}`,
       referenceId: p.referenceId || p.id,
       createdAt: p.createdAt || new Date().toISOString(),
+      status: txStatus(p.status),
       raw: p,
     });
   });
@@ -2085,7 +2125,14 @@ const InvestorTransactionRow = memo(function InvestorTransactionRow({
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
-          <div className="font-bold text-sm text-velo-900 dark:text-white truncate">{tx.label}</div>
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="font-bold text-sm text-velo-900 dark:text-white truncate">{tx.label}</div>
+            {tx.status && (
+              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold whitespace-nowrap ${TX_TONE_CLASS[txStatusTone(tx.status)]}`}>
+                {tx.status}
+              </span>
+            )}
+          </div>
           <div className={`font-black text-sm whitespace-nowrap ${tx.direction === "CREDIT" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
             {tx.direction === "CREDIT" ? "+" : "-"}₦{Math.round(tx.amountMinor / 100).toLocaleString("en-NG")}
           </div>
@@ -2114,6 +2161,7 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
       (tx.label ?? "").toLowerCase().includes(q) ||
       (tx.narration ?? "").toLowerCase().includes(q) ||
       (tx.referenceId ?? "").toLowerCase().includes(q) ||
+      (tx.status ?? "").toLowerCase().includes(q) ||
       tx.kind.toLowerCase().includes(q) ||
       String(Math.round(tx.amountMinor / 100)).includes(q.replace(/,/g, ""))
     );
@@ -2227,6 +2275,18 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
                 <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Type</div>
                 <div className="mt-1 font-semibold text-velo-900 dark:text-white">{selectedTx.kind.replace(/_/g, " ")}</div>
+              </div>
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
+                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Status</div>
+                <div className="mt-1">
+                  {selectedTx.status ? (
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${TX_TONE_CLASS[txStatusTone(selectedTx.status)]}`}>
+                      {selectedTx.status}
+                    </span>
+                  ) : (
+                    <span className="font-semibold text-velo-900 dark:text-white">—</span>
+                  )}
+                </div>
               </div>
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
                 <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Reference ID</div>

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
 import PasswordInput from "../components/PasswordInput";
 import { useAuth } from "../context/AuthContext";
@@ -12,7 +12,8 @@ type Mode = "login" | "register" | "forgot";
 export default function AccountAccess() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { login, register, verifyRegistrationOtp, completeLoginOtp, requestPasswordReset, confirmPasswordReset, user } = useAuth();
+  const location = useLocation();
+  const { login, register, verifyRegistrationOtp, completeLoginOtp, requestPasswordReset, confirmPasswordReset, user, loading } = useAuth();
 
   const initialMode = searchParams.get("mode") === "register" ? "register" : searchParams.get("mode") === "forgot" ? "forgot" : "login";
   const initialRole = (searchParams.get("role") === "INVESTOR" ? "INVESTOR" : "BORROWER") as "INVESTOR" | "BORROWER";
@@ -21,6 +22,16 @@ export default function AccountAccess() {
   const [mode, setMode] = useState<Mode>(initialMode);
   const [role, setRole] = useState<"INVESTOR" | "BORROWER">(initialRole);
   const [loanType, setLoanType] = useState<"PERSONAL" | "BUSINESS">(initialType);
+
+  // Dashboard picker — shown right after login when the account holds BOTH
+  // borrower and investor roles, letting the user choose where to land.
+  const [showDashboardPicker, setShowDashboardPicker] = useState(false);
+  const pickerOpenRef = useRef(false);
+  // The picker must only appear for a login that happened ON THIS PAGE — not
+  // when a session is silently restored on mount, and not when an already
+  // signed-in user revisits /account.
+  const userAtMountRef = useRef(user);
+  const everLoadingRef = useRef(false);
 
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -53,10 +64,53 @@ export default function AccountAccess() {
   }, [signupVerification, loginStepUp]);
 
   useEffect(() => {
-    if (user) {
-      navigate(user.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
+    if (loading) {
+      everLoadingRef.current = true;
+      return;
     }
-  }, [user, navigate]);
+    if (!user) return;
+    if (pickerOpenRef.current) return;
+    // A ?redirect= target (e.g. /apply) always wins — the user was mid-flow.
+    const redirect = searchParams.get("redirect");
+    const singleDashboard = user.roles.includes("INVESTOR") ? "/investor" : "/borrower";
+    if (redirect && redirect.startsWith("/") && !redirect.startsWith("//")) {
+      navigate(redirect, { replace: true });
+      return;
+    }
+    // Already signed in when this page rendered, or session restored from a
+    // persisted token — go straight to the dashboard, no picker.
+    if (userAtMountRef.current || everLoadingRef.current) {
+      navigate(singleDashboard, { replace: true });
+      return;
+    }
+    // Both roles → let the user choose their preferred dashboard. They can
+    // always switch between borrower and investor later from the header.
+    if (user.roles.includes("INVESTOR") && user.roles.includes("BORROWER")) {
+      pickerOpenRef.current = true;
+      setShowDashboardPicker(true);
+      return;
+    }
+    navigate(singleDashboard, { replace: true });
+  }, [user, loading, navigate, searchParams]);
+
+  function enterDashboard(target: "investor" | "borrower") {
+    pickerOpenRef.current = false;
+    setShowDashboardPicker(false);
+    navigate(target === "investor" ? "/investor" : "/borrower", { replace: true });
+  }
+
+  // Header "Sign in" links carry #signin (register: #register) — glide the
+  // auth form into view automatically instead of leaving the user at the top
+  // of the marketing panel.
+  useEffect(() => {
+    if (location.hash !== "#signin" && location.hash !== "#register") return;
+    const target = document.getElementById("auth-panel");
+    if (!target) return;
+    const t = window.setTimeout(() => {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return () => window.clearTimeout(t);
+  }, [location.hash]);
 
   const passwordMatch = useMemo(
     () => !confirmPassword || password === confirmPassword,
@@ -93,13 +147,13 @@ export default function AccountAccess() {
     try {
       if (mode === "login") {
         if (signupVerification) {
-          const verifiedUser = await verifyRegistrationOtp({ userId: signupVerification.userId, challengeId: signupVerification.challengeId, code: otpCode });
-          navigate(verifiedUser.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
+          // setUser inside AuthContext drives the post-login routing effect
+          // (redirect → dashboard picker → single dashboard).
+          await verifyRegistrationOtp({ userId: signupVerification.userId, challengeId: signupVerification.challengeId, code: otpCode });
           return;
         }
         if (loginStepUp) {
-          const verifiedUser = await completeLoginOtp(loginStepUp.challengeId, otpCode);
-          navigate(verifiedUser.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
+          await completeLoginOtp(loginStepUp.challengeId, otpCode);
           return;
         }
         const result = await login(normalizedEmail, password);
@@ -115,12 +169,12 @@ export default function AccountAccess() {
           setError("");
           return;
         }
-        const loggedIn = result as { roles: string[] };
-        navigate(loggedIn.roles.includes("INVESTOR") ? "/investor" : "/borrower", { replace: true });
+        // Post-login navigation (incl. the dashboard picker for dual-role
+        // accounts) is handled by the user-routing effect above — `login()`
+        // already stored the session via setUser in AuthContext.
       } else if (mode === "register") {
         if (signupVerification) {
-          const verifiedUser = await verifyRegistrationOtp({ userId: signupVerification.userId, challengeId: signupVerification.challengeId, code: otpCode });
-          navigate(verifiedUser.roles.includes("INVESTOR") ? "/investor" : `/apply?type=${loanType}`, { replace: true });
+          await verifyRegistrationOtp({ userId: signupVerification.userId, challengeId: signupVerification.challengeId, code: otpCode });
           return;
         }
         if (!passwordMatch) {
@@ -461,7 +515,7 @@ export default function AccountAccess() {
           </div>
 
           {/* RIGHT: Form Panel */}
-          <div className="lg:col-span-2 flex items-center animate-fade-in-right">
+          <div id="auth-panel" className="lg:col-span-2 flex items-center animate-fade-in-right scroll-mt-24">
             <div className="w-full max-w-md mx-auto lg:mx-0 space-y-5">
               {/* Top mode toggle (login/register) — hidden during forgot */}
               {mode !== "forgot" && (
@@ -858,6 +912,89 @@ export default function AccountAccess() {
           </div>
         </div>
       </div>
+
+      {/* Dashboard picker — dual-role accounts choose where to land after
+          signing in. They can always switch between dashboards later. */}
+      {showDashboardPicker && user && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dashboard-picker-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md px-4 animate-fade-in"
+        >
+          <div className="relative w-full max-w-xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 shadow-2xl overflow-hidden animate-[slideInUp_280ms_cubic-bezier(0.22,1,0.36,1)]">
+            {/* Decorative gradient header */}
+            <div className="relative bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 dark:from-velo-900 dark:via-velo-900 dark:to-velo-900 px-6 sm:px-8 pt-7 pb-8 text-white overflow-hidden">
+              <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-emerald-400/20 blur-3xl" />
+              <div className="absolute -bottom-20 -left-10 w-48 h-48 rounded-full bg-velo-300/10 blur-3xl" />
+              <div className="relative">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-200">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Welcome back, {user.fullName?.split(" ")[0] || "there"}
+                </div>
+                <h2 id="dashboard-picker-title" className="mt-3 text-2xl sm:text-3xl font-black leading-tight">
+                  Where would you like to go?
+                </h2>
+                <p className="mt-2 text-sm text-white/70 max-w-md">
+                  Your account has both a borrower and an investor dashboard. Select your preferred dashboard to enter — you can always switch between your borrower and investor accounts anytime.
+                </p>
+              </div>
+            </div>
+
+            <div className="px-6 sm:px-8 py-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <button
+                type="button"
+                onClick={() => enterDashboard("investor")}
+                className="group relative text-left p-5 rounded-2xl border-2 border-slate-200 dark:border-slate-700 bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-900/20 dark:to-slate-900 hover:border-emerald-400 dark:hover:border-emerald-500 hover:shadow-xl hover:shadow-emerald-500/10 hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200"
+              >
+                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-400 text-white shadow-lg shadow-emerald-500/25 mb-3 group-hover:scale-110 transition-transform">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18M7 14l4-4 4 4 5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </div>
+                <div className="text-lg font-black text-velo-900 dark:text-white">Investor</div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Portfolio, earnings &amp; wallet — fund verified loans and track returns.
+                </p>
+                <div className="mt-3 inline-flex items-center gap-1 text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                  Enter dashboard
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="group-hover:translate-x-0.5 transition-transform"><path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => enterDashboard("borrower")}
+                className="group relative text-left p-5 rounded-2xl border-2 border-slate-200 dark:border-slate-700 bg-gradient-to-br from-velo-50 to-white dark:from-velo-900/30 dark:to-slate-900 hover:border-velo-400 dark:hover:border-velo-500 hover:shadow-xl hover:shadow-velo-500/10 hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200"
+              >
+                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-velo-600 to-velo-500 text-white shadow-lg shadow-velo-500/25 mb-3 group-hover:scale-110 transition-transform">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zm-7 9a7 7 0 0114 0" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </div>
+                <div className="text-lg font-black text-velo-900 dark:text-white">Borrower</div>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Loans, applications &amp; repayments — apply, track and repay with ease.
+                </p>
+                <div className="mt-3 inline-flex items-center gap-1 text-xs font-bold text-velo-600 dark:text-velo-400">
+                  Enter dashboard
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="group-hover:translate-x-0.5 transition-transform"><path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </div>
+              </button>
+            </div>
+
+            <div className="px-6 sm:px-8 pb-6 flex items-center justify-between gap-3">
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
+                <Icon name="sparkles" size={13} className="text-emerald-500" />
+                You can switch between your Borrower and Investor account at any time.
+              </p>
+              <button
+                type="button"
+                onClick={() => enterDashboard(user.roles.includes("BORROWER") ? "borrower" : "investor")}
+                className="text-xs font-semibold text-slate-400 hover:text-velo-600 dark:hover:text-velo-400 transition-colors whitespace-nowrap"
+              >
+                Skip
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

@@ -37,6 +37,7 @@ import {
   deleteApplicationDraft,
   getAccessToken,
   getApplicationDraft,
+  getBorrowerDashboard,
   saveApplicationDraft,
   submitBorrowerApplication,
   getLoanProducts,
@@ -122,6 +123,7 @@ interface ApplicationContextValue {
 
   // lifecycle
   startNewApplication: (type: "PERSONAL" | "BUSINESS") => ApplicationData;
+  prefillFromPrevious: () => Promise<ApplicationData | null>;
   resumeApplication: (email: string, phone: string) => Promise<LookupDraftResponse>;
   loadExisting: (id: string, data?: ApplicationData, sectionIndex?: number | null) => void;
   resetApplication: () => void;
@@ -335,6 +337,115 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     return fresh;
   }, []);
 
+  // ----- lifecycle: prefill from previous application -----
+  // Returning borrowers must NOT re-enter information they already provided.
+  // We pull the most recent previous application snapshot from the backend and
+  // fill every still-empty field of the fresh draft. Identity verifications
+  // carry over too (same person, already verified). Documents and the signed
+  // agreement are intentionally NOT carried over — those must be re-uploaded /
+  // re-signed for the new loan.
+  const prefillFromPrevious = useCallback(async (): Promise<ApplicationData | null> => {
+    const current = applicationRef.current;
+    if (!current || current.status === "SUBMITTED") return null;
+    if (!getAccessToken()) return null;
+    try {
+      const dashboard = await getBorrowerDashboard();
+      const applications = Array.isArray((dashboard as { applications?: unknown[] }).applications)
+        ? ((dashboard as { applications: unknown[] }).applications as Array<Record<string, unknown>>)
+        : [];
+      const relevantStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "REJECTED"];
+      const previous = applications
+        .filter((app) => relevantStatuses.includes(String(app.status ?? "")))
+        .filter((app) => String(app.id ?? "") !== current.applicationId)
+        .sort((a, b) =>
+          String(b.submittedAt ?? b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.submittedAt ?? a.updatedAt ?? a.createdAt ?? ""))
+        )[0];
+      if (!previous) return null;
+      const snapshot = (previous.customerSnapshot ?? {}) as Record<string, Record<string, unknown>>;
+      const str = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+      const fillStrings = <T extends object>(base: T, incoming: Record<string, unknown> | undefined, fields: Array<keyof T & string>): T => {
+        const next = { ...base } as Record<string, unknown>;
+        for (const field of fields) {
+          if (String(next[field] ?? "").trim() !== "") continue;
+          const value = str(incoming?.[field]);
+          if (value) next[field] = value;
+        }
+        return next as unknown as T;
+      };
+
+      const prevDisb = snapshot.disbursementAccount ?? {};
+      const prevKyc = snapshot.kyc ?? {};
+      const prevLoan = snapshot.loanRequest ?? {};
+      const program = getLoanProgram(current.applicantType || "PERSONAL");
+
+      // Loan request: restore the previous amount/tenure — clamped to the
+      // CURRENT product limits, which may have changed since the last loan.
+      const prevAmount = Number(prevLoan.amount);
+      const amount = Number.isFinite(prevAmount) && prevAmount > 0
+        ? Math.min(program.loanLimits.max, Math.max(program.loanLimits.min, prevAmount))
+        : current.loanRequest.amount;
+      const tenureValues = program.tenures.map((t) => t.value);
+      const prevTenure = Number(prevLoan.tenure);
+      const tenure = tenureValues.includes(prevTenure) ? prevTenure : current.loanRequest.tenure;
+      const purpose = current.loanRequest.purpose || str(prevLoan.purpose);
+
+      // KYC: carry the identifiers AND their verification status — the same
+      // person already passed BVN/NIN/liveness in a previous application.
+      const kyc: ApplicationData["kyc"] = { ...current.kyc };
+      for (const field of ["bvn", "nin", "identificationType", "identificationNumber"] as const) {
+        if (String(kyc[field] ?? "").trim() === "" && str(prevKyc[field])) {
+          (kyc as unknown as Record<string, unknown>)[field] = str(prevKyc[field]);
+        }
+      }
+      if (prevKyc.bvnVerified === true) kyc.bvnVerified = true;
+      if (prevKyc.ninVerified === true) kyc.ninVerified = true;
+      if (prevKyc.livenessVerified === true) kyc.livenessVerified = true;
+      if (prevKyc.verifiedDetails && typeof prevKyc.verifiedDetails === "object") {
+        kyc.verifiedDetails = { ...(kyc.verifiedDetails ?? {}), ...(prevKyc.verifiedDetails as Record<string, unknown>) };
+      }
+      if (str(prevKyc.identityPhotoUrl)) kyc.identityPhotoUrl = str(prevKyc.identityPhotoUrl);
+
+      const updated: ApplicationData = touch({
+        ...current,
+        personalInfo: fillStrings(current.personalInfo, snapshot.personalInfo, ["fullName", "phone", "email", "dateOfBirth", "residentialAddress", "state", "lga"]),
+        disbursementAccount: fillStrings(
+          { ...current.disbursementAccount, bankCode: current.disbursementAccount.bankCode ?? "" },
+          prevDisb,
+          ["accountName", "bankName", "bankCode", "accountNumber"],
+        ),
+        personalFinancial: fillStrings(current.personalFinancial, snapshot.personalFinancial, ["employmentStatus", "employerBusinessName", "monthlyIncome", "monthlyExpenses", "existingLoanObligations", "expectedRepaymentSource"]),
+        businessInfo: fillStrings(current.businessInfo, snapshot.businessInfo, ["businessName", "businessRegistrationNumber", "businessType", "businessAddress", "businessIndustry", "yearsInBusiness"]),
+        businessRep: fillStrings(current.businessRep, snapshot.businessRep, ["fullName", "dateOfBirth", "position", "phone", "email", "residentialAddress"]),
+        businessFinancial: fillStrings(current.businessFinancial, snapshot.businessFinancial, ["averageMonthlyRevenue", "averageMonthlyExpenses", "existingLoanObligations", "expectedRepaymentSource"]),
+        kyc,
+        collateral: (() => {
+          const prev = snapshot.collateral ?? {};
+          const merged = { ...current.collateral };
+          for (const field of ["type", "description", "estimatedValue", "ownership", "location", "documentReference"] as const) {
+            if (String(merged[field] ?? "").trim() === "" && str(prev[field])) merged[field] = str(prev[field]);
+          }
+          if (merged.provided !== true && typeof prev.provided === "boolean") merged.provided = prev.provided;
+          return merged;
+        })(),
+        witness: (() => {
+          const prev = snapshot.witness ?? {};
+          return {
+            fullName: current.witness.fullName || str(prev.fullName),
+            phone: current.witness.phone || str(prev.phone),
+          };
+        })(),
+        loanRequest: { amount, tenure, purpose },
+        calculation: calculateLoan(amount, tenure, { loanType: current.applicantType || "PERSONAL" }),
+      });
+      applicationRef.current = updated;
+      setApplication((existing) => (existing?.applicationId === updated.applicationId ? updated : existing));
+      return updated;
+    } catch (_e) {
+      return null;
+    }
+  }, []);
+
   // ----- lifecycle: resume -----
   const resumeApplication = useCallback(async (email: string, phone: string): Promise<LookupDraftResponse> => {
     // Cross-device resume is handled by the verified OTP flow on /resume.
@@ -526,6 +637,20 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     setIsSubmitting(true);
     setSubmitError(null);
     try {
+      // Hard gate: a loan application can NEVER be submitted without a
+      // complete disbursement account (name, bank, code and 10-digit NUBAN).
+      // Previously an incomplete account sailed through and later bricked
+      // admin disbursement with "No disbursement account found".
+      const acct = application.disbursementAccount ?? ({} as typeof application.disbursementAccount);
+      const missingAcct: string[] = [];
+      if (!acct.accountName?.trim()) missingAcct.push("verified account name");
+      if (!acct.bankName?.trim() || !acct.bankCode?.trim()) missingAcct.push("bank");
+      if (!/^\d{10}$/.test(String(acct.accountNumber ?? "").trim())) missingAcct.push("10-digit account number");
+      if (missingAcct.length) {
+        const msg = `Your disbursement account is incomplete (missing ${missingAcct.join(", ")}). Please complete the Disbursement Account Information in your details section before submitting — this is where your loan will be paid.`;
+        setSubmitError(msg);
+        return { ok: false, applicationId: application.applicationId, status: application.status, error: msg };
+      }
       const res = getAccessToken()
         ? await (async () => {
             const response = await submitBorrowerApplication(compactApplicationData(application));
@@ -567,6 +692,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     lastSavedAt,
     backendConfigured: Boolean(getAccessToken()),
     startNewApplication,
+    prefillFromPrevious,
     resumeApplication,
     loadExisting,
     resetApplication,
@@ -690,6 +816,10 @@ function normalizeApplicationData(
     disbursementAccount: {
       accountName: pickString(prevDisb?.accountName, dataDisb.accountName, ""),
       bankName: pickString(prevDisb?.bankName, dataDisb.bankName, ""),
+      // bankCode MUST survive normalization — the admin disbursement route
+      // requires accountNumber + bankCode to send the transfer. Dropping it
+      // here silently bricked every disbursement for resumed drafts.
+      bankCode: pickOptionalString(prevDisb?.bankCode, dataDisb.bankCode, null) ?? undefined,
       accountNumber: pickString(prevDisb?.accountNumber, dataDisb.accountNumber, ""),
     },
     personalFinancial: {
@@ -776,7 +906,8 @@ function deriveSectionStatus(app: ApplicationData, key: SectionKey): SectionStat
       if (app.applicantType === "PERSONAL") {
         const p = app.personalInfo;
         const account = app.disbursementAccount;
-        const ok = Boolean(p.fullName && p.phone && p.email && p.dateOfBirth && p.residentialAddress && p.state && p.lga && account.accountName && account.bankName && account.accountNumber);
+        // bankCode is required — the backend cannot disburse without it.
+        const ok = Boolean(p.fullName && p.phone && p.email && p.dateOfBirth && p.residentialAddress && p.state && p.lga && account.accountName && account.bankName && account.bankCode && account.accountNumber);
         return ok ? "completed" : "not_started";
       }
       const b = app.businessInfo;
@@ -787,7 +918,8 @@ function deriveSectionStatus(app: ApplicationData, key: SectionKey): SectionStat
       if (app.applicantType !== "BUSINESS") return "locked";
       const r = app.businessRep;
       const account = app.disbursementAccount;
-      const ok = Boolean(r.fullName && r.position && r.phone && r.email && r.residentialAddress && account.accountName && account.bankName && account.accountNumber);
+      // bankCode is required — the backend cannot disburse without it.
+      const ok = Boolean(r.fullName && r.position && r.phone && r.email && r.residentialAddress && account.accountName && account.bankName && account.bankCode && account.accountNumber);
       return ok ? "completed" : "not_started";
     }
     case "kyc": {

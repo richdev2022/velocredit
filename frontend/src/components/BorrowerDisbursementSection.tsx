@@ -234,7 +234,8 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, o
 
         {locked ? (
           <p className="mt-5 rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/30 dark:bg-amber-900/20 dark:text-amber-300">
-            This account is locked because you have a submitted loan application.
+            This account is locked because you have a submitted loan application. Any change goes to
+            Velo for approval first — this protects the account your loan will be paid into.
           </p>
         ) : (
           <form
