@@ -1,35 +1,71 @@
-# Velo Finance LTD — Loan Application Web Application
+# Velo Finance LTD — Lending & Investment Platform
 
-A complete, production-ready **multi-step Loan Application** for **Velo Finance LTD** built with **React + TypeScript + Vite + Tailwind CSS**, with **Google Apps Script** as the backend (Google Sheets + Google Drive).
+Production-ready Nigerian digital-lending and investment platform: **borrowers** apply for personal or business loans, **investors** fund their wallets and earn returns on investment plans, and an **admin/loan-manager workspace** operates the whole pipeline — KYC review, staged loan approval, Flutterwave disbursement, repayments, payouts, ledger, reports and content — from one place.
 
-- Personal loans and Business loans
-- Save & resume functionality (local + cloud)
-- Configurable loan amounts, fees, interest, tenures — all via `.env`
-- Dynamic fee calculations (flat or percentage)
-- Automatically generated, pre-filled Loan Agreement (downloadable PDF)
-- Document uploads to Google Drive (per-applicant folder)
-- Application records in Google Sheets
-- **Admin dashboard** to review applications, view documents, and update statuses
-- Modern, professional, mobile-first fintech UI
+- **Customer site:** <https://www.velocredit.ng>
+- **API:** <https://api.velocredit.ng> · Swagger UI: <https://api.velocredit.ng/docs> · OpenAPI JSON: <https://api.velocredit.ng/openapi.json>
 
----
+## What the platform does
+
+| Area | Capabilities |
+|---|---|
+| **Borrower** | Multi-step loan application wizard (personal & business), cloud save-and-resume drafts, auto-prefill for returning customers, a **fresh application ID for every new loan request**, loan products with configurable limits/fees/tenures, disbursement-account verification, Flutterwave repayments, credit score & history, A4 printable loan agreement |
+| **Investor** | Wallet funding via Flutterwave, investment plans with configurable rates/tenures/liquidity rules, early-liquidity requests, withdrawals protected by OTP + idempotency keys, multiple payout accounts with admin-approved change requests, unified (deduplicated) transaction history, CSV exports |
+| **Wallet integrity** | Every balance is **derived ledger truth**: held amounts are reconciled on read (phantom holds self-heal with refund + audit row), `available = credited − debited` invariant, double-entry admin ledger with platform balance |
+| **KYC** | BVN & NIN verification via Prembly, face liveness check, document uploads to Google Drive, KYC reuse of loan-application documents, embedded Prembly widget flow, OTP-confirmed verification, admin case review per requirement, KYC gates on investing/withdrawing/applying |
+| **Admin & Loan managers** | Unified workspace: dashboard, loan management (search/filter/paginate), staged application review with approve-all, decisions, disbursement + retry, payout and withdrawal management with detail view & retry, account-change approval queue, KYC cases, users/roles, loan managers, administrators, investment plans, loan products, platform settings, announcements, banner carousel, maintenance mode, audit log, business reports, reconciliation view |
+| **Platform** | JWT auth with OTP login (WhatsApp/SMS/email), two-step admin login, password reset, role-based access, notifications, consent receipts, rate products resilient to misconfiguration, full CSV export coverage with date ranges, idempotent provider webhooks |
+
+## Architecture
+
+```
+┌─────────────────────────┐         ┌──────────────────────────────────────┐
+│  Frontend (SPA)          │  HTTPS  │  Backend API (Node 20+, Express 5)    │
+│  www.velocredit.ng       │────────▶│  api.velocredit.ng                    │
+│  React 18 + TypeScript   │         │  /api/v1/*  (JWT + role gates)        │
+│  Vite + Tailwind CSS     │         │  /docs (Swagger UI)  /openapi.json    │
+│  Vercel (SPA rewrite)    │         └───────┬──────────────────────────────┘
+└─────────────────────────┘                 │
+                                            │ server-side only, webhook-confirmed
+                     ┌──────────────────────┼───────────────────────────────┐
+                     ▼                      ▼                               ▼
+        ┌────────────────────┐   ┌────────────────────┐        ┌────────────────────┐
+        │ PostgreSQL (Neon)   │   │ Flutterwave         │        │ Prembly             │
+        │ source of truth +   │   │ payments, payouts,  │        │ BVN/NIN/liveness/   │
+        │ 7 SQL migrations    │   │ transfers, webhooks │        │ credit bureau       │
+        └────────────────────┘   └────────────────────┘        └────────────────────┘
+                     │
+        ┌────────────┼─────────────────────────────┬──────────────────────────┐
+        ▼            ▼                             ▼                          ▼
+  Google Drive   Google Sheets                 Meta WhatsApp              Brevo email
+  (KYC/private   (backup + export,             OTP delivery +             (transactional
+   documents)     Apps Script ingest)           notifications              mail + OTP)
+```
+
+**Money movement rule:** every provider settlement (deposit, payout, disbursement, repayment) is initiated server-side with idempotency, verified against the provider API, and reconciled by background sweeps + signature-checked webhooks. The client never talks to providers directly.
+
+**Tech stack:** React 18, TypeScript, Vite, Tailwind CSS, react-hook-form · Express 5, Zod, jsonwebtoken, bcrypt, Multer, swagger-ui-express · PostgreSQL via `@neondatabase/serverless` · Google Drive/Sheets via `googleapis` · jsPDF agreement generation · Vitest + supertest.
 
 ## Table of Contents
 
 1. [Quick Start (Local Development)](#1-quick-start-local-development)
 2. [Environment Configuration](#2-environment-configuration)
-- [WhatsApp OTP Production Setup](./WHATSAPP_OTP_SETUP.md)
-3. [Backend Deployment — Google Apps Script](#3-backend-deployment--google-apps-script)
-4. [Frontend Deployment — User Site](#4-frontend-deployment--user-site)
-5. [Admin Dashboard](#5-admin-dashboard)
-6. [Application Flow](#6-application-flow)
-7. [Fee Calculation](#7-fee-calculation)
-8. [Agreement Generator](#8-agreement-generator)
-9. [Project Structure](#9-project-structure)
-10. [Security](#10-security)
-11. [Customising](#11-customising)
-12. [Troubleshooting](#12-troubleshooting)
-13. [License & Disclaimer](#13-license--disclaimer)
+3. [API Documentation (Swagger)](#3-api-documentation-swagger)
+4. [Roles & Key Flows](#4-roles--key-flows)
+5. [Loan Application Lifecycle](#5-loan-application-lifecycle)
+6. [KYC & Identity Verification](#6-kyc--identity-verification)
+7. [Wallet & Money Movement](#7-wallet--money-movement)
+8. [Admin Operations](#8-admin-operations)
+9. [CSV Exports](#9-csv-exports)
+10. [Notifications & Platform Content](#10-notifications--platform-content)
+11. [Database & Persistence](#11-database--persistence)
+12. [Project Structure](#12-project-structure)
+13. [Testing & Verification](#13-testing--verification)
+14. [Security](#14-security)
+15. [Deployment](#15-deployment)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Related Docs](#17-related-docs)
+18. [License & Disclaimer](#18-license--disclaimer)
 
 ---
 
@@ -37,648 +73,389 @@ A complete, production-ready **multi-step Loan Application** for **Velo Finance 
 
 ### Prerequisites
 
-- **Node.js 18+** and **npm** (download from <https://nodejs.org/>)
-- A **Google account** (Gmail or Google Workspace) for the backend
-- Optional: a code editor like VS Code
+- **Node.js 18+** (Node 20+ recommended) and npm or pnpm (`packageManager: pnpm@9`)
+- A PostgreSQL database (e.g. a free [Neon](https://neon.tech) database) — the API degrades to in-memory mode without `DATABASE_URL` for local experiments
 
-### Steps
+### Install & run
 
 ```bash
-# 1. Unzip the project
-unzip velo-finance-loan-app.zip
-cd velo-finance-loan-app
+# from the repository root (frontend + backend share one package.json)
+npm install            # or: pnpm install
 
-# 2. Install dependencies
-npm install
+# terminal 1 — API on http://localhost:4000 (Swagger UI at /docs)
+npm run dev:api
 
-# 3. Copy the example env and configure
-cp .env.example .env
-# (edit .env — see section 2)
+# terminal 2 — frontend on http://localhost:5173 (proxies config via VITE_API_URL)
+npm run dev:web
 
-# 4. Run the web and API dev servers
+# or run both together
 npm run dev
 ```
 
-Open <http://localhost:5173/> in your browser.
+Useful scripts:
 
-The development command starts Vite on port 5173 and the Express API on port 4000. The API creates any missing PostgreSQL tables from `backend/database/001_initial_schema.sql` before it begins listening. To run either process separately, use `npm run dev:web` or `npm run dev:api`.
+| Script | Purpose |
+|---|---|
+| `npm run dev:api` / `dev:web` / `dev` | Watch-mode API / frontend / both |
+| `npm run build` | Type-check then production build (frontend dist) |
+| `npm run lint` | TypeScript project check (`tsc --noEmit`) |
+| `npm run typecheck:api` | Backend type-check (`tsconfig.server.json`) |
+| `npm test` | Full Vitest suite (unit + API integration) |
+| `npm run seed:sheets` / `export:sheets` | Google Sheets seeding / backup export |
 
-To build for production:
+### First run checklist
 
-```bash
-npm run build     # outputs to ./dist/
-npm run preview   # serves the production build locally
-```
+1. Copy `.env.example` (or create `.env`) with at least `DATABASE_URL`, `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` — see [Environment Configuration](#2-environment-configuration).
+2. Start the API; it applies the SQL migrations in `backend/database/` automatically on boot.
+3. Open `http://localhost:4000/health` — should answer `{ ok: true }`.
+4. Open `http://localhost:5173`, register a borrower or investor account and walk the flow. The admin workspace lives at `/admin` (login with the `ADMIN_EMAIL` credentials).
 
 ---
 
 ## 2. Environment Configuration
 
-All configuration is read from `.env`. Copy `.env.example` to `.env` and edit it:
+All backend configuration is validated at boot with Zod (`backend/server/config.ts`) — the process **fails loudly** on invalid/missing values instead of half-starting. In production, `DATABASE_URL`, `JWT_SECRET`, `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_WEBHOOK_SECRET`, `ADMIN_EMAIL` + `ADMIN_PASSWORD` (or `ADMIN_PASSWORD_HASH`) and `PREMBLY_WEBHOOK_SECRET` are **required**.
 
-```env
-# Google Apps Script Web App URL (deployed from Code.gs + SecurityOverrides.gs + ZSecurityNotifications.gs)
-VITE_GOOGLE_SCRIPT_URL=YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL
+### Core
 
-# Loan amount limits (Naira)
-VITE_LOAN_MIN_AMOUNT=100000
-VITE_LOAN_MAX_AMOUNT=30000000
-VITE_LOAN_DEFAULT_AMOUNT=3000000
+| Variable | Default | Notes |
+|---|---|---|
+| `NODE_ENV` | `development` | |
+| `API_PORT` / `PORT` | `4000` | Render-style hosts set `PORT` |
+| `API_HOST` | `0.0.0.0` | |
+| `API_PUBLIC_URL` | `http://localhost:4000` | Advertised in health/docs output |
+| `API_ORIGIN` | `http://localhost:5173` | Allowed CORS origin |
+| `DATABASE_URL` | — | PostgreSQL connection string (Neon serverless driver) |
+| `JWT_SECRET`, `JWT_EXPIRES_IN` | — / `2h` | `JWT_SECRET` min 32 chars |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` | — | Bootstrap administrator credentials (password min 12 chars) |
 
-# Available tenures (days, comma-separated)
-VITE_LOAN_TENURES=30,60,90,180
+### Providers & integrations
 
-# Fee configuration — each fee supports "flat" or "percentage"
-#   flat        => fee = VITE_<NAME>_VALUE
-#   percentage  => fee = loanAmount * VITE_<NAME>_VALUE / 100
-VITE_INTEREST_TYPE=flat
-VITE_INTEREST_VALUE=500000
+| Group | Variables |
+|---|---|
+| **Flutterwave** | `FLUTTERWAVE_BASE_URL`, `FLUTTERWAVE_PUBLIC_KEY`, `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_ENCRYPTION_KEY`, `FLUTTERWAVE_WEBHOOK_SECRET` |
+| **Prembly (KYC)** | `PREMBLY_BASE_URL`, `PREMBLY_API_KEY`, `PREMBLY_WEBHOOK_SECRET`, endpoint path overrides (`PREMBLY_BVN_PATH`, `PREMBLY_NIN_PATH`, `PREMBLY_BVN_FACE_PATH`, `PREMBLY_NIN_FACE_PATH`, `PREMBLY_ID_SCAN_PATH`, `PREMBLY_FACE_LIVENESS_PATH`, `PREMBLY_CREDIT_REPORT_PATH`, `PREMBLY_LIVENESS_PATH`) |
+| **Kudi SMS** | `KUDI_BASE_URL`, `KUDI_API_KEY`, `KUDI_SENDER_ID`, `KUDI_WEBHOOK_SECRET` |
+| **Meta WhatsApp** | `META_WHATSAPP_ACCESS_TOKEN`, `META_WHATSAPP_APP_SECRET`, `META_WHATSAPP_VERIFY_TOKEN`, `META_WHATSAPP_BUSINESS_ACCOUNT_ID`, `META_WHATSAPP_PHONE_NUMBER_ID`, `META_GRAPH_API_VERSION` |
+| **Brevo email** | `BREVO_API_URL`, `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `BREVO_SENDER_NAME` |
+| **Google (docs/sheets)** | `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`, `GOOGLE_DRIVE_PARENT_FOLDER_ID`, `GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SHEETS_SHEET_NAME`, `GOOGLE_SHEETS_BACKUP_SPREADSHEET_ID`, `GOOGLE_SHEETS_BACKUP_ENABLED`, `GOOGLE_SHEETS_INGEST_AS_BACKUP_ONLY` |
+| **Document storage (S3-compatible optional)** | `DOCUMENT_STORAGE_BUCKET`, `DOCUMENT_STORAGE_ENDPOINT`, `DOCUMENT_STORAGE_ACCESS_KEY`, `DOCUMENT_STORAGE_SECRET_KEY`, `DOCUMENT_MAX_SIZE_BYTES`, `DOCUMENT_ALLOWED_MIME_TYPES` |
 
-VITE_SERVICE_FEE_TYPE=percentage
-VITE_SERVICE_FEE_VALUE=2
+### Platform behaviour
 
-VITE_PROCESSING_FEE_TYPE=flat
-VITE_PROCESSING_FEE_VALUE=5000
+| Variable | Default | Notes |
+|---|---|---|
+| `OTP_TTL_SECONDS` / `OTP_RESEND_COOLDOWN_SECONDS` / `OTP_MAX_ATTEMPTS` | `300` / `60` / `5` | OTP hardening |
+| `LOAN_AUTO_ELIGIBLE_SCORE_MIN` | `650` | Credit score ≥ → auto-approve path |
+| `LOAN_AUTO_REVIEW_SCORE_MIN` | `550` | Score ≥ → fast manual review |
+| `LOAN_REMINDER_DAYS` | `7,3,0` | Repayment reminder schedule |
 
-VITE_LATE_FEE_TYPE=percentage
-VITE_LATE_FEE_VALUE=5
-# Set to "true" to include late fees in the initial repayment total
-VITE_INCLUDE_LATE_FEE_UPFRONT=false
+### Frontend (`VITE_*`)
 
-# Branding
-VITE_COMPANY_NAME=Velo Finance LTD
-VITE_COMPANY_WEBSITE=www.velofinance.co
-```
+| Variable | Default | Notes |
+|---|---|---|
+| `VITE_API_URL` | `http://localhost:4000` | Absolute API origin. **Must** be `https://api.velocredit.ng` in production — all calls go through `apiClient`, which prefixes this origin |
 
-> **Security note**: Only `VITE_*` variables are exposed to the browser. Never put Google service-account credentials, OAuth client secrets, or other backend secrets in `.env`. Those belong solely in the Google Apps Script project.
-
-### Configuration validation
-
-The application validates the configuration at startup. If anything is invalid (e.g. min > max, percentage out of range), a clear notice is shown on the home screen and the issue is logged to the console.
-
----
-
-## 3. Backend Deployment — Google Apps Script
-
-The backend is the combined Apps Script project made from [`Code.gs`](./backend/google-apps-script/Code.gs), [`SecurityOverrides.gs`](./backend/google-apps-script/SecurityOverrides.gs), and [`ZSecurityNotifications.gs`](./backend/google-apps-script/ZSecurityNotifications.gs). Copy all three files into the same Apps Script project. The overlay files provide OTP admin login, secure resume, manager accounts, Brevo notifications, and the final `doPost` dispatcher.
-
-### 3.1 Create the Apps Script project
-
-1. Open <https://script.google.com> → click **New Project**.
-2. Delete the default `Code.gs` content.
-3. Copy the complete contents of `Code.gs` into the Apps Script `Code.gs` file.
-4. Create two additional script files named `SecurityOverrides.gs` and `ZSecurityNotifications.gs`, then copy each matching file from this repo into it.
-5. Save all three files. The files intentionally define the final dispatcher in load order; do not deploy only `Code.gs`.
-
-### 3.2 Configure the backend
-
-Open the `CONFIG` block at the top of `Code.gs` and review/edit these values:
-
-```javascript
-const CONFIG = {
-  // Parent Drive folder that will hold all applicant folders.
-  // Leave blank to create a new folder in your root Drive named "Velo Loan Applications".
-  DRIVE_PARENT_FOLDER_ID: "",
-
-  // Spreadsheet that will hold the Loan Applications sheet.
-  // Leave blank to create a new spreadsheet named "Velo Loan Applications".
-  SPREADSHEET_ID: "",
-
-  SHEET_NAME: "Loan Applications",
-  DRIVE_PARENT_FOLDER_NAME: "Velo Loan Applications",
-  SPREADSHEET_NAME: "Velo Loan Applications",
-
-  MAX_FILE_SIZE_BYTES: 10 * 1024 * 1024,
-  ALLOWED_MIME: ["application/pdf", "image/jpeg", "image/jpg", "image/png"],
-  COMPANY_NAME: "Velo Finance LTD",
-
-  // Leave the admin password empty. Store it in Script Properties with setAdminPassword().
-  ADMIN_PASSWORD: "",
-};
-```
-
-### 3.3 Run setup
-
-1. In the Apps Script editor, select the `setup` function from the function dropdown at the top.
-2. Click **Run**.
-3. Authorize the script when prompted:
-   - Click **Review permissions**
-   - Choose your Google account
-   - Click **Advanced** → **Go to Velo Loan API (unsafe)** → **Allow**
-4. After execution finishes, open **View → Logs** (or Ctrl/Cmd + Enter). You should see:
-   ```
-   Setup complete.
-   Spreadsheet URL: https://docs.google.com/spreadsheets/d/.../edit
-   Sheet name:      Loan Applications
-   Drive folder:    Velo Loan Applications
-   Drive folder URL: https://drive.google.com/drive/folders/...
-   ```
-   > ⚠️ Save these URLs — you'll need the spreadsheet to view raw application data and the Drive folder to view uploaded documents.
-
-### 3.4 (Recommended) Set a strong admin password
-
-For production, store a strong password in `PropertiesService` (the source fallback is empty):
-
-1. In the Apps Script editor, paste this in the editor and run it once:
-
-   ```javascript
-   function setAdminPassword() {
-     setAdminPassword_("YOUR_STRONG_PASSWORD_HERE");
-   }
-   ```
-
-2. Replace `YOUR_STRONG_PASSWORD_HERE` with your actual password (≥ 6 characters).
-3. Run it. You should see "Admin password updated." in the logs.
-4. Run `setAdminEmail('admin@example.com')` once as well, unless administrator addresses are managed in the Admin Settings screen.
-
-### 3.5 Deploy as a Web App
-
-1. Click **Deploy → New deployment** (top right).
-2. Click the gear icon ⚙️ next to **Select type** → choose **Web app**.
-3. Fill in:
-   - **Description**: `Velo Loan API v1`
-   - **Execute as**: `Me (your-email@gmail.com)`
-   - **Who has access**: `Anyone`
-4. Click **Deploy**.
-5. Authorize again if prompted.
-6. **Copy the Web App URL** that looks like:
-   ```
-   https://script.google.com/macros/s/AKfyc.../exec
-   ```
-7. Paste it into your `.env` file as `VITE_GOOGLE_SCRIPT_URL`.
-
-### 3.6 Verify the deployment
-
-Open the Web App URL in your browser. You should see:
-
-```json
-{
-  "ok": true,
-  "message": "Velo Finance LTD — Loan Application API is running.",
-  "time": "2026-09-05T..."
-}
-```
-
-If you see an error, check the Apps Script **Executions** log at <https://script.google.com/home/executions>.
-
-### 3.7 Updating the backend later
-
-If you edit `Code.gs` after deploying:
-
-1. Click **Deploy → Manage deployments**.
-2. Select the existing deployment.
-3. Click the pencil (edit) icon.
-4. Under **Version**, select **New version** (so changes take effect immediately).
-5. Click **Deploy**.
-
-> ⚠️ The Web App URL stays the same across versions, so you don't need to update `.env` after re-deploying.
-
-### 3.8 Endpoints
-
-The frontend sends `POST` requests with `Content-Type: text/plain` (to avoid CORS pre-flight on Apps Script). The JSON body has the shape `{ action, payload }`:
-
-| Action                  | Payload                                                    | Auth        | Description                                                                                                                                |
-| ----------------------- | ---------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `saveDraft`             | `ApplicationData`                                          | None        | Create or update the draft row in the Sheet. Returns `{ ok, applicationId, status }`.                                                      |
-| `submit`                | `ApplicationData`                                          | None        | Promote draft → final ID, create Drive folder, upload docs, mark SUBMITTED. Returns `{ ok, applicationId, driveFolderUrl, documentUrls }`. |
-| `lookup`                | `{ email, phone }`                                         | None        | Look up a draft by email and/or phone. Returns `{ ok, found, application? }`.                                                              |
-| `adminLogin`            | `{ password }`                                             | None        | Returns `{ ok, token, expiresIn }`. Token is valid for 24 hours.                                                                           |
-| `adminListApplications` | `{ adminToken, status?, type?, search?, limit?, offset? }` | Admin token | Returns `{ ok, total, applications[] }` with slim summaries.                                                                               |
-| `adminGetApplication`   | `{ adminToken, applicationId }`                            | Admin token | Returns `{ ok, application }` with full detail including BVN/NIN + Drive URLs.                                                             |
-| `adminUpdateStatus`     | `{ adminToken, applicationId, status }`                    | Admin token | Updates status. Returns `{ ok, status }`.                                                                                                  |
-| `adminListStats`        | `{ adminToken }`                                           | Admin token | Returns `{ ok, counts, total, totalLoanAmount }`.                                                                                          |
-
-Responses are returned as `ContentService.MimeType.JSON` (Apps Script renders these as `text/plain`).
-
-### 3.9 Folder structure in Google Drive
-
-```
-Velo Loan Applications (parent folder)
-├── VEL-LN-2026-000124 - John Doe
-│   ├── identificationDocument.pdf
-│   ├── proofOfAddress.jpg
-│   └── signedAgreement.pdf
-└── VEL-LN-2026-000125 - ABC Trading Ltd
-    ├── identificationDocument.pdf
-    ├── proofOfAddress.jpg
-    └── signedAgreement.pdf
-```
-
-> **BVN/NIN are NEVER included in folder names, URLs, or file names.** They are stored in the Sheet row only.
-
-### 3.10 Sheet columns
-
-The Sheet's first row is a header (auto-created by `setup()`):
-
-```
-Application ID, Applicant Type, Application Status,
-Date Created, Date Last Updated, Date Submitted,
-Full Name, Date of Birth, Phone, Email,
-Residential Address, State, LGA,
-Business Name, Business Registration Number, Business Type,
-Business Address, Business Industry, Years in Business,
-Representative Name, Representative Position,
-Representative Phone, Representative Email, Representative Address,
-BVN, NIN, ID Type, ID Number,
-Employment Status, Employer/Business Name, Monthly Income, Monthly Expenses,
-Business Revenue, Business Expenses, Existing Loan Obligations, Expected Repayment Source,
-Loan Amount, Loan Tenure, Loan Purpose,
-Interest, Service Fee, Processing Fee, Other Fees, Total Fees, Total Repayment,
-Disbursement Date, Repayment Date,
-Google Drive Folder URL, ID Document URL, Proof of Address URL, Signed Agreement URL
-```
+The frontend also supports **admin runtime overrides** (localStorage `velo:admin-config`) for demo/staging tweaks — loan limits, fees, tenures, branding — see `frontend/src/utils/config.ts`. Production data always wins on the server side.
 
 ---
 
-## 4. Frontend Deployment — User Site
+## 3. API Documentation (Swagger)
 
-The frontend is a static Vite build. Deploy it anywhere that serves static files.
+The API is self-documenting. The OpenAPI 3.0.3 spec lives in **`backend/server/openapi.ts`** and is served by the same process:
 
-### 4.1 Build the production bundle
+| Artifact | URL |
+|---|---|
+| Swagger UI | `https://api.velocredit.ng/docs` |
+| OpenAPI JSON | `https://api.velocredit.ng/openapi.json` |
+
+The spec documents **every route the server exposes** (162 operations across 107 paths): auth + OTP, profile/consents/notifications, all KYC endpoints, the full investor surface (wallet, funding, investments, early liquidity, withdrawals, payout accounts, exports), the full borrower surface (dashboard, products, drafts, applications, loans, credit, disbursement account, exports), the complete admin workspace (users, loan managers, administrators, KYC cases, application drafts, loans with staged review and disbursement, investment plans, loan products, platform settings, announcements, banners, ledger, withdrawals, payouts, disbursements, account-change requests, reports, reconciliation, audit logs, CSV exports), provider reference data and all webhook receivers (Flutterwave, Prembly, Kudi, Meta WhatsApp).
+
+Authenticated routes use **Bearer JWT** (`Authorize` button in Swagger UI). Admin routes additionally require the ADMIN role — that token is only issued through the two-step admin login.
+
+> Keep the spec in sync: when you add a route in `backend/server/routes.ts` or `index.ts`, add the matching entry to `openapi.ts`. A quick audit script pattern: extract `router.<method>("...")` registrations from `routes.ts` and diff them against `Object.keys(openapi.paths)`.
+
+---
+
+## 4. Roles & Key Flows
+
+### Borrower
+1. **Register → verify** (OTP via WhatsApp/SMS/email when enforced).
+2. **KYC** — BVN/NIN verification, liveness, document uploads (see §6). Borrowing is gated on verified identity.
+3. **Application wizard** — choose personal or business, fill sections (personal/business info, finances, KYC docs, disbursement account, loan request, collateral, agreement). Progress auto-saves as a cloud draft; returning customers get **auto-prefill** of previously entered data.
+4. **Submit → review** — credit snapshot at submit; admin stages the application (§8). Statuses: `UNDER_REVIEW → APPROVED/REJECTED/MORE_INFORMATION_REQUIRED`, then on approval the loan record is created and **disbursed** to the verified disbursement account via Flutterwave.
+5. **Repay** — Flutterwave checkout per repayment (minimum ₦50, capped at outstanding). Repayments update the schedule, credit history and credit score.
+
+### Investor
+1. **Register → KYC** — same verification pipeline; investing/withdrawing is gated on it.
+2. **Fund wallet** — Flutterwave checkout; deposit is pending until provider-verified (webhook or client-side verify).
+3. **Invest** — pick an active plan; principal is locked (held) until maturity, earnings accrue daily and appear in the analytics.
+4. **Withdraw** — available balance only, OTP challenge + idempotency key, Flutterwave transfer with background status polling (stuck transfers fail-and-reverse after 15 min).
+5. **Early liquidity** — request early exit on plans that allow it (fee rules per plan; forfeit-interest flag honoured).
+
+### Admin / Loan manager
+- Log in at `/admin` with **two-step authentication** (password → OTP). Loan managers are the same workspace with scoped permissions.
+- Operate everything from one workspace (§8). Every sensitive action lands in the audit log.
+
+---
+
+## 5. Loan Application Lifecycle
+
+### Every new loan request gets a fresh application ID
+
+This is a hard API rule: `POST /borrower/applications` **creates a new application record with a new ID** whenever the referenced application is in a terminal status (`REPAID`, `CANCELLED`, `WRITTEN_OFF`). Re-sending a terminal application's ID falls through to creation (`input.applicationId = randomUUID()`) — the historical loan is never overwritten or re-used. Only non-terminal duplicate submissions (same in-flight ID) return the existing record as `duplicate: true`, and a foreign borrower's ID is rejected with `409`. The frontend mirrors this: drafts belonging to terminal applications are **purged locally and remotely**, the dashboard CTA becomes "Apply Again" (never "Continue Application"), and a stale wizard success screen self-resets.
+
+### Statuses & gates
+
+| Status | Meaning | Customer sees |
+|---|---|---|
+| `UNDER_REVIEW` | Submitted, awaiting decision | "Under review" banner, read-only application |
+| `APPROVED` | Approved, awaiting disbursement | Approval notice |
+| `DISBURSED` / `ACTIVE` | Money paid out, loan running | Repayment schedule + pay CTA |
+| `REPAID` | Fully repaid (terminal) | History + **Apply Again** |
+| `REJECTED` / `CANCELLED` / `WRITTEN_OFF` | Terminal | Reason + **Apply Again** |
+| `MORE_INFORMATION_REQUIRED` | Admin needs input | Note with what to provide |
+
+### Drafts, prefill & resume
+
+- Drafts are saved locally and cloud-side (`GET/PUT/DELETE /borrower/application-draft…`) with one in-flight draft per borrower.
+- `GET /borrower/application-draft` **self-heals**: if the draft points at a terminal application it is purged (DB + store) and the API answers `draft: null`.
+- Auto-prefill **copies** previous personal/business/financial data into a brand-new application — it never re-uses the old application record.
+
+### Staged review (admin)
+
+Applications are reviewed stage-by-stage (applicant, business, financials, KYC, collateral, agreement). Admins approve/reject each stage (`PATCH /admin/loans/:loanId/stages/:stageKey`), approve all outstanding stages at once, record the overall decision, and disburse. If a disbursement account change is pending, disbursal is blocked until the borrower's new account is verified/approved (admin can trigger "request account update").
+
+---
+
+## 6. KYC & Identity Verification
+
+- **BVN / NIN verification** via Prembly (`POST /me/kyc/bvn/verify`, `POST /me/kyc/nin/verify`) with name/DOB matching; OTP-confirm flows (`verify-confirm-otp` / `verify-resend-otp`) for supported verification types.
+- **Face liveness** (`POST /me/kyc/liveness/verify`) and the **embedded Prembly widget** flow (`prembly-widget/complete`) with a signature-checked webhook (`/webhooks/prembly/kyc`).
+- **Documents** upload to a private Google Drive folder (`POST /me/kyc/documents`); customers can **reuse documents** already uploaded with a loan application (`POST /me/kyc/reuse-application-documents`) instead of re-uploading.
+- **Checklist model**: bvn, nin, liveness, proof of address, passport, signature. Admins decide per requirement (`POST /admin/kyc-cases/:id/requirement`) or issue an overall decision (`POST /admin/kyc-cases/:id/decision`) — the user is notified either way.
+- **KYC gates** are enforced server-side on: creating investments, requesting early liquidity, withdrawing, submitting loan applications and payout actions. Blocked attempts are reported (`/me/kyc/action-blocked`) and drive in-app + email reminders.
+- Admins can **reset** a user's KYC (`POST /admin/users/:id/kyc-reset`) to force re-verification.
+
+---
+
+## 7. Wallet & Money Movement
+
+### Derived ledger truth (hold reconciliation)
+
+Wallet balances are not trusted incrementally. `reconcileWalletHolds()` recomputes the **true held amount** from backing records (active investments, payouts awaiting account setup, KYC-gated pending approvals, in-flight withdrawals) and repairs any drift **in both directions** with compensating ledger rows:
+
+- Phantom hold → `HOLD_RELEASE` credit refunds the investor (with an audit row).
+- Under-held → `HOLD_RESTORE` debit restores the hold.
+
+Reconciliation runs on dashboard/wallet reads, at boot, and after every maturity sweep. The investor dashboard therefore shows **Total credited**, **Total debited**, **Pending deposits/payouts** and the provable invariant `available = credited − debited`. The admin reconciliation view (`GET /admin/reconciliation`) surfaces wallet invariants and provider pending items.
+
+### Funding & investments
+
+1. `POST /investor/wallet/funding` creates a pending deposit + Flutterwave checkout link.
+2. Credit happens after provider verification — signature-checked webhook (`/webhooks/flutterwave`) or explicit client verify (`/investor/wallet/funding/verify`, 3-retry verification, amount+currency+owner matching). Duplicate events are idempotent.
+3. `POST /investor/investments` locks the principal (held balance), computes maturity + expected earnings from the plan (rate types: `ANNUALIZED`, `FLAT`, `TENURE_SPECIFIC`; optional early-liquidity fee, gateway fee, forfeit-interest flags, capacity cap).
+4. Maturity sweeps release principal (`INVESTMENT_RELEASE`) and pay earnings (`INVESTMENT_RETURN`) as separate ledger semantics — earnings never touch holds.
+
+### Withdrawals & payouts
+
+- `POST /investor/wallet/withdraw` requires an **OTP challenge** (`POST /auth/otp/request`) and a client-generated **idempotency key**; replays return the original outcome instead of double-paying.
+- Background verification polls Flutterwave; transfers without a provider reference that stay unconfirmed > 15 min are **failed and reversed** automatically (no eternal PROCESSING).
+- Payout-account changes queue an **admin approval request** (`/admin/account-requests`) with an existing/new snapshot; the first account is auto-verified as default.
+- Failed withdrawals/disbursements/payouts can be retried by admin (`/admin/withdrawals/:id/retry`, `/admin/disbursements/:id/retry`, `/admin/payouts/:id/retry`).
+
+### Loan disbursement & repayment
+
+- Admin disbursement (`POST /admin/loans/:loanId/disburse`) transfers to the borrower's **verified** disbursement account, records the double-entry ledger `DEBIT`, is idempotent per loan, and retries safely on failure.
+- Borrower repayments open a Flutterwave checkout; confirmed repayments post to the schedule, ledger and credit history.
+
+### Transaction history (deduplicated)
+
+Investor/borrower history is built by `frontend/src/utils/unifiedTxs.ts` from ledger + wallet + first-class records with strict dedup rules (a funding appears once, an investment appears once, withdrawals show live status). The backend CSV export mirrors the same rules so downloads match the UI.
+
+---
+
+## 8. Admin Operations
+
+The unified workspace (`frontend/src/components/admin/AdminWorkspace.tsx`) covers:
+
+| Panel | Highlights |
+|---|---|
+| Dashboard / summary | Platform KPIs, charts, maintenance-mode gate |
+| Loan management | List with **status filter, search, pagination** (`limit/offset/status/borrowerId/search`), detail with documents + credit snapshots, **staged review** (per-stage approve/reject, approve-all), decision recording, disbursement + retry, "request account update" |
+| KYC cases | Queue, per-requirement decisions, overall decisions, KYC reset |
+| Users | Create/edit/roles/suspend, KYC reset, investor earning-rate override, manual wallet credit (ledgered + audited) |
+| Loan managers / Administrators | Create, permission scoping, activate/suspend, delete |
+| Investments & plans | All investments; plan CRUD with liquidity rules and rate types |
+| Withdrawal history | Filters (status, date range), search, pagination, detail with ledger trail + timeline, retry |
+| Disbursements | All transfers (self-healing status read), per-borrower history, retry |
+| Payouts | Attempt list, manual approval gate, retry |
+| Account requests | Approve/reject bank-account change requests (payout + disbursement) |
+| Ledger & reports | Double-entry ledger with platform balance; date-range business reports |
+| Content | Announcements (max 280 chars), banner carousel (base64 upload, links, activation), platform settings (fees, rates, maintenance mode/message) |
+| Audit log | Every sensitive action with actor/target enrichment, CSV export |
+
+Loan products are created/edited with cross-field guards (e.g. `minAmountNaira` must be less than `maxAmountNaira` — rejected at the API boundary) and late-fee semantics (`ONE_TIME`, `COMPOUNDING_DAILY`, `COMPOUNDING_MONTHLY`).
+
+---
+
+## 9. CSV Exports
+
+Every dataset is downloadable as CSV with optional `from`/`to` date range:
+
+- **Admin** (`GET /admin/export/:dataset`): withdrawals, loans, payouts, ledger, kyc, investors, audit-logs, investments, disbursements, applications… unknown datasets return `400` with a hint listing valid ones.
+- **Investor** (`GET /investor/export/:dataset`): transactions, investments, repayments, loans, schedule.
+- **Borrower** (`GET /borrower/export/:dataset`): same dataset family.
+
+Export rows use correct naira formatting (no ×100 minor-unit errors) and mirror the app's dedup rules for transactions.
+
+---
+
+## 10. Notifications & Platform Content
+
+- **WhatsApp OTP** (Meta Cloud API, signature-verified webhook) with SMS (Kudi) and email (Brevo) channels; OTPs are TTL/cooldown/attempt-hardened. See `WHATSAPP_OTP_SETUP.md`.
+- **Brevo** sends transactional email (verification, KYC outcomes, reminders, password reset).
+- **Repayment reminders** scheduled by `LOAN_REMINDER_DAYS` (default 7/3/0 days before due).
+- **In-app notifications** (`/me/notifications`) for KYC outcomes, disbursements, payouts, announcements.
+- **Announcements + banner carousel** are admin-managed and served publicly via `/platform/status` and `/platform/banners`; **maintenance mode** can disable customer actions with a custom message.
+
+---
+
+## 11. Database & Persistence
+
+- **PostgreSQL is the source of truth** (`DATABASE_URL`, Neon serverless driver). Migrations live in `backend/database/001…007*.sql` and are applied automatically on boot; they include hardening defaults, unique loan application references, and withdrawal/disbursement idempotency keys.
+- Without `DATABASE_URL` (local experiments) the API runs on an in-memory store so the full test suite works offline.
+- **Google Drive** stores private KYC/application documents (per-applicant folders, private sharing).
+- **Google Sheets** remains as a backup/export channel (Apps Script ingest, backup spreadsheet, `seedGoogleSheets` / `exportSheetsBackup` scripts) — it is *backup only*, never the live store.
+- Boot sequence also runs wallet-hold reconciliation and maturity sweeps before accepting traffic.
+
+---
+
+## 12. Project Structure
+
+```
+velocredit/
+├─ frontend/
+│  ├─ src/
+│  │  ├─ components/            # shared UI + admin/ workspace panels
+│  │  ├─ pages/                 # dashboards, wizard, KYC, admin entry, legal
+│  │  ├─ sections/              # loan application wizard sections
+│  │  ├─ services/              # apiClient (all API calls), adminApi, agreement generator
+│  │  ├─ context/               # Auth, Application, Theme
+│  │  ├─ types/ utils/          # loan types, config loader, unifiedTxs (dedup), calculators
+│  │  └─ index.css
+│  └─ index.html
+├─ backend/
+│  ├─ server/
+│  │  ├─ index.ts               # Express app, webhooks, /docs, /openapi.json, boot checks
+│  │  ├─ routes.ts              # the /api/v1 router (150+ endpoints)
+│  │  ├─ openapi.ts             # OpenAPI 3.0.3 spec (Swagger UI source)
+│  │  ├─ store.ts               # domain store + PostgreSQL persistence
+│  │  ├─ auth.ts                # JWT, OTP challenges, password reset
+│  │  ├─ investments.ts         # investment lifecycle, maturity sweeps
+│  │  ├─ credit.ts creditReconciliation.ts loanDecision.ts
+│  │  ├─ providers/             # flutterwave, prembly, kudi, meta
+│  │  ├─ reconciliation.ts      # provider + wallet reconciliation sweeps
+│  │  ├─ email.ts reminders.ts  # Brevo mail, repayment reminders
+│  │  ├─ db.ts migrate.ts       # Neon connection, migration runner
+│  │  └─ storage/googleDrive.ts
+│  └─ database/                 # 001–007 SQL migrations
+├─ scripts/                     # smoke + e2e test harnesses (ts, run with tsx)
+├─ vercel.json                  # frontend deployment (SPA rewrite)
+└─ WHATSAPP_OTP_SETUP.md, BREVO_AND_ADMIN_SETUP.md, INVESTOR_AND_PLATFORM_REQUIREMENTS.md
+```
+
+**Frontend API discipline:** every network call goes through `frontend/src/services/apiClient.ts` / `adminApi.ts`, which prefix the absolute `VITE_API_URL` origin and pick the right token (admin token for `/api/v1/admin/*`). Raw relative `fetch()` calls are forbidden — in production they hit the frontend host and receive the SPA's `index.html` (this caused the infamous `Unexpected token '<'` error; see Troubleshooting).
+
+---
+
+## 13. Testing & Verification
 
 ```bash
-npm run build
+npm test                     # Vitest: unit + in-process API integration suites
+npx tsc --noEmit             # frontend type check
+npm run typecheck:api        # backend type check
+npm run build                # production build
 ```
 
-This creates a `dist/` folder with the compiled HTML, CSS, and JS.
+Notable suites & harnesses (in `scripts/`, run with `npx tsx scripts/<file>.ts`):
 
-### 4.2 Option A — Vercel (recommended)
+| Harness | Covers |
+|---|---|
+| `e2eExportTest.ts` | Boots the real API in-process, seeds data with real JWTs, asserts 21 checks across all CSV export datasets (dedup, amounts, headers, date filters) |
+| `e2eWalletReconcileTest.ts` | Replicates corrupted wallets (phantom holds, over-releases, stuck withdrawals) and asserts self-healing in both directions — 16 checks |
+| `e2eStaleDraftTest.ts` | Terminal-application drafts purge; re-application after REPAID creates a **fresh application ID** while history stays untouched — 5 scenarios |
+| `smoke*.ts` | Loan end-to-end, approval/disbursement, product resolution, disbursement account, KYC docs, transaction history, rejection-reopen |
 
-1. Push this repo to GitHub (or GitLab/Bitbucket).
-2. Go to <https://vercel.com> → **Add New → Project**.
-3. Import your repo.
-4. Vercel auto-detects Vite. Configure:
-   - **Framework Preset**: Vite
-   - **Build Command**: `npm run build`
-   - **Output Directory**: `dist`
-   - **Environment Variables**: Add each `VITE_*` variable from your `.env`.
-5. Click **Deploy**.
-
-Vercel will give you a URL like `https://velo-finance-loan.vercel.app/`. Any future push to your main branch automatically redeploys.
-
-### 4.3 Option B — Netlify
-
-1. Push this repo to GitHub.
-2. Go to <https://app.netlify.com> → **Add new site → Import an existing project**.
-3. Connect your repo. Configure:
-   - **Build command**: `npm run build`
-   - **Publish directory**: `dist`
-   - **Environment variables**: Add each `VITE_*` variable from your `.env`.
-4. Click **Deploy site**.
-
-### 4.4 Option C — Cloudflare Pages
-
-1. Push this repo to GitHub.
-2. Go to <https://pages.cloudflare.com> → **Create a project → Connect to Git**.
-3. Pick the repo. Configure:
-   - **Framework preset**: Vite
-   - **Build command**: `npm run build`
-   - **Build output directory**: `dist`
-   - **Environment variables**: Add each `VITE_*` variable from your `.env`.
-4. Click **Save and Deploy**.
-
-### 4.5 Option D — Static file hosting (any S3-compatible / Nginx)
-
-1. Build locally: `npm run build`.
-2. Upload the entire `dist/` folder to your host's web root.
-3. Configure the host to serve `index.html` for any path (SPA fallback), so `/apply`, `/resume`, `/admin` etc. all resolve to `index.html`.
-
-For example, with Nginx:
-
-```nginx
-server {
-  listen 80;
-  server_name loans.velofinance.co;
-  root /var/www/velo-finance/dist;
-  index index.html;
-
-  location / {
-    try_files $uri $uri/ /index.html;
-  }
-}
-```
-
-For Apache (`.htaccess` in the `dist/` folder):
-
-```apache
-<IfModule mod_rewrite.c>
-  RewriteEngine On
-  RewriteBase /
-  RewriteRule ^index\.html$ - [L]
-  RewriteCond %{REQUEST_FILENAME} !-f
-  RewriteCond %{REQUEST_FILENAME} !-d
-  RewriteRule . /index.html [L]
-</IfModule>
-```
-
-### 4.6 Option E — GitHub Pages
-
-GitHub Pages serves from a fixed path, so you need to set a base path in `vite.config.ts`:
-
-```ts
-export default defineConfig({
-  plugins: [react()],
-  base: "/your-repo-name/", // ← add this
-  // ...
-});
-```
-
-Then:
-
-1. `npm run build`
-2. Push the contents of `dist/` to the `gh-pages` branch of your repo (or use the `gh-pages` npm package).
-3. Enable Pages in your repo settings → **Pages → Source: gh-pages branch / root**.
-
-### 4.7 Update the backend's CORS / origin allow-list
-
-Apps Script Web Apps accept requests from any origin by default — no additional CORS configuration is needed. If your organisation restricts outbound requests via the Apps Script project's allowed origins, add your deployed frontend URL there.
+Full verification before every push: both type checks + `npm test` (56 tests) + `npm run build` must pass.
 
 ---
 
-## 5. Admin Dashboard
+## 14. Security
 
-The admin dashboard lives at `/admin` on the deployed frontend (e.g. `https://loans.velofinance.co/admin`).
-
-### 5.1 Access
-
-1. Open `https://your-frontend-url/admin` in your browser.
-2. Enter the admin password (default: `velo-admin-2026`, or whatever you set with `setAdminPassword_("...")` — see section 3.4).
-3. Click **Log In**.
-
-### 5.2 Features
-
-- **Stats overview**: total applications, plus counts by status (Submitted, Under Review, Approved, Disbursed).
-- **Filterable list**: filter by status, applicant type, or free-text search (matches Application ID, applicant name, business name, email, or phone).
-- **Detail view**: full applicant + KYC + financial + loan details, with one-click links to the Drive folder and each uploaded document.
-- **Status updates**: change an application's status (DRAFT → IN_PROGRESS → SUBMITTED → UNDER_REVIEW → APPROVED / REJECTED → DISBURSED → REPAID).
-
-### 5.3 Authentication
-
-- The admin password is verified by the Apps Script backend. On success, the backend issues a **session token** (UUID) stored in `PropertiesService`.
-- The token is valid for **24 hours** and is sent with every admin request.
-- The token is stored in `sessionStorage` (cleared when the browser tab closes).
-- For production hardening, consider:
-  - Replacing the simple password with a Google Sign-In flow (more work, but no shared password).
-  - Restricting the Apps Script Web App URL to specific IPs via a Cloudflare proxy in front of it.
-
-### 5.4 How to use the dashboard
-
-1. After login, the list view shows all applications (most recent first).
-2. Use the search box to find by ID, name, email, or phone.
-3. Use the dropdowns to filter by status or applicant type.
-4. Click a row to open the detail view.
-5. In the detail view, scroll to **Documents** and click any link to open the file in Google Drive (the Drive file's sharing is set to "Anyone with the link can view" when the admin user uploaded it via the script — this is intentional, since the admin user authorised the script).
-6. To change the status, scroll to the top of the detail view, pick a new status from the dropdown, and click **Update Status**. The Sheet row is updated immediately and the status badge refreshes.
+- **JWT auth** (2h expiry, refresh endpoint) with role gates (`INVESTOR`, `BORROWER`, `ADMIN`, `LOAN_MANAGER`) enforced server-side on every route.
+- **Two-step admin login** (password → OTP) with admin-token separation from customer tokens.
+- **OTP hardening**: TTL, resend cooldown, max attempts, single-use challenges; withdrawal-grade OTP for money movement.
+- **Idempotency** on all money paths (withdrawals, disbursements) plus unique DB constraints (migrations 005–007).
+- **Webhook signature verification** for Flutterwave, Prembly (HMAC-SHA512) and Meta; raw-body capture then constant-time compare.
+- **Helmet**, CORS restricted to `API_ORIGIN`, bcrypt(12) password hashing, Zod validation at every boundary, documents in a private Drive bucket with per-user authorization on download.
+- **Audit log** (`recordAdminAudit`) on every sensitive admin action, exportable.
 
 ---
 
-## 6. Application Flow
+## 15. Deployment
 
-```
-Start
-  ↓
-Choose Personal / Business
-  ↓
-Personal/Business Information
-  ↓
-KYC (BVN, NIN, ID document, proof of address)
-  ↓
-Financial Information
-  ↓
-Loan Request (amount + tenure)
-  ↓
-Live fee calculation
-  ↓
-Generate Loan Agreement (auto-filled)
-  ↓
-Download pre-filled PDF
-  ↓
-Sign agreement (offline) + upload signed copy
-  ↓
-Review
-  ↓
-Submit → Application ID generated → Drive folder created → docs uploaded → Sheet row updated → SUBMITTED
-  ↓
-Success page with Application ID
-  ↓
-Admin reviews → Under Review → Approved/Rejected → Disbursed → Repaid
-```
+### Frontend (Vercel)
 
-### Save & Resume
+- `vercel.json` builds the SPA (`outputDirectory: frontend/dist`) with an index rewrite.
+- Set **`VITE_API_URL=https://api.velocredit.ng`** at build time.
+- **Redeploy after every frontend-affecting merge** — UI fixes only go live with a new bundle. This has bitten us before (e.g. admin Loan management fix `55fbdf8` required a redeploy to take effect).
 
-- The application is **auto-saved** (debounced ~1.5s after the user stops typing) to localStorage.
-- "Save & Continue", "Save & Exit", and "Save Progress" buttons trigger an explicit save to both localStorage and (if configured) the Google Apps Script backend.
-- The Resume screen (`/resume`) accepts email + phone and looks up the draft locally first, then on the backend if configured.
-- Application IDs follow `VEL-DRAFT-2026-000124` until submission; the backend promotes them to `VEL-LN-2026-000124` on submit.
+### Backend (any Node host — current production runs on Render)
+
+- Start command: `npm run dev:api` equivalent for production (`tsx backend/server/index.ts` behind a process manager or a compiled build).
+- Render-style hosts set `PORT`; the app listens on `0.0.0.0:$PORT` immediately (deploy guard fails loudly on bad env rather than timing out the port scan).
+- Production env must include: `DATABASE_URL`, `JWT_SECRET`, `ADMIN_EMAIL` + password/hash, `FLUTTERWAVE_*` (incl. webhook secret), `PREMBLY_API_KEY` + `PREMBLY_WEBHOOK_SECRET`, and the notification/Drive/Sheets credentials you use.
+- Provider webhooks must point at `https://api.velocredit.ng/api/v1/webhooks/…` (flutterwave, prembly/kyc, meta-whatsapp).
+- **Restart the backend after every backend-affecting merge** — routes and migrations apply at boot (e.g. the CSV export routes 404'd in production until a deploy pulled them).
+
+### Production checklist
+
+1. `npm run build` + both type checks + `npm test` green locally.
+2. Push → deploy backend → check `/health`, `/openapi.json`, `/docs`.
+3. Deploy frontend → verify www.velocredit.ng actually loads the new bundle (hard refresh).
+4. Confirm provider webhooks still answer 202 and the audit log records a test action.
 
 ---
 
-## 7. Fee Calculation
+## 16. Troubleshooting
 
-The calculation engine lives in `src/utils/loanCalculator.ts`. It's pure (no React, no DOM):
-
-```ts
-import { calculateLoan } from "./utils/loanCalculator";
-const calc = calculateLoan(3_000_000, 30);
-// => {
-//   loanAmount: 3_000_000,
-//   interest: 500_000,
-//   serviceFee: 60_000,        // 2% of 3M
-//   processingFee: 5_000,
-//   lateFee: 150_000,           // shown separately, not in totalRepayment
-//   totalFees: 565_000,
-//   totalRepayment: 3_565_000,
-//   tenure: 30,
-//   tenureLabel: "30 Days",
-//   repaymentDate: "2026-10-05T00:00:00.000Z",
-//   ...
-// }
-```
-
-Late fees are kept separate by default — they are shown as "applies only on default" in the UI and excluded from `totalRepayment`. Set `VITE_INCLUDE_LATE_FEE_UPFRONT=true` in `.env` to include them in the initial repayment total.
+| Symptom | Cause & fix |
+|---|---|
+| Frontend error `Unexpected token '<', "<!doctype "... is not valid JSON` | A request hit the **frontend host** instead of the API (SPA fallback returned HTML). All calls must use `apiClient`/`adminApi` with absolute `VITE_API_URL`. Check for raw relative `fetch()` calls; redeploy the frontend after fixing. |
+| Admin list shows `0 applications` but data exists | Same root cause as above (HTML parsed as JSON) or a stale bundle — fix the fetch path and **redeploy the frontend**. |
+| `route not found` on export/detail endpoints in production | Production backend is older than the repo. **Deploy/restart the backend** — the routes exist in code. |
+| Balances look wrong (held ≠ reality, credited/debited mismatch) | Reconciliation is derived on read; a stale wallet self-heals on next dashboard/wallet load or boot. If it persists, check `GET /admin/reconciliation` and the `HOLD_RELEASE`/`HOLD_RESTORE` audit rows. |
+| Withdrawal stuck in PROCESSING | Background verification fails-and-reverses after 15 min without a provider transfer; admin can also inspect `/admin/withdrawals/:id/detail` and retry manually. |
+| `Port scan timeout reached` on deploy | Env validation failed at boot — the log prints the exact Zod field errors (`[FATAL] Environment configuration validation failed`). Fix the listed variables. |
+| Loan re-application reuses an old application ID | Fixed at the API level (terminal-status IDs never reused; new record always created). Ensure production backend is on `1ae81eb` or later and the frontend bundle is redeployed. |
 
 ---
 
-## 8. Agreement Generator
+## 17. Related Docs
 
-The agreement is generated by `src/services/agreementGenerator.ts` using a placeholder-based template engine. The same engine works for both Personal and Business loans:
-
-```ts
-import { generateLoanAgreement } from "./services/agreementGenerator";
-const { text, html } = generateLoanAgreement(applicationData, calculation);
-```
-
-The template uses `{{PLACEHOLDER}}` tokens (e.g. `{{APPLICANT_NAME}}`, `{{LOAN_AMOUNT}}`, `{{REPAYMENT_DATE}}`) that are replaced with the applicant's actual information. BVN/NIN are intentionally **masked** in the agreement (e.g. `*****123`).
-
-The PDF is generated client-side with `jsPDF` (no external rendering service required) and downloaded with a deterministic filename:
-
-```
-VEL-LN-2026-000124-Loan-Agreement.pdf
-```
-
-> **Legal review**: The agreement template is a starting point. Have it reviewed and approved by an appropriate legal professional before production use.
+- [`WHATSAPP_OTP_SETUP.md`](./WHATSAPP_OTP_SETUP.md) — Meta WhatsApp OTP production setup
+- [`BREVO_AND_ADMIN_SETUP.md`](./BREVO_AND_ADMIN_SETUP.md) — Brevo email + administrator bootstrap
+- [`INVESTOR_AND_PLATFORM_REQUIREMENTS.md`](./INVESTOR_AND_PLATFORM_REQUIREMENTS.md) — original investor/platform requirements
+- [`backend/server/openapi.ts`](./backend/server/openapi.ts) — source of the Swagger spec
+- Legacy Google Apps Script backend notes: `backend/google-apps-script/` (superseded by the Node API; Sheets ingest remains as backup)
 
 ---
 
-## 9. Project Structure
-
-```
-.
-├── backend/
-│   ├── database/                       # PostgreSQL schema and seed migration
-│   ├── google-apps-script/             # Optional Google Apps Script backend
-│   └── server/                         # Express API, providers, routes, and stores
-├── frontend/
-│   ├── public/
-│   ├── favicon.svg
-│   └── logo.svg                       # Velo Finance logo
-│   └── src/
-│   ├── components/
-│   │   ├── admin/
-│   │   │   ├── AdminDetail.tsx
-│   │   │   ├── AdminList.tsx
-│   │   │   └── AdminLogin.tsx
-│   │   ├── AgreementDownload.tsx
-│   │   ├── AgreementPreview.tsx
-│   │   ├── ApplicantTypeSelector.tsx
-│   │   ├── ApplicationDashboard.tsx
-│   │   ├── FeeBreakdown.tsx
-│   │   ├── FileUpload.tsx
-│   │   ├── FormInput.tsx
-│   │   ├── Layout.tsx
-│   │   ├── LoanAmountSelector.tsx
-│   │   ├── LoanSummary.tsx
-│   │   ├── Logo.tsx
-│   │   ├── ProgressSteps.tsx
-│   │   ├── ReviewApplication.tsx
-│   │   ├── SaveProgress.tsx
-│   │   ├── SectionShell.tsx
-│   │   └── SelectInput.tsx
-│   ├── context/
-│   │   └── ApplicationContext.tsx     # Central state + autosave + submit
-│   ├── pages/
-│   │   ├── Admin.tsx                  # Admin dashboard host
-│   │   ├── LoanApplication.tsx        # Wizard host + dashboard route
-│   │   ├── ResumeApplication.tsx
-│   │   ├── StartApplication.tsx
-│   │   └── Success.tsx
-│   ├── sections/
-│   │   ├── AgreementSection.tsx
-│   │   ├── ApplicantTypeSection.tsx
-│   │   ├── BusinessFinancialSection.tsx
-│   │   ├── BusinessInfoSection.tsx
-│   │   ├── BusinessKycSection.tsx
-│   │   ├── BusinessRepSection.tsx
-│   │   ├── LoanRequestSection.tsx
-│   │   ├── PersonalFinancialSection.tsx
-│   │   ├── PersonalInfoSection.tsx
-│   │   ├── PersonalKycSection.tsx
-│   │   └── ReviewSection.tsx
-│   ├── services/
-│   │   ├── adminApi.ts                # Admin API client (login, list, get, updateStatus)
-│   │   ├── agreementGenerator.ts      # Loan Agreement template engine
-│   │   └── googleAppsScript.ts        # User API client (save, submit, lookup)
-│   ├── types/
-│   │   ├── application.ts
-│   │   ├── documents.ts
-│   │   └── loan.ts
-│   ├── utils/
-│   │   ├── applicationId.ts
-│   │   ├── config.ts                  # Centralised env config + validation
-│   │   ├── feeCalculator.ts
-│   │   ├── loanCalculator.ts          # Pure calculation engine
-│   │   ├── nigerianStates.ts
-│   │   ├── storage.ts                 # localStorage draft persistence
-│   │   └── validation.ts              # Zod schemas
-│   ├── App.tsx
-│   ├── main.tsx
-│   ├── index.css
-│   └── vite-env.d.ts
-├── .env.example
-├── .gitignore
-├── index.html
-├── package.json
-├── postcss.config.js
-├── tailwind.config.js
-├── tsconfig.json
-├── tsconfig.node.json
-└── vite.config.ts
-```
-
----
-
-## 10. Security
-
-- **No Google Drive credentials** are exposed to the frontend. The frontend only sends file data (base64) to the Apps Script Web App, which then writes to Google Drive using the script's own authorisation.
-- **BVN and NIN** are never placed in URLs, folder names, file names, or the agreement text. They are masked (`*****123`) wherever they would be displayed. They are stored in the Google Sheet row for verification purposes only — and shown in the **admin dashboard's detail view** (clearly marked "Sensitive").
-- **Document uploads** are validated client-side (file type + size ≤ 10 MB) before being sent to the backend. The backend re-validates before writing to Drive.
-- **Admin authentication** uses a server-issued token (UUID) stored in `PropertiesService`, valid for 24 hours. The default password should be replaced via `setAdminPassword_("...")` for production.
-- The Apps Script Web App is deployed with **"Anyone"** access (because the frontend has no auth of its own) — pair this with Apps Script's daily quota limits and your organisation's throttling policy if needed. For production, consider requiring sign-in via Google Identity / OAuth and proxying through a proper backend.
-
----
-
-## 11. Customising
-
-### Branding
-
-- Edit `tailwind.config.js` to change the primary colour (currently `#2196F3`).
-- Replace `public/logo.svg` and `public/favicon.svg` with your own assets.
-- Update `VITE_COMPANY_NAME` and `VITE_COMPANY_WEBSITE` in `.env`.
-
-### Fees
-
-All fees are configurable via `.env`. See section 2.
-
-### Loan Agreement
-
-Edit the template in `src/services/agreementGenerator.ts` (`AGREEMENT_TEMPLATE_TEXT`). The same placeholders work for both Personal and Business loans — irrelevant fields are simply rendered as `—` for the inactive applicant type.
-
-### Sections
-
-To add or modify a section, edit `src/sections/<Section>.tsx` and the relevant `SECTION` constant in `src/context/ApplicationContext.tsx` (`PERSONAL_SECTIONS` / `BUSINESS_SECTIONS`).
-
-### Admin Dashboard
-
-- The admin password can be changed via `setAdminPassword_("...")` in Apps Script — see section 3.4.
-- The admin token TTL (24 hours) can be changed by editing `ADMIN_TOKEN_TTL_MS` in `Code.gs`.
-- The admin UI lives at `/admin` and the code is in `src/pages/Admin.tsx` + `src/components/admin/`.
-
----
-
-## 12. Troubleshooting
-
-### "VITE_GOOGLE_SCRIPT_URL is not configured"
-
-You haven't set `VITE_GOOGLE_SCRIPT_URL` in your `.env`. The app will still work for local drafts, but submission, resume, and the admin dashboard won't work until you deploy the Apps Script backend (see section 3).
-
-### Apps Script returns "Unexpected response from server"
-
-This usually means the Apps Script returned HTML (an error page) instead of JSON. Check the Apps Script executions log at <https://script.google.com/home/executions>.
-
-### Document upload fails with "File too large"
-
-The frontend enforces a 10 MB limit per file. Adjust `MAX_DOC_SIZE_BYTES` in `src/types/documents.ts` and `CONFIG.MAX_FILE_SIZE_BYTES` in `google-apps-script/Code.gs` (they must match).
-
-### Resume screen doesn't find my draft
-
-Drafts are stored locally in the browser. If you started the application on a different device, the local copy won't be there — the backend lookup will fetch it instead (if `VITE_GOOGLE_SCRIPT_URL` is configured).
-
-### Admin dashboard shows "Unauthorized"
-
-Your admin token has expired (after 24 hours) or was cleared. Log in again at `/admin`.
-
-### Admin dashboard shows empty list
-
-Make sure you've actually submitted at least one application. Drafts saved locally (not synced to the backend) won't appear in the admin list — only applications that have been submitted or saved to the backend are visible.
-
-### After deploying the frontend, the `/admin` route returns 404
-
-Your hosting provider needs SPA fallback to `index.html`. See section 4.5.
-
----
-
-## 13. License & Disclaimer
+## 18. License & Disclaimer
 
 © Velo Finance LTD. All rights reserved.
 
-This Loan Agreement template is a configurable legal template. It should be reviewed and approved by an appropriate legal professional before production use.
+This repository is proprietary production software. The loan agreement template generated by the app is a configurable legal template and must be reviewed and approved by an appropriate legal professional before production use.
+
+
