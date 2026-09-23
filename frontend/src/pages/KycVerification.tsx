@@ -21,6 +21,7 @@ import Icon from "../components/Icon";
 import { useAuth } from "../context/AuthContext";
 import {
   confirmKycOwnershipOtp,
+  getMyDocument,
   getMyKyc,
   reuseKycApplicationDocuments,
   resendKycOwnershipOtp,
@@ -29,6 +30,7 @@ import {
   verifyMyBvn,
   verifyMyLiveness,
   verifyMyNin,
+  type KycDocumentView,
   type KycOtpChallenge,
   type KycResponse,
 } from "../services/apiClient";
@@ -64,6 +66,43 @@ const STATUS_BADGE: Record<string, string> = {
   idle: "bg-slate-100 text-slate-500 border border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700",
 };
 
+const DOC_STATUS_LABEL: Record<string, string> = {
+  PENDING_REVIEW: "Saved — awaiting review",
+  PENDING: "Saved — awaiting review",
+  VERIFIED: "Verified",
+  APPROVED: "Verified",
+  REJECTED: "Rejected — replace this file",
+  EXPIRED: "Expired — replace this file",
+};
+
+/**
+ * Client-side image compression — phone photos regularly weigh 3-8 MB, which
+ * made KYC uploads crawl. Images above ~400 KB are downscaled to a max edge of
+ * 1600 px and re-encoded as JPEG (quality 0.82), which is plenty for document
+ * review, while PDFs and already-small files pass through untouched.
+ */
+async function compressImageForUpload(file: File): Promise<File> {
+  if (!file.type.startsWith("image/") || file.type === "image/svg+xml" || file.size <= 400 * 1024) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const maxEdge = 1600;
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+    if (scale >= 1 && file.size <= 1024 * 1024) return file;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob((result) => resolve(result), "image/jpeg", 0.82));
+    if (!blob || blob.size >= file.size) return file;
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "document";
+    return new File([blob], `${baseName}.jpg`, { type: "image/jpeg" });
+  } catch {
+    return file;
+  }
+}
+
 export default function KycVerification() {
   const navigate = useNavigate();
   const { user, refreshUser } = useAuth();
@@ -78,10 +117,15 @@ export default function KycVerification() {
   const [busyId, setBusyId] = useState<string>("");
   const [activeOtp, setActiveOtp] = useState<{ idType: "BVN" | "NIN"; challenge: KycOtpChallenge; otpCode: string; busy?: boolean; error?: string } | null>(null);
 
-  const [proofDoc, setProofDoc] = useState<UploadedDocument | undefined>(undefined);
-  const [signatureDoc, setSignatureDoc] = useState<UploadedDocument | undefined>(undefined);
-  const [passportDoc, setPassportDoc] = useState<UploadedDocument | undefined>(undefined);
+  // Server-persisted documents are the single source of truth: every upload
+  // (and every document pulled from the loan application) lands in
+  // kyc.documents and is re-hydrated on load, so uploads survive refreshes and
+  // logouts. `replacedSlots` only tracks which cards the customer chose to
+  // replace during this visit; `uploadingSlot` mirrors in-flight uploads.
+  const [replacedSlots, setReplacedSlots] = useState<Record<string, boolean>>({});
   const [uploadingSlot, setUploadingSlot] = useState("");
+  const [previewDoc, setPreviewDoc] = useState<{ name: string; mimeType: string; dataUrl: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [reusing, setReusing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const prefillRef = useRef(false);
@@ -123,8 +167,69 @@ export default function KycVerification() {
   const reusableDocTypes = prefillDocuments.filter((doc) => doc.available);
   const requiredChecks = ["bvn", "nin", "liveness", "proofOfAddress", "signature"];
   const completed = requiredChecks.filter((key) => checklist[key]).length;
-  const canSubmit = completed === requiredChecks.length && status !== "VERIFIED" && status !== "PENDING_VERIFICATION";
+  // The submit button is disabled ONLY once the case has been submitted for
+  // admin review (or is already verified) — never because a checklist item is
+  // incomplete. The admin team reviews whatever the customer provides.
+  const canSubmit = status !== "VERIFIED" && status !== "PENDING_VERIFICATION";
   const allVerified = status === "VERIFIED";
+
+  // --- Server document hydration -------------------------------------------
+  type SlotKey = "proofOfAddress" | "signature" | "passport";
+  const slotForDocumentType = (documentType: string): SlotKey | null => {
+    if (documentType === "PROOF_OF_ADDRESS") return "proofOfAddress";
+    if (documentType === "SIGNATURE") return "signature";
+    if (["PASSPORT_PHOTO", "ID_CARD_FRONT", "ID_CARD_BACK", "BVN_SLIP", "NIN_SLIP"].includes(documentType)) return "passport";
+    return null;
+  };
+  const serverDocs: Record<SlotKey, KycDocumentView | undefined> = { proofOfAddress: undefined, signature: undefined, passport: undefined };
+  for (const doc of kyc?.documents ?? []) {
+    const slot = slotForDocumentType(String(doc.documentType ?? ""));
+    if (!slot) continue;
+    const current = serverDocs[slot];
+    const docTime = Date.parse(String(doc.createdAt ?? "")) || 0;
+    const currentTime = Date.parse(String(current?.createdAt ?? "")) || 0;
+    if (!current || docTime >= currentTime) serverDocs[slot] = doc;
+  }
+  const slotDocFor = (slot: SlotKey): UploadedDocument | undefined => {
+    if (replacedSlots[slot]) return undefined;
+    const doc = serverDocs[slot];
+    if (!doc) return undefined;
+    return {
+      slot: slot === "passport" ? "identificationDocument" : slot,
+      name: doc.fileName ?? String(doc.documentType ?? "document").replace(/_/g, " ").toLowerCase(),
+      type: doc.mimeType ?? "application/octet-stream",
+      size: doc.sizeBytes ?? 0,
+      data: "",
+      status: "uploaded",
+      addedAt: doc.createdAt ?? new Date().toISOString(),
+      driveUrl: doc.previewUrl || "",
+    } as UploadedDocument;
+  };
+  const slotStatusFor = (slot: SlotKey): string | null => serverDocs[slot]?.status ?? null;
+
+  async function openPreview(doc: KycDocumentView) {
+    // Drive-hosted documents preview straight from Google; inline and
+    // snapshot-pulled documents are resolved through the authenticated
+    // /me/documents endpoint and rendered in-page.
+    if (doc.previewUrl && /^https?:\/\//i.test(doc.previewUrl)) {
+      window.open(doc.previewUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const detail = await getMyDocument(doc.id);
+      const url = detail.document.previewUrl;
+      if (!url) {
+        setError("This document has no stored copy yet. Please re-upload it.");
+        return;
+      }
+      setPreviewDoc({ name: detail.document.fileName ?? "Document", mimeType: detail.document.mimeType ?? "application/octet-stream", dataUrl: url });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to open the document");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
   async function verifyId(type: "BVN" | "NIN") {
     const value = (type === "BVN" ? bvnInput : ninInput).trim();
@@ -195,7 +300,7 @@ export default function KycVerification() {
     }
   }
 
-  async function handleLiveness(file: File) {
+  async function handleLiveness(rawFile: File) {
     setBusyId("liveness");
     setError("");
     try {
@@ -204,6 +309,7 @@ export default function KycVerification() {
         setError("Verify your BVN or NIN before starting face verification.");
         return;
       }
+      const file = await compressImageForUpload(rawFile);
       const response = await verifyMyLiveness(file, {
         idType,
         idNumber: idType === "BVN" ? bvnInput || prefill?.bvn : ninInput || prefill?.nin,
@@ -223,15 +329,17 @@ export default function KycVerification() {
     }
   }
 
-  async function handleDocumentUpload(slot: "PROOF_OF_ADDRESS" | "SIGNATURE" | "PASSPORT_PHOTO", file: File) {
+  async function handleDocumentUpload(slot: "PROOF_OF_ADDRESS" | "SIGNATURE" | "PASSPORT_PHOTO", rawFile: File) {
     setUploadingSlot(slot);
     setError("");
     try {
+      const file = await compressImageForUpload(rawFile);
       await uploadKycDocument(slot, file);
-      if (slot === "PROOF_OF_ADDRESS") setProofDoc({ slot: "proofOfAddress", name: file.name, type: file.type, size: file.size, data: "", status: "uploaded", addedAt: new Date().toISOString() });
-      if (slot === "SIGNATURE") setSignatureDoc({ slot: "signature", name: file.name, type: file.type, size: file.size, data: "", status: "uploaded", addedAt: new Date().toISOString() });
-      if (slot === "PASSPORT_PHOTO") setPassportDoc({ slot: "identificationDocument", name: file.name, type: file.type, size: file.size, data: "", status: "uploaded", addedAt: new Date().toISOString() });
-      setNotice(`${slot.replace(/_/g, " ").toLowerCase()} uploaded for review.`);
+      const slotKey = slot === "PROOF_OF_ADDRESS" ? "proofOfAddress" : slot === "SIGNATURE" ? "signature" : "passport";
+      setReplacedSlots((current) => ({ ...current, [slotKey]: false }));
+      setNotice(`${slot.replace(/_/g, " ").toLowerCase()} saved automatically — refresh-proof and safe to log out.`);
+      // Re-pull from the server so the card reflects the PERSISTED record
+      // (name, size, review status) instead of a local-only copy.
       await refreshKyc();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to upload document");
@@ -280,10 +388,36 @@ export default function KycVerification() {
   }
 
   const categoryResults = kyc?.categoryResults ?? {};
-  const docStatus = (types: string[]) => {
-    const docs = (kyc?.documents ?? []) as Array<{ documentType?: string; status?: string }>;
-    const match = docs.find((doc) => types.includes(String(doc.documentType)) && doc.status);
-    return match?.status ?? null;
+
+  const docHelper = (slot: "proofOfAddress" | "signature" | "passport", fallback: string) => {
+    const docStatus = slotStatusFor(slot);
+    if (!docStatus) return fallback;
+    const label = DOC_STATUS_LABEL[String(docStatus).toUpperCase()];
+    return label ? `${label} · saved on your account` : `${String(docStatus).replace(/_/g, " ").toLowerCase()} · saved on your account`;
+  };
+
+  const renderDocSlot = (
+    label: string,
+    slot: "proofOfAddress" | "signature" | "passport",
+    uploadType: "PROOF_OF_ADDRESS" | "SIGNATURE" | "PASSPORT_PHOTO",
+    fallbackHelper: string,
+  ) => {
+    const hydrated = serverDocs[slot];
+    return (
+      <FileUpload
+        label={label}
+        helper={docHelper(slot, fallbackHelper)}
+        document={slotDocFor(slot)}
+        onPreview={hydrated ? () => void openPreview(hydrated) : undefined}
+        removeLabel={hydrated ? "Replace" : undefined}
+        onRemove={hydrated ? () => setReplacedSlots((current) => ({ ...current, [slot]: true })) : undefined}
+        onFile={(doc) => {
+          // FileUpload gives us local data; convert to a real upload.
+          const blob = new File([new Blob([Uint8Array.from(atob(doc.data), (c) => c.charCodeAt(0))], { type: doc.type })], doc.name, { type: doc.type });
+          void handleDocumentUpload(uploadType, blob);
+        }}
+      />
+    );
   };
 
   return (
@@ -519,42 +653,16 @@ export default function KycVerification() {
             <section className="velo-card p-5">
               <h2 className="section-heading">3 · Documents</h2>
               <p className="section-subheading">
-                We already have these from your loan application — reusing them is one click. Only upload new files if you skipped them before.
+                Anything you upload — here or during your loan application — is saved to your account automatically and stays saved
+                after a refresh or logout. Files pulled from your application are listed below; only upload a new file if a slot is empty or a document was rejected.
               </p>
               <div className="mt-4 grid gap-5 lg:grid-cols-3">
-                <FileUpload
-                  label="Proof of address"
-                  helper={docStatus(["PROOF_OF_ADDRESS"]) === "PENDING_REVIEW" ? "Pulled from your application — under review" : "Utility bill, tenancy receipt or bank statement"}
-                  document={proofDoc}
-                  onFile={(doc) => {
-                    // FileUpload gives us local data; convert to a real upload.
-                    const blob = new File([new Blob([Uint8Array.from(atob(doc.data), (c) => c.charCodeAt(0))], { type: doc.type })], doc.name, { type: doc.type });
-                    void handleDocumentUpload("PROOF_OF_ADDRESS", blob);
-                  }}
-                  onRemove={() => setProofDoc(undefined)}
-                />
-                <FileUpload
-                  label="Signature"
-                  helper={docStatus(["SIGNATURE"]) === "PENDING_REVIEW" ? "Pulled from your application — under review" : "Your signature on a plain white sheet"}
-                  document={signatureDoc}
-                  onFile={(doc) => {
-                    const blob = new File([new Blob([Uint8Array.from(atob(doc.data), (c) => c.charCodeAt(0))], { type: doc.type })], doc.name, { type: doc.type });
-                    void handleDocumentUpload("SIGNATURE", blob);
-                  }}
-                  onRemove={() => setSignatureDoc(undefined)}
-                />
-                <FileUpload
-                  label="Passport / ID photo"
-                  helper={docStatus(["PASSPORT_PHOTO", "ID_CARD_FRONT", "BVN_SLIP", "NIN_SLIP"]) === "PENDING_REVIEW" ? "Pulled from your application — under review" : "Clear photo of your ID (optional but recommended)"}
-                  document={passportDoc}
-                  onFile={(doc) => {
-                    const blob = new File([new Blob([Uint8Array.from(atob(doc.data), (c) => c.charCodeAt(0))], { type: doc.type })], doc.name, { type: doc.type });
-                    void handleDocumentUpload("PASSPORT_PHOTO", blob);
-                  }}
-                  onRemove={() => setPassportDoc(undefined)}
-                />
+                {renderDocSlot("Proof of address", "proofOfAddress", "PROOF_OF_ADDRESS", "Utility bill, tenancy receipt or bank statement")}
+                {renderDocSlot("Signature", "signature", "SIGNATURE", "Your signature on a plain white sheet")}
+                {renderDocSlot("Passport / ID photo", "passport", "PASSPORT_PHOTO", "Clear photo of your ID (optional but recommended)")}
               </div>
-              {uploadingSlot && <p className="mt-3 text-xs font-semibold text-velo-600">Uploading {uploadingSlot.replace(/_/g, " ").toLowerCase()}…</p>}
+              {uploadingSlot && <p className="mt-3 text-xs font-semibold text-velo-600">Saving {uploadingSlot.replace(/_/g, " ").toLowerCase()}…</p>}
+              {previewLoading && <p className="mt-3 text-xs font-semibold text-velo-600">Opening document…</p>}
             </section>
 
             {/* Submit */}
@@ -563,21 +671,49 @@ export default function KycVerification() {
                 <div>
                   <h2 className="section-heading">4 · Submit for verification</h2>
                   <p className="section-subheading">
-                    Our team reviews your submission (usually within 24–48 hours) and emails you the outcome.
+                    Submitting sends everything above to our review team (usually within 24–48 hours) and emails you the outcome.
                     {status === "PENDING_VERIFICATION" && " Your verification is currently awaiting review — no further action needed."}
                   </p>
                 </div>
-                <button type="button" className="btn-primary shrink-0" disabled={!canSubmit && status !== "PENDING_VERIFICATION" || submitting} onClick={() => void submitForVerification()}>
+                <button type="button" className="btn-primary shrink-0" disabled={!canSubmit || submitting} onClick={() => void submitForVerification()}>
                   {submitting ? "Submitting…" : status === "PENDING_VERIFICATION" ? "Submitted — pending review" : "Submit for verification"}
                 </button>
               </div>
-              {!canSubmit && status !== "PENDING_VERIFICATION" && (
+              {!canSubmit ? (
                 <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-                  Complete all 5 required checks above to enable submission ({completed}/5 done).
+                  {status === "PENDING_VERIFICATION"
+                    ? "The submit button stays disabled while our team reviews your verification — we will email you the outcome."
+                    : "Your identity is verified — no further submission is needed."}
+                </p>
+              ) : (
+                <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+                  {completed}/5 checks completed so far — you can submit with what you have; our review team checks everything you provide.
                 </p>
               )}
             </section>
           </>
+        )}
+
+        {/* Document preview overlay */}
+        {previewDoc && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4" role="dialog" aria-modal="true" onClick={() => setPreviewDoc(null)}>
+            <div className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-slate-900" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700">
+                <p className="truncate text-sm font-semibold text-velo-900 dark:text-white">{previewDoc.name}</p>
+                <div className="flex items-center gap-2">
+                  <a href={previewDoc.dataUrl} download={previewDoc.name} className="btn-secondary text-[11px]">Download</a>
+                  <button type="button" className="btn-ghost text-xs" onClick={() => setPreviewDoc(null)}>Close</button>
+                </div>
+              </div>
+              <div className="max-h-[calc(90vh-56px)] overflow-auto bg-slate-50 dark:bg-slate-950">
+                {previewDoc.mimeType.startsWith("image/") ? (
+                  <img src={previewDoc.dataUrl} alt={previewDoc.name} className="mx-auto max-h-[calc(90vh-56px)] w-auto object-contain" />
+                ) : (
+                  <iframe src={previewDoc.dataUrl} title={previewDoc.name} className="h-[calc(90vh-56px)] w-full" />
+                )}
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </Layout>

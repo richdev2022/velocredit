@@ -1591,6 +1591,9 @@ function EngagementSettings() {
   const [announcementBusy, setAnnouncementBusy] = useState(false);
   const [announcementMsg, setAnnouncementMsg] = useState("");
   const [announcementErr, setAnnouncementErr] = useState("");
+  const [editingAnnouncementId, setEditingAnnouncementId] = useState("");
+  const [editingAnnouncementText, setEditingAnnouncementText] = useState("");
+  const [announcementSaving, setAnnouncementSaving] = useState(false);
 
   // --- Banners ----------------------------------------------------------
   const [banners, setBanners] = useState<AdminBanner[]>([]);
@@ -1679,6 +1682,32 @@ function EngagementSettings() {
       setAnnouncements(list.announcements ?? []);
     } catch (err) {
       setAnnouncementErr(err instanceof Error ? err.message : "Unable to delete announcement");
+    }
+  }
+
+  function startAnnouncementEdit(item: AdminAnnouncement) {
+    setEditingAnnouncementId(item.id);
+    setEditingAnnouncementText(item.message);
+    setAnnouncementMsg("");
+    setAnnouncementErr("");
+  }
+
+  async function saveAnnouncementEdit() {
+    if (!editingAnnouncementId || editingAnnouncementText.trim().length < 3) return;
+    setAnnouncementSaving(true);
+    setAnnouncementMsg("");
+    setAnnouncementErr("");
+    try {
+      await adminUpdateAnnouncement(editingAnnouncementId, { message: editingAnnouncementText.trim() });
+      const list = await adminListAnnouncements();
+      setAnnouncements(list.announcements ?? []);
+      setEditingAnnouncementId("");
+      setEditingAnnouncementText("");
+      setAnnouncementMsg("Announcement updated and saved — the new text is live on both customer dashboards.");
+    } catch (err) {
+      setAnnouncementErr(err instanceof Error ? err.message : "Unable to save the announcement");
+    } finally {
+      setAnnouncementSaving(false);
     }
   }
 
@@ -1823,21 +1852,48 @@ function EngagementSettings() {
           {announcements.length > 0 && (
             <ul className="space-y-2">
               {announcements.map((item) => (
-                <li key={item.id} className="flex flex-col gap-2 rounded-xl border border-slate-200 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm text-velo-900 dark:text-white" title={item.message}>{item.message}</p>
-                    <p className="text-[11px] text-slate-400">
-                      {new Date(item.createdAt).toLocaleString()} · {item.isActive ? "live" : "hidden"}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button type="button" className="btn-secondary text-[11px]" onClick={() => void toggleAnnouncement(item)}>
-                      {item.isActive ? "Hide" : "Show"}
-                    </button>
-                    <button type="button" className="text-[11px] font-semibold text-red-600 underline underline-offset-2 dark:text-red-400" onClick={() => void removeAnnouncement(item)}>
-                      Delete
-                    </button>
-                  </div>
+                <li key={item.id} className="flex flex-col gap-2 rounded-xl border border-slate-200 px-3.5 py-3 dark:border-slate-700">
+                  {editingAnnouncementId === item.id ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={editingAnnouncementText}
+                        onChange={(event) => setEditingAnnouncementText(event.target.value)}
+                        rows={2}
+                        maxLength={280}
+                        className="velo-input text-sm"
+                        autoFocus
+                      />
+                      <p className="text-[11px] text-slate-400">{editingAnnouncementText.length}/280 characters</p>
+                      <div className="flex items-center gap-2">
+                        <button type="button" className="btn-primary text-[11px]" disabled={announcementSaving || editingAnnouncementText.trim().length < 3} onClick={() => void saveAnnouncementEdit()}>
+                          {announcementSaving ? "Saving…" : "Save changes"}
+                        </button>
+                        <button type="button" className="btn-ghost text-[11px]" onClick={() => { setEditingAnnouncementId(""); setEditingAnnouncementText(""); }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm text-velo-900 dark:text-white" title={item.message}>{item.message}</p>
+                        <p className="text-[11px] text-slate-400">
+                          {new Date(item.createdAt).toLocaleString()} · {item.isActive ? "live" : "hidden"}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button type="button" className="btn-secondary text-[11px]" onClick={() => startAnnouncementEdit(item)}>
+                          Edit
+                        </button>
+                        <button type="button" className="btn-secondary text-[11px]" onClick={() => void toggleAnnouncement(item)}>
+                          {item.isActive ? "Hide" : "Show"}
+                        </button>
+                        <button type="button" className="text-[11px] font-semibold text-red-600 underline underline-offset-2 dark:text-red-400" onClick={() => void removeAnnouncement(item)}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

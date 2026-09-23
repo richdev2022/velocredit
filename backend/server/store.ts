@@ -160,8 +160,16 @@ export interface Document {
   documentSlot?: string;
   note?: string;
   documentType: "PASSPORT_PHOTO" | "PROOF_OF_ADDRESS" | "SIGNATURE" | "BVN_SLIP" | "NIN_SLIP" | "BUSINESS_REGISTRATION" | "ID_CARD_FRONT" | "ID_CARD_BACK" | "SELFIE_PHOTO";
-  provider: "google_drive" | "s3" | "cloudinary" | "manual";
+  provider: "google_drive" | "s3" | "cloudinary" | "manual" | "inline";
   providerFileId: string;
+  /**
+   * Inline base64 data URL kept on the record while the archive upload
+   * (Google Drive) has not completed — or when Drive is unavailable — so the
+   * document is immediately durable, viewable and survives restarts.
+   */
+  inlineData?: string;
+  /** Set when the background archive upload failed; inlineData remains authoritative. */
+  uploadError?: string;
   fileName?: string;
   mimeType?: string;
   sizeBytes?: number;
@@ -640,6 +648,8 @@ export interface PlatformSettings {
   maintenanceUpdatedAt?: string;
   announcements?: PlatformAnnouncement[];
   banners?: PlatformBanner[];
+  /** Guards the one-time default banners/announcement seed so admin deletions stick. */
+  engagementSeeded?: boolean;
   updatedAt: string;
   createdAt: string;
 }
@@ -1286,6 +1296,7 @@ async function doInitializeStore(): Promise<void> {
 
   rebuildIndexes();
   seedDefaultCatalog();
+  seedDefaultEngagement();
   seedAdminLedgerOpeningBalance(0);
 
   // Self-heal legacy duplicated catalog rows (same id / same name) BEFORE the
@@ -1743,6 +1754,69 @@ export function getEffectiveInvestorRate(investorId: string, planRatePercent: nu
 export function seedDefaultCatalog(): void {
   seedInvestmentPlans();
   seedLoanProducts();
+}
+
+// ---------------------------------------------------------------------------
+// Default engagement content — seeds three branded dashboard banners and one
+// welcome announcement the FIRST time the platform boots. The seed is guarded
+// by the persisted `engagementSeeded` flag: once an admin deletes or edits
+// the seeded content, it is never re-added on restart.
+// ---------------------------------------------------------------------------
+function brandedBannerSvg(input: { headline: string; subline: string; accent: string; accentDark: string; badge: string }): string {
+  const escaped = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400">',
+    '<defs>',
+    `<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${input.accent}"/><stop offset="1" stop-color="${input.accentDark}"/></linearGradient>`,
+    '<radialGradient id="glow" cx="0.85" cy="0.15" r="0.9"><stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient>',
+    '</defs>',
+    '<rect width="1200" height="400" fill="url(#bg)"/>',
+    '<rect width="1200" height="400" fill="url(#glow)"/>',
+    '<circle cx="1050" cy="330" r="150" fill="#ffffff" opacity="0.08"/>',
+    '<circle cx="1120" cy="90" r="90" fill="#ffffff" opacity="0.10"/>',
+    '<circle cx="880" cy="40" r="46" fill="#ffffff" opacity="0.07"/>',
+    '<g transform="translate(70,84)">',
+    '<rect width="64" height="64" rx="18" fill="#ffffff" opacity="0.95"/>',
+    '<path d="M20 44 L32 20 L44 44 Z" fill="#0f766e"/><circle cx="32" cy="40" r="5" fill="#f59e0b"/>',
+    '</g>',
+    '<text x="152" y="126" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#ffffff">Velo</text>',
+    `<rect x="70" y="176" width="${24 + escaped(input.badge).length * 13}" height="38" rx="19" fill="#ffffff" opacity="0.18"/>`,
+    `<text x="86" y="201" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="700" fill="#ffffff" letter-spacing="2">${escaped(input.badge)}</text>`,
+    `<text x="70" y="272" font-family="Arial, Helvetica, sans-serif" font-size="52" font-weight="800" fill="#ffffff">${escaped(input.headline)}</text>`,
+    `<text x="70" y="322" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#ffffff" opacity="0.85">${escaped(input.subline)}</text>`,
+    '</svg>',
+  ].join("");
+}
+
+function svgBannerDataUrl(svg: string): string {
+  return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+
+export function seedDefaultEngagement(): void {
+  const settings = getPlatformSettings();
+  if (settings.engagementSeeded) return;
+  const now = new Date().toISOString();
+  if ((settings.banners ?? []).length === 0) {
+    const defaults: Array<{ name: string; badge: string; headline: string; subline: string; accent: string; accentDark: string }> = [
+      { name: "Instant loans", badge: "FAST CASH", headline: "Instant Loans, Zero Stress", subline: "Apply in minutes and get funded the same day", accent: "#0f766e", accentDark: "#134e4a" },
+      { name: "Invest and earn", badge: "GROW MONEY", headline: "Invest & Earn up to 18% p.a.", subline: "Start with as little as 10,000 Naira today", accent: "#b45309", accentDark: "#7c2d12" },
+      { name: "Verify once", badge: "KYC", headline: "Verify Once, Unlock Everything", subline: "Borrow, invest and withdraw after one quick check", accent: "#1d4ed8", accentDark: "#312e81" },
+    ];
+    settings.banners = defaults.map((item) => ({
+      id: randomUUID(),
+      name: item.name,
+      imageData: svgBannerDataUrl(brandedBannerSvg({ badge: item.badge, headline: item.headline, subline: item.subline, accent: item.accent, accentDark: item.accentDark })),
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    }));
+  }
+  if ((settings.announcements ?? []).length === 0) {
+    const message = "Welcome to Velo! Get instant loans disbursed in minutes and grow your money with investments earning up to 18% per year. Complete your KYC once to unlock borrowing, investing and withdrawals.";
+    settings.announcements = [{ id: randomUUID(), message, isActive: true, createdAt: now, updatedAt: now }];
+  }
+  settings.engagementSeeded = true;
+  settings.updatedAt = now;
 }
 
 export type JobStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";

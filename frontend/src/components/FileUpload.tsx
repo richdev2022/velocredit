@@ -26,6 +26,10 @@ interface FileUploadProps {
   /** Optional icon slot */
   icon?: ReactNode;
   media?: boolean;
+  /** Optional in-app viewer for server-persisted documents (no local data URL available). */
+  onPreview?: () => void;
+  /** Relabels the remove action (e.g. "Replace") while the file lives server-side. */
+  removeLabel?: string;
 }
 
 export default function FileUpload({
@@ -37,6 +41,8 @@ export default function FileUpload({
   onRemove,
   icon,
   media = false,
+  onPreview,
+  removeLabel,
 }: FileUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -129,6 +135,11 @@ export default function FileUpload({
               </div>
             </div>
             <div className="ml-2 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              {onPreview && (
+                <button type="button" onClick={onPreview} className="inline-flex items-center gap-1 rounded-lg border border-velo-200 px-2 py-1 text-xs font-semibold text-velo-700 hover:bg-velo-50" aria-label={`View ${docName}`}>
+                  <EyeIcon /> View
+                </button>
+              )}
               {fileSource && (
                 <a href={fileSource} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-velo-200 px-2 py-1 text-xs font-semibold text-velo-700 hover:bg-velo-50" aria-label={`Preview ${docName}`}>
                   <EyeIcon /> Preview
@@ -140,7 +151,7 @@ export default function FileUpload({
                 </a>
               )}
               {onRemove && (
-                <button type="button" onClick={onRemove} className="text-xs font-semibold text-red-600 hover:text-red-700">Remove</button>
+                <button type="button" onClick={onRemove} className="text-xs font-semibold text-red-600 hover:text-red-700">{removeLabel ?? "Remove"}</button>
               )}
             </div>
           </div>

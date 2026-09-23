@@ -41,7 +41,7 @@ import {
   loanApplications,
   investorWithdrawals,
 } from "./store.js";
-import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
+import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, seedDefaultEngagement, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
 import type { IdentityVerificationEvent } from "./store.js";
 import { markKycChecklistComplete } from "./auth.js";
 import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail, loanDisbursedEmail, loanRepaymentEmail, loanRepaymentAdminEmail } from "./email.js";
@@ -841,6 +841,7 @@ async function start(): Promise<void> {
     seedInvestmentPlans();
     seedLoanProducts();
     // seedAdminLedgerOpeningBalance(100_000_000 * 100);
+    seedDefaultEngagement();
     getPlatformSettings();
     if (sql) await persistStore();
     console.log("Database initialization complete.");

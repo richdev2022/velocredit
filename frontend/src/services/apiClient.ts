@@ -283,7 +283,7 @@ export interface KycResponse {
   rejectedReason?: string;
   rejectionReason?: string;
   message?: string;
-  documents: unknown[];
+  documents: KycDocumentView[];
   verificationEvents: unknown[];
   applicationPrefill?: {
     applicationId?: string;
@@ -306,6 +306,30 @@ export interface KycResponse {
 // Platform status (public) — maintenance mode, announcements and banners for
 // the customer-facing sliders, modal and dashboards.
 // ---------------------------------------------------------------------------
+export interface KycDocumentView {
+  id: string;
+  documentType: string;
+  documentSlot?: string;
+  provider?: string;
+  providerFileId?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  status?: string;
+  hasInlineContent?: boolean;
+  uploadError?: string;
+  version?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  previewUrl?: string;
+  downloadUrl?: string;
+}
+
+export interface MyDocumentDetail { ok: true; document: KycDocumentView & { previewUrl: string; downloadUrl: string; unavailable?: boolean } }
+/** Fetches a document the signed-in user owns, resolving inline/snapshot/Drive sources into viewable URLs. */
+export async function getMyDocument(documentId: string): Promise<MyDocumentDetail> {
+  return request(`/api/v1/me/documents/${encodeURIComponent(documentId)}`);
+}
 export interface PlatformAnnouncement { id: string; message: string; isActive: boolean; createdAt: string; updatedAt?: string; }
 export interface PlatformBanner { id: string; name: string; imageData: string; linkUrl?: string; isActive: boolean; createdAt: string; updatedAt?: string; }
 export interface PlatformStatusResponse { ok: true; maintenanceMode: boolean; maintenanceMessage: string; announcements: PlatformAnnouncement[]; }

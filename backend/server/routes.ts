@@ -1665,16 +1665,43 @@ router.post("/me/roles/add", requireAuth, async (req: AuthRequest, res) => {
 });
 
 router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
+  // AUTO-FETCH: pull identity numbers + documents from the customer's most
+  // recent loan application into the KYC case on every page load. The pull is
+  // idempotent (already-copied items are skipped), so this keeps the
+  // Verification page in sync with the application without asking the
+  // customer to click "reuse" first.
+  const kycBefore = findOrCreateKycCase(req.user!.id);
+  const requiredChecksAll = ["bvn", "nin", "liveness", "proofOfAddress", "signature"] as const;
+  if (requiredChecksAll.some((key) => !kycBefore.checklist[key])) {
+    const sourceApplication = loanApplications
+      .filter((item) => item.borrowerId === req.user!.id)
+      .sort((a, b) => String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? "")))
+      .find((item) => {
+        const snap = (item.customerSnapshot ?? {}) as Record<string, unknown>;
+        const appKyc = (snap.kyc ?? {}) as Record<string, unknown>;
+        const docs = (snap.documents ?? {}) as Record<string, unknown>;
+        return Boolean(appKyc.bvn || appKyc.nin || appKyc.identificationNumber || docs.proofOfAddress || docs.signature || docs.identificationDocument);
+      });
+    if (sourceApplication) pullKycFromSubmittedApplication(sourceApplication, req.user!.id);
+  }
   const kyc = findOrCreateKycCase(req.user!.id);
   const requiredChecks = ["bvn", "nin", "liveness", "proofOfAddress", "signature"] as const;
-  if (!requiredChecks.every((key) => kyc.checklist[key]) && ["PENDING_VERIFICATION", "VERIFIED"].includes(kyc.status)) {
+  const userDocs = documents.filter((d) => d.userId === req.user?.id);
+  const missingRequired = requiredChecks.filter((key) => !kyc.checklist[key]);
+  // Status downgrade guard: a submitted (PENDING_VERIFICATION) case with any
+  // uploaded/pulled document stays submitted for admin review even when some
+  // checklist items are incomplete. Only an empty case (nothing to review)
+  // or a verified case broken by an admin category reset falls back.
+  const shouldDowngrade =
+    missingRequired.length > 0 &&
+    (kyc.status === "VERIFIED" || (kyc.status === "PENDING_VERIFICATION" && userDocs.length === 0));
+  if (shouldDowngrade && ["PENDING_VERIFICATION", "VERIFIED"].includes(kyc.status)) {
     kyc.status = "IN_PROGRESS";
     kyc.submittedAt = undefined;
     kyc.updatedAt = new Date().toISOString();
     const user = users.find((item) => item.id === req.user!.id);
     if (user) user.kycStatus = kyc.status;
   }
-  const userDocs = documents.filter((d) => d.userId === req.user?.id);
   let identityPhoto: string | undefined;
   const normalizedFields: Record<string, unknown> = {};
   if (kyc.providerRaw && typeof kyc.providerRaw === "object") {
@@ -1751,7 +1778,17 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     ninLastFour: kyc.nin ? kyc.nin.slice(-4) : undefined,
     submittedAt: kyc.submittedAt,
     rejectionReason: kyc.rejectionReason,
-    documents: userDocs,
+    documents: userDocs.map((doc) => ({
+      ...publicDocumentView(doc),
+      // Drive-hosted docs preview directly; inline/snapshot docs are fetched
+      // through GET /me/documents/:id by the page when the user clicks preview.
+      previewUrl: doc.provider === "google_drive" && doc.providerFileId
+        ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(doc.providerFileId)}`
+        : "",
+      downloadUrl: doc.provider === "google_drive" && doc.providerFileId
+        ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(doc.providerFileId)}`
+        : "",
+    })),
     verificationEvents: safeVerificationEvents,
     selfieImageData: undefined,
     livenessStatus: kyc.livenessStatus,
@@ -1805,9 +1842,14 @@ router.post("/me/kyc", requireAuth, async (req: AuthRequest, res) => {
   if (parsed.data.bvn) kyc.bvn = parsed.data.bvn;
   if (parsed.data.nin) kyc.nin = parsed.data.nin;
   if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
-  const hasDocumentsForSubmit = (kyc.checklist.bvn && kyc.checklist.nin);
+  // Submission gate: submitting for admin review requires SOME evidence (at
+  // least one uploaded/pulled document or one completed check) — not the full
+  // checklist. The admin reviews whatever was provided and can request more.
+  const submissionEvidence =
+    documents.some((d) => d.userId === user.id) ||
+    (["bvn", "nin", "liveness", "proofOfAddress", "signature"] as const).some((key) => kyc.checklist[key]);
   const submittedViaOverride = parsed.data.statusOverride === "PENDING_VERIFICATION";
-  if (submittedViaOverride && hasDocumentsForSubmit) {
+  if (submittedViaOverride && submissionEvidence) {
     kyc.status = "PENDING_VERIFICATION";
     kyc.submittedAt = kyc.submittedAt ?? new Date().toISOString();
   } else {
@@ -1834,8 +1876,8 @@ router.post("/me/kyc", requireAuth, async (req: AuthRequest, res) => {
       kyc.status === "VERIFIED"
         ? "KYC is verified."
         : kyc.status === "PENDING_VERIFICATION"
-        ? "KYC submitted for verification. Provider credentials are required for automated checks."
-        : "KYC updated. Verify your BVN and NIN and upload proof of address to submit.",
+        ? "Your verification has been submitted. Our team will review it and email you the outcome."
+        : "Add at least one verification step (verify your BVN/NIN or upload a document) before submitting.",
   });
 });
 
@@ -2352,19 +2394,22 @@ router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"),
     return;
   }
   try {
-    const stored = await uploadPrivateDocument({
-      filename: req.file.originalname,
-      mimeType: req.file.mimetype,
-      buffer: req.file.buffer,
-      userId: req.user!.id,
-      documentType: documentType.data,
-    });
-    const record = {
+    // FAST UPLOAD PATH: the document is persisted immediately as an inline
+    // record (base64 kept on the row) and the request answers right away, so
+    // the customer never waits on the Google Drive round-trip. The archive
+    // copy to Drive happens in the background and upgrades the record in
+    // place when it lands; if Drive is slow/unavailable the inline copy
+    // remains the durable, viewable source of truth.
+    const INLINE_KEEP_LIMIT_BYTES = 6 * 1024 * 1024;
+    const record: StoreDocument = {
       id: randomUUID(),
       userId: req.user!.id,
       documentType: documentType.data,
-      provider: stored.provider,
-      providerFileId: stored.fileId,
+      provider: "inline",
+      providerFileId: `inline:${randomUUID()}`,
+      inlineData: req.file.size <= INLINE_KEEP_LIMIT_BYTES
+        ? `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`
+        : undefined,
       fileName: req.file.originalname,
       mimeType: req.file.mimetype,
       sizeBytes: req.file.size,
@@ -2376,8 +2421,8 @@ router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"),
     const kyc = findOrCreateKycCase(req.user!.id);
     if (documentType.data === "SELFIE_PHOTO") {
       const isImage = req.file.mimetype.startsWith("image/");
-      if (isImage) {
-        kyc.selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+      if (isImage && record.inlineData) {
+        kyc.selfieImageData = record.inlineData;
       }
       kyc.livenessStatus = "PENDING_REVIEW";
       kyc.livenessManualUploaded = true;
@@ -2387,13 +2432,101 @@ router.post("/me/kyc/documents", requireAuth, documentUpload.single("document"),
     kyc.updatedAt = new Date().toISOString();
     markKycChecklistComplete(req.user!.id);
     if (!(await persistMutation(res))) return;
-    res.status(201).json({ ok: true, document: record, checklist: kyc.checklist, message: "Document uploaded for admin review." });
+    res.status(201).json({ ok: true, document: publicDocumentView(record), checklist: kyc.checklist, message: "Document uploaded and saved for admin review." });
+
+    // Background archive upload — never blocks the response.
+    void (async () => {
+      try {
+        const stored = await uploadPrivateDocument({
+          filename: req.file!.originalname,
+          mimeType: req.file!.mimetype,
+          buffer: req.file!.buffer,
+          userId: record.userId,
+          documentType: documentType.data,
+        });
+        record.provider = stored.provider;
+        record.providerFileId = stored.fileId;
+        record.inlineData = undefined;
+        record.uploadError = undefined;
+        record.updatedAt = new Date().toISOString();
+        schedulePersist();
+      } catch (archiveError) {
+        // Keep the inline copy authoritative; record why archival failed.
+        record.uploadError = archiveError instanceof Error ? archiveError.message.slice(0, 300) : "Archive upload failed";
+        schedulePersist();
+      }
+    })();
   } catch (error) {
     res.status(503).json({
       ok: false,
       error: error instanceof Error ? error.message : "Document storage unavailable",
     });
   }
+});
+
+/** Safe-to-send projection of a document record (never leaks inline bytes). */
+function publicDocumentView(doc: StoreDocument): Record<string, unknown> {
+  return {
+    id: doc.id,
+    documentType: doc.documentType,
+    documentSlot: doc.documentSlot,
+    provider: doc.provider,
+    providerFileId: doc.providerFileId,
+    fileName: doc.fileName,
+    mimeType: doc.mimeType,
+    sizeBytes: doc.sizeBytes,
+    status: doc.status,
+    hasInlineContent: Boolean(doc.inlineData),
+    uploadError: doc.uploadError,
+    version: doc.version,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Customer-facing document preview — resolves a document the user owns into
+// viewable/downloadable URLs:
+//   • inline (fast-path KYC uploads)  → the stored base64 data URL
+//   • snapshot refs (loan application) → base64 from the application snapshot
+//   • Google Drive                    → drive preview/download URLs
+// ---------------------------------------------------------------------------
+router.get("/me/documents/:documentId", requireAuth, (req: AuthRequest, res) => {
+  const doc = documents.find((d) => d.id === String(req.params.documentId ?? "").trim() && d.userId === req.user!.id);
+  if (!doc) {
+    res.status(404).json({ ok: false, error: "Document not found" });
+    return;
+  }
+  let previewUrl = "";
+  let downloadUrl = "";
+  if (doc.provider === "google_drive" && doc.providerFileId) {
+    previewUrl = `https://drive.google.com/uc?export=view&id=${encodeURIComponent(doc.providerFileId)}`;
+    downloadUrl = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(doc.providerFileId)}`;
+  } else if (doc.inlineData) {
+    previewUrl = doc.inlineData;
+    downloadUrl = doc.inlineData;
+  } else if (doc.provider === "manual" && doc.providerFileId.startsWith("snapshot:")) {
+    const [, applicationId, slot] = doc.providerFileId.split(":");
+    const application = loanApplications.find((item) => item.id === applicationId);
+    const snapshotDoc = slot
+      ? ((application?.customerSnapshot as Record<string, unknown> | undefined)?.documents as Record<string, { data?: string; type?: string } | undefined> | undefined)?.[slot]
+      : undefined;
+    if (snapshotDoc?.data) {
+      const mimeType = snapshotDoc.type || doc.mimeType || "application/octet-stream";
+      const dataUrl = `data:${mimeType};base64,${snapshotDoc.data}`;
+      previewUrl = dataUrl;
+      downloadUrl = dataUrl;
+    }
+  }
+  res.json({
+    ok: true,
+    document: {
+      ...publicDocumentView(doc),
+      previewUrl,
+      downloadUrl,
+      unavailable: !previewUrl,
+    },
+  });
 });
 
 router.post("/me/payout-accounts", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
@@ -5011,12 +5144,20 @@ router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), as
       snapshotDownloadUrl = dataUrl;
     }
   }
+  // Fast-path uploads keep their bytes inline until the background archive
+  // upload finishes (or permanently when Drive is unavailable).
+  let inlinePreviewUrl = "";
+  let inlineDownloadUrl = "";
+  if (!isGoogleDrive && doc.inlineData) {
+    inlinePreviewUrl = doc.inlineData;
+    inlineDownloadUrl = doc.inlineData;
+  }
   const previewUrl = isGoogleDrive && doc.providerFileId
     ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(doc.providerFileId)}`
-    : snapshotPreviewUrl || ((doc as { previewUrl?: string }).previewUrl ?? "");
+    : snapshotPreviewUrl || inlinePreviewUrl || ((doc as { previewUrl?: string }).previewUrl ?? "");
   const downloadUrl = isGoogleDrive && doc.providerFileId
     ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(doc.providerFileId)}`
-    : snapshotDownloadUrl || ((doc as { downloadUrl?: string }).downloadUrl ?? "");
+    : snapshotDownloadUrl || inlineDownloadUrl || ((doc as { downloadUrl?: string }).downloadUrl ?? "");
   res.json({
     ok: true,
     document: {
@@ -5030,6 +5171,7 @@ router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), as
       sizeBytes: doc.sizeBytes,
       status: doc.status,
       createdAt: doc.createdAt,
+      uploadError: doc.uploadError,
       previewUrl,
       downloadUrl,
       source: doc.providerFileId.startsWith("snapshot:") ? "loan_application" : doc.provider,
