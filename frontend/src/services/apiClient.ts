@@ -635,10 +635,11 @@ export async function adminDecideKycRequirement(id: string, requirement: "bvn" |
 
 export interface AdminLoanRecordSummary { id: string; applicationId: string; status: string; disbursedAt?: string | null; updatedAt?: string; }
 export interface AdminLoansResponse { ok: true; loans: unknown[]; loanRecords?: AdminLoanRecordSummary[]; disbursedLoans?: unknown[]; meta?: PaginationMeta; }
-export async function adminListLoans(limit = 50, offset = 0, status?: LoanStatus, borrowerId?: string): Promise<AdminLoansResponse> {
+export async function adminListLoans(limit = 50, offset = 0, status?: LoanStatus, borrowerId?: string, search?: string): Promise<AdminLoansResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) params.set("status", status);
   if (borrowerId) params.set("borrowerId", borrowerId);
+  if (search) params.set("search", search);
   return request(`/api/v1/admin/loans?${params.toString()}`);
 }
 

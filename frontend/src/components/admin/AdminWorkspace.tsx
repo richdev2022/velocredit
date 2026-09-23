@@ -14,6 +14,7 @@ import {
   adminRetryPayout,
   getAdminSummary,
   type AdminSummaryResponse,
+  type LoanStatus,
 } from "../../services/apiClient";
 import { documentDownloadUrl, documentPreviewUrl } from "../../utils/documentLinks";
 import CsvExportButton from "../CsvExportButton";
@@ -693,21 +694,26 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   }, [searchInput]);
 
   useEffect(() => {
-    const load = () => {
-      const params = new URLSearchParams();
-      params.set("limit", String(size));
-      params.set("offset", String(page * size));
-      if (search) params.set("search", search);
-      if (statusFilter) params.set("status", statusFilter);
-      return fetch(`/api/v1/admin/loans?${params.toString()}`, { headers: adminLoansHeaders() })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Unable to load loans"))))
+    // Route through apiClient (adminListLoans) so the request goes to
+    // config.apiUrl — the API host. A raw relative fetch ("/api/v1/...")
+    // hits the frontend origin in production and receives the SPA's
+    // index.html with HTTP 200, which then fails JSON parsing with
+    // "Unexpected token '<'" and shows 0 applications.
+    const load = () =>
+      adminListLoans(
+        size,
+        page * size,
+        (statusFilter || undefined) as LoanStatus | undefined,
+        undefined,
+        search || undefined,
+      )
         .then((response) => {
-          setRows(response.loans);
+          const loanRows = response.loans || [];
+          setRows(loanRows);
           setLoanRecords(response.loanRecords || []);
-          setTotal(response.meta?.total || response.loans.length);
+          setTotal(response.meta?.total || loanRows.length);
         })
         .catch((err) => setError(err instanceof Error ? err.message : "Unable to load loans"));
-    };
     setError("");
     void load();
   }, [page, search, statusFilter]);
@@ -820,14 +826,6 @@ function LatestTransferChip({ applicationId, loanRecordId }: { applicationId: st
       <span className="font-normal text-slate-400">· {formatNaira(Number(transfer.amountNaira || 0))}</span>
     </span>
   );
-}
-
-function adminLoansHeaders(): HeadersInit {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const adminToken = sessionStorage.getItem("velo:admin-token");
-  const token = adminToken || sessionStorage.getItem("velo:access-token");
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
 }
 
 function Reconciliation() { const [data, setData] = useState<any>(null); const [error, setError] = useState(""); useEffect(() => { adminGetReconciliation().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load reconciliation")); }, []); const keys = ["providerEvents", "unverifiedDeposits", "unverifiedRepayments", "pendingPayouts", "pendingWithdrawals"]; return <Panel title="Reconciliation center">{error ? <ErrorBox message={error} /> : data ? <div className="space-y-5"><div className="rounded-xl border border-velo-100 dark:border-velo-900/40 bg-velo-50/60 dark:bg-velo-900/20 p-4"><h3 className="font-semibold text-velo-900 dark:text-velo-100">What is matched</h3><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Each queue is matched against the provider reference, internal record ID, user, amount, currency, and current status before it is marked resolved.</p><div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300">{Object.entries(data.guide || {}).map(([key, value]) => <div key={key}><strong className="text-slate-900 dark:text-white">{key.replace(/([A-Z])/g, " $1")}:</strong> {String(value)}</div>)}</div></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{keys.map((key) => <div key={key} className="rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{key.replace(/([A-Z])/g, " $1")}</div><div className="mt-2 text-2xl font-semibold text-velo-900 dark:text-white">{data[key]?.length || 0}</div></div>)}</div></div> : <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading reconciliation…</div>}</Panel>; }
