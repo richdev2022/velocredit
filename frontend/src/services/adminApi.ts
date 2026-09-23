@@ -186,6 +186,8 @@ export interface PlatformSettingsResponse {
     investorWithdrawalFeeFlatMinor: number;
     investorEarningRateOverrides: Record<string, number>;
     defaultInvestmentAnnualRatePercent: number;
+    maintenanceMode?: boolean;
+    maintenanceMessage?: string;
     updatedAt: string;
     createdAt: string;
   };
@@ -431,6 +433,50 @@ export async function adminEditUser(userId: string, input: { fullName?: string; 
 export type KycResetCategory = "BVN" | "NIN" | "LIVENESS" | "ADDRESS" | "ALL";
 export async function adminResetKycCategory(userId: string, category: KycResetCategory): Promise<{ ok: true; category: KycResetCategory; checklist: Record<string, boolean>; status: string; kyc: { id: string; userId: string; status: string; checklist: Record<string, boolean>; updatedAt: string } }> {
   return request(`/api/v1/admin/users/${encodeURIComponent(userId)}/kyc-reset`, { method: "POST", body: JSON.stringify({ category }) });
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance mode / announcements / banners (platform engagement settings)
+// ---------------------------------------------------------------------------
+export interface AdminAnnouncement { id: string; message: string; isActive: boolean; createdAt: string; updatedAt?: string; }
+export interface AdminBanner { id: string; name: string; imageData?: string; linkUrl?: string; isActive: boolean; createdAt: string; updatedAt?: string; }
+
+export async function adminUpdateMaintenanceMode(maintenanceMode: boolean, maintenanceMessage?: string): Promise<{ ok: true; settings: { maintenanceMode: boolean; maintenanceMessage?: string }; maintenanceEmailed?: number }> {
+  const body: Record<string, unknown> = { maintenanceMode };
+  if (maintenanceMessage !== undefined) body.maintenanceMessage = maintenanceMessage;
+  return request("/api/v1/admin/settings/platform", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function adminListAnnouncements(): Promise<{ ok: true; announcements: AdminAnnouncement[] }> {
+  return request("/api/v1/admin/announcements");
+}
+
+export async function adminCreateAnnouncement(message: string): Promise<{ ok: true; announcement: AdminAnnouncement }> {
+  return request("/api/v1/admin/announcements", { method: "POST", body: JSON.stringify({ message }) });
+}
+
+export async function adminUpdateAnnouncement(id: string, input: { message?: string; isActive?: boolean }): Promise<{ ok: true; announcement: AdminAnnouncement }> {
+  return request(`/api/v1/admin/announcements/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export async function adminDeleteAnnouncement(id: string): Promise<{ ok: true; deleted: true }> {
+  return request(`/api/v1/admin/announcements/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function adminListBanners(): Promise<{ ok: true; banners: AdminBanner[] }> {
+  return request("/api/v1/admin/banners");
+}
+
+export async function adminUploadBanner(input: { name: string; imageData: string; mimeType?: string; linkUrl?: string }): Promise<{ ok: true; banner: AdminBanner; bannerId: string }> {
+  return request("/api/v1/admin/banners", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function adminUpdateBanner(id: string, input: { isActive?: boolean; name?: string; linkUrl?: string }): Promise<{ ok: true; banner: AdminBanner }> {
+  return request(`/api/v1/admin/banners/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export async function adminDeleteBanner(id: string): Promise<{ ok: true; deleted: true }> {
+  return request(`/api/v1/admin/banners/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export const adminApi = {

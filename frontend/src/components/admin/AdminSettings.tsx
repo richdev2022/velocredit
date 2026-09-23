@@ -34,6 +34,17 @@ import {
   adminListInvestors,
   adminListWithdrawals,
   adminRetryWithdrawal,
+  adminUpdateMaintenanceMode,
+  adminListAnnouncements,
+  adminCreateAnnouncement,
+  adminUpdateAnnouncement,
+  adminDeleteAnnouncement,
+  adminListBanners,
+  adminUploadBanner,
+  adminUpdateBanner,
+  adminDeleteBanner,
+  type AdminAnnouncement,
+  type AdminBanner,
   type AdminLedgerEntry,
 } from "../../services/adminApi";
 import { adminListLoanProducts, adminCreateLoanProduct, adminPatchLoanProduct } from "../../services/apiClient";
@@ -65,13 +76,14 @@ type TenureFeeState = Record<number, {
   fees: Record<FeeKey, FeeValue>;
 }>;
 
-type SettingsTab = "programs" | "limits" | "fees" | "branding" | "system";
+type SettingsTab = "programs" | "limits" | "fees" | "branding" | "engagement" | "system";
 
 const SETTINGS_TABS: Array<{ key: SettingsTab; label: string; icon: React.ReactNode }> = [
   { key: "programs", label: "Loan Programs", icon: <Icon name="target" size={15} /> },
   { key: "limits", label: "Limits & Tenures", icon: <Icon name="money" size={15} /> },
   { key: "fees", label: "Fees & Charges", icon: <Icon name="chart" size={15} /> },
   { key: "branding", label: "Branding & Access", icon: <Icon name="bank" size={15} /> },
+  { key: "engagement", label: "Maintenance & Announcements", icon: <Icon name="sparkles" size={15} /> },
   { key: "system", label: "System", icon: <Icon name="lock" size={15} /> },
 ];
 
@@ -950,6 +962,8 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 </PanelCard>
               )}
 
+              {activeTab === "engagement" && <EngagementSettings />}
+
               {activeTab === "system" && (
                 <PanelCard
                   title="Environment & integrations"
@@ -1552,6 +1566,337 @@ function PreviewRow({ label, value, muted }: { label: string; value: string; mut
     <div className={`flex items-center justify-between py-0.5 ${muted ? "opacity-50" : ""}`}>
       <span className="text-[11px] text-white/75">{label}</span>
       <span className="text-sm font-semibold">{value}</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EngagementSettings — maintenance-mode toggle, announcement composer and the
+// banner upload manager. Announcements render as a smooth horizontal text
+// slider (with an alert icon) on the Borrower and Investor dashboards; banners
+// render as an auto-sliding horizontal carousel on both dashboards.
+// ---------------------------------------------------------------------------
+function EngagementSettings() {
+  // --- Maintenance mode -------------------------------------------------
+  const [maintenanceOn, setMaintenanceOn] = useState(false);
+  const [maintenanceMessage, setMaintenanceMessage] = useState("");
+  const [maintenanceLoading, setMaintenanceLoading] = useState(true);
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
+  const [maintenanceMsg, setMaintenanceMsg] = useState("");
+  const [maintenanceErr, setMaintenanceErr] = useState("");
+
+  // --- Announcements ----------------------------------------------------
+  const [announcements, setAnnouncements] = useState<AdminAnnouncement[]>([]);
+  const [newAnnouncement, setNewAnnouncement] = useState("");
+  const [announcementBusy, setAnnouncementBusy] = useState(false);
+  const [announcementMsg, setAnnouncementMsg] = useState("");
+  const [announcementErr, setAnnouncementErr] = useState("");
+
+  // --- Banners ----------------------------------------------------------
+  const [banners, setBanners] = useState<AdminBanner[]>([]);
+  const [bannerName, setBannerName] = useState("");
+  const [bannerData, setBannerData] = useState<{ dataUrl: string; mimeType: string; sizeBytes: number } | null>(null);
+  const [bannerLinkUrl, setBannerLinkUrl] = useState("");
+  const [bannerBusy, setBannerBusy] = useState(false);
+  const [bannerMsg, setBannerMsg] = useState("");
+  const [bannerErr, setBannerErr] = useState("");
+
+  async function loadAll() {
+    setMaintenanceLoading(true);
+    try {
+      const [platform, announcementList, bannerList] = await Promise.all([
+        adminGetPlatformSettings(),
+        adminListAnnouncements(),
+        adminListBanners(),
+      ]);
+      const settings = platform.settings;
+      setMaintenanceOn(settings?.maintenanceMode === true);
+      setMaintenanceMessage(settings?.maintenanceMessage ?? "");
+      setAnnouncements(announcementList.announcements ?? []);
+      setBanners(bannerList.banners ?? []);
+    } catch (err) {
+      setMaintenanceErr(err instanceof Error ? err.message : "Unable to load engagement settings");
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  }
+  useEffect(() => {
+    void loadAll();
+  }, []);
+
+  async function toggleMaintenance(next: boolean) {
+    setMaintenanceBusy(true);
+    setMaintenanceMsg("");
+    setMaintenanceErr("");
+    try {
+      const response = await adminUpdateMaintenanceMode(next, maintenanceMessage);
+      setMaintenanceOn(next);
+      const emailed = (response as { maintenanceEmailed?: number }).maintenanceEmailed;
+      setMaintenanceMsg(
+        next
+          ? `Maintenance mode is ON. Customers cannot sign in and see the maintenance modal.${typeof emailed === "number" ? ` Notification email queued for ${emailed} user(s).` : ""}`
+          : `Maintenance mode is OFF. The platform is back online.${typeof emailed === "number" ? ` Back-online email queued for ${emailed} user(s).` : ""}`
+      );
+    } catch (err) {
+      setMaintenanceErr(err instanceof Error ? err.message : "Unable to update maintenance mode");
+    } finally {
+      setMaintenanceBusy(false);
+    }
+  }
+
+  async function addAnnouncement() {
+    if (newAnnouncement.trim().length < 3) return;
+    setAnnouncementBusy(true);
+    setAnnouncementMsg("");
+    setAnnouncementErr("");
+    try {
+      await adminCreateAnnouncement(newAnnouncement.trim());
+      setNewAnnouncement("");
+      setAnnouncementMsg("Announcement published — it is live on both customer dashboards.");
+      const list = await adminListAnnouncements();
+      setAnnouncements(list.announcements ?? []);
+    } catch (err) {
+      setAnnouncementErr(err instanceof Error ? err.message : "Unable to publish announcement");
+    } finally {
+      setAnnouncementBusy(false);
+    }
+  }
+
+  async function toggleAnnouncement(item: AdminAnnouncement) {
+    try {
+      await adminUpdateAnnouncement(item.id, { isActive: !item.isActive });
+      const list = await adminListAnnouncements();
+      setAnnouncements(list.announcements ?? []);
+    } catch (err) {
+      setAnnouncementErr(err instanceof Error ? err.message : "Unable to update announcement");
+    }
+  }
+
+  async function removeAnnouncement(item: AdminAnnouncement) {
+    try {
+      await adminDeleteAnnouncement(item.id);
+      const list = await adminListAnnouncements();
+      setAnnouncements(list.announcements ?? []);
+    } catch (err) {
+      setAnnouncementErr(err instanceof Error ? err.message : "Unable to delete announcement");
+    }
+  }
+
+  function pickBannerFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setBannerErr("Banner must be an image (JPG, PNG or WebP).");
+      return;
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      setBannerErr("Banner must be 3 MB or smaller.");
+      return;
+    }
+    setBannerErr("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      setBannerData({ dataUrl: String(reader.result ?? ""), mimeType: file.type, sizeBytes: file.size });
+      if (!bannerName.trim()) setBannerName(file.name.replace(/\.[^.]+$/, ""));
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function uploadBanner() {
+    if (!bannerData) {
+      setBannerErr("Choose a banner image first.");
+      return;
+    }
+    if (!bannerName.trim()) {
+      setBannerErr("Give the banner a name (e.g. 'December promo').");
+      return;
+    }
+    setBannerBusy(true);
+    setBannerMsg("");
+    setBannerErr("");
+    try {
+      await adminUploadBanner({ name: bannerName.trim(), imageData: bannerData.dataUrl, mimeType: bannerData.mimeType, linkUrl: bannerLinkUrl.trim() || undefined });
+      setBannerMsg("Banner uploaded — it is now live in the customer dashboard carousel.");
+      setBannerData(null);
+      setBannerName("");
+      setBannerLinkUrl("");
+      const list = await adminListBanners();
+      setBanners(list.banners ?? []);
+    } catch (err) {
+      setBannerErr(err instanceof Error ? err.message : "Unable to upload banner");
+    } finally {
+      setBannerBusy(false);
+    }
+  }
+
+  async function toggleBanner(item: AdminBanner) {
+    try {
+      await adminUpdateBanner(item.id, { isActive: !item.isActive });
+      const list = await adminListBanners();
+      setBanners(list.banners ?? []);
+    } catch (err) {
+      setBannerErr(err instanceof Error ? err.message : "Unable to update banner");
+    }
+  }
+
+  async function removeBanner(item: AdminBanner) {
+    try {
+      await adminDeleteBanner(item.id);
+      const list = await adminListBanners();
+      setBanners(list.banners ?? []);
+    } catch (err) {
+      setBannerErr(err instanceof Error ? err.message : "Unable to delete banner");
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <PanelCard
+        title="Maintenance mode"
+        description="Take the platform offline for planned work. Customers cannot sign in while it is ON, and every active user is emailed when you toggle it ON or OFF."
+        icon={<Icon name="alert" size={18} />}
+        tone={maintenanceOn ? "amber" : "default"}
+      >
+        {maintenanceLoading ? (
+          <p className="py-3 text-sm text-slate-500 dark:text-slate-400">Loading current status…</p>
+        ) : (
+          <div className="py-3 space-y-4">
+            <SettingRow
+              label={maintenanceOn ? "Platform is under maintenance" : "Platform is online"}
+              description={maintenanceOn
+                ? "Customer sign-in shows a friendly maintenance modal. Admins can still sign in to the console."
+                : "Everything is operating normally."}
+              stacked
+            >
+              <Toggle
+                checked={maintenanceOn}
+                onChange={(value) => void toggleMaintenance(value)}
+                disabled={maintenanceBusy}
+                label={maintenanceOn ? "Maintenance ON" : "Maintenance OFF"}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Message shown to customers"
+              description="Displayed on the maintenance modal and included in the email notification. Max 500 characters."
+              stacked
+            >
+              <textarea
+                value={maintenanceMessage}
+                onChange={(event) => setMaintenanceMessage(event.target.value)}
+                rows={3}
+                maxLength={500}
+                placeholder="Velo is currently undergoing scheduled maintenance. We'll email you as soon as the system is back up — thank you for your patience."
+                className="velo-input text-sm"
+              />
+            </SettingRow>
+            {maintenanceMsg && <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{maintenanceMsg}</p>}
+            {maintenanceErr && <p className="text-sm font-medium text-red-600 dark:text-red-400">{maintenanceErr}</p>}
+          </div>
+        )}
+      </PanelCard>
+
+      <PanelCard
+        title="Announcements"
+        description="Short messages that slide smoothly (with an alert icon) across the Borrower and Investor dashboards. Hovering pauses the slider."
+        icon={<Icon name="message" size={18} />}
+      >
+        <div className="py-3 space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+            <div className="flex-1">
+              <textarea
+                value={newAnnouncement}
+                onChange={(event) => setNewAnnouncement(event.target.value)}
+                rows={2}
+                maxLength={280}
+                placeholder="e.g. New: instant disbursement now available for approved loans."
+                className="velo-input text-sm"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">{newAnnouncement.length}/280 characters</p>
+            </div>
+            <button type="button" className="btn-primary shrink-0 text-xs" disabled={announcementBusy || newAnnouncement.trim().length < 3} onClick={() => void addAnnouncement()}>
+              {announcementBusy ? "Publishing…" : "Publish announcement"}
+            </button>
+          </div>
+          {announcementMsg && <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{announcementMsg}</p>}
+          {announcementErr && <p className="text-sm font-medium text-red-600 dark:text-red-400">{announcementErr}</p>}
+          {announcements.length > 0 && (
+            <ul className="space-y-2">
+              {announcements.map((item) => (
+                <li key={item.id} className="flex flex-col gap-2 rounded-xl border border-slate-200 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm text-velo-900 dark:text-white" title={item.message}>{item.message}</p>
+                    <p className="text-[11px] text-slate-400">
+                      {new Date(item.createdAt).toLocaleString()} · {item.isActive ? "live" : "hidden"}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button type="button" className="btn-secondary text-[11px]" onClick={() => void toggleAnnouncement(item)}>
+                      {item.isActive ? "Hide" : "Show"}
+                    </button>
+                    <button type="button" className="text-[11px] font-semibold text-red-600 underline underline-offset-2 dark:text-red-400" onClick={() => void removeAnnouncement(item)}>
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </PanelCard>
+
+      <PanelCard
+        title="Dashboard banners"
+        description="Upload promotional banners — they auto-slide horizontally across the top of both customer dashboards."
+        icon={<Icon name="sparkles" size={18} />}
+      >
+        <div className="py-3 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SettingRow label="Banner image" description="JPG, PNG or WebP · max 3 MB. Recommended width 1200×400." stacked>
+              <input type="file" accept="image/*" onChange={pickBannerFile} className="velo-input text-sm" />
+            </SettingRow>
+            <SettingRow label="Banner name" description="Internal label for the banner list." stacked>
+              <input value={bannerName} onChange={(event) => setBannerName(event.target.value)} className="velo-input text-sm" placeholder="e.g. December promo" />
+            </SettingRow>
+            <SettingRow label="Click-through link" description="Optional URL opened when customers tap the banner." stacked>
+              <input type="url" value={bannerLinkUrl} onChange={(event) => setBannerLinkUrl(event.target.value)} className="velo-input text-sm" placeholder="https://…" />
+            </SettingRow>
+          </div>
+          {bannerData && (
+            <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+              <img src={bannerData.dataUrl} alt="Banner preview" className="max-h-40 w-full object-cover" />
+            </div>
+          )}
+          <button type="button" className="btn-primary text-xs" disabled={bannerBusy || !bannerData} onClick={() => void uploadBanner()}>
+            {bannerBusy ? "Uploading…" : "Upload banner"}
+          </button>
+          {bannerMsg && <p className="block text-sm font-medium text-emerald-700 dark:text-emerald-400">{bannerMsg}</p>}
+          {bannerErr && <p className="block text-sm font-medium text-red-600 dark:text-red-400">{bannerErr}</p>}
+          {banners.length > 0 && (
+            <ul className="grid gap-3 sm:grid-cols-2">
+              {banners.map((item) => (
+                <li key={item.id} className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+                  {item.imageData && <img src={item.imageData} alt={item.name} className="h-28 w-full object-cover" />}
+                  <div className="flex items-center justify-between gap-2 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-velo-900 dark:text-white">{item.name}</p>
+                      <p className="text-[11px] text-slate-400">{item.isActive ? "live in carousel" : "hidden"} · {new Date(item.createdAt).toLocaleDateString()}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button type="button" className="btn-secondary text-[11px]" onClick={() => void toggleBanner(item)}>
+                        {item.isActive ? "Hide" : "Show"}
+                      </button>
+                      <button type="button" className="text-[11px] font-semibold text-red-600 underline underline-offset-2 dark:text-red-400" onClick={() => void removeBanner(item)}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </PanelCard>
     </div>
   );
 }

@@ -19,7 +19,8 @@ type Props = {
   initial?: DisbursementAccount | Record<string, unknown> | null;
   locked?: boolean;
   /** Urgent-attention mode: a loan's disbursement is blocked on this account —
-   *  the form unlocks and the update applies IMMEDIATELY (no admin queue). */
+   *  the form unlocks and the customer can submit a verified replacement.
+   *  The change takes effect once an ADMIN approves it in the review queue. */
   updateRequested?: boolean;
   onSaved?: (acc: DisbursementAccount | null, meta?: { applied?: boolean }) => void;
   onError?: (msg: string) => void;
@@ -177,7 +178,7 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, u
       }).then((r) => r.json());
       if (res.ok) {
         if (res.applied) {
-          // URGENT path — applied immediately and mapped to the loan(s).
+          // (Legacy) auto-applied response — kept for backward compatibility.
           const saved = res.account ?? res.disbursementAccount ?? null;
           setAccount(asAccount(saved));
           setUpdateRequestedLive(false);
@@ -188,7 +189,8 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, u
           setResolvedName(null);
           reloadAccount();
         } else if (res.pendingApproval) {
-          const msg = res.message || "Update submitted. Awaiting admin approval.";
+          // Changes always wait for admin approval before they take effect.
+          const msg = res.message || "Your new account has been verified and submitted — it will take effect as soon as the admin approves the change.";
           setMessage(msg);
           setPendingRequest(res.request || null);
           onSaved?.(account);
@@ -273,8 +275,8 @@ export default function BorrowerDisbursementSection({ userId, initial, locked, u
               <p className="mt-1 text-xs leading-5 text-red-700 dark:text-red-300/90">
                 The bank account saved on your profile could not be verified by our payment provider,
                 so your approved loan cannot be paid out yet. Provide a valid account below — it is
-                verified instantly and attached to your loan automatically, and disbursement can
-                proceed right after.
+                verified instantly and queued for admin approval. As soon as the admin approves the
+                change, it is mapped to your loan and disbursement can proceed.
               </p>
             </div>
           </div>

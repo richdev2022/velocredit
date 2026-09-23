@@ -177,6 +177,27 @@
     animation: slideInLeft 280ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
+  /* Announcement marquee: continuous right-to-left glide with a seamless loop
+     (the track content is duplicated, so -50% lands perfectly back on start). */
+  @keyframes veloMarquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  .animate-velo-marquee {
+    animation: veloMarquee 32s linear infinite;
+    will-change: transform;
+  }
+  .animate-velo-marquee:hover {
+    animation-play-state: paused;
+  }
+  @keyframes spinSlow {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .animate-spin-slow {
+    animation: spinSlow 2.6s linear infinite;
+  }
+
   /* Mobile-first responsive utility: prevent overflow on any element */
   .no-overflow-x {
     max-width: 100%;

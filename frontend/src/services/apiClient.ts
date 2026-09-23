@@ -10,7 +10,7 @@ export type OtpAction = "SIGNUP_VERIFY" | "LOGIN_STEP_UP" | "PAYOUT_ACCOUNT_CHAN
 export type ConsentType = "TERMS" | "PRIVACY" | "IDENTITY_VERIFICATION" | "CREDIT_REPORT" | "INVESTMENT_AGREEMENT" | "LOAN_AGREEMENT" | "ELECTRONIC_COMMUNICATIONS";
 export type NotificationChannel = "SMS" | "EMAIL" | "IN_APP";
 
-export interface SessionUser { id: string; email: string; fullName: string; phone: string; dateOfBirth?: string; roles: Role[]; kycStatus?: KycStatus; createdAt: string; }
+export interface SessionUser { id: string; email: string; fullName: string; phone: string; dateOfBirth?: string; occupation?: string; sourceOfFunds?: string; residentialAddress?: Record<string, unknown>; roles: Role[]; kycStatus?: KycStatus; createdAt: string; }
 export interface AuthResponse { ok: true; accessToken: string; user: SessionUser; }
 export type OtpChannel = "SMS" | "EMAIL";
 export interface RegistrationVerification { userId: string; challengeId: string; expiresAt: string; channel: OtpChannel; resendAvailableAt: string; resendSecondsRemaining: number; }
@@ -28,13 +28,15 @@ const REQUEST_TIMEOUT_MS = 120_000;
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
   resendAvailableAt?: string;
   resendSecondsRemaining?: number;
 
-  constructor(message: string, status: number, metadata: { resendAvailableAt?: string; resendSecondsRemaining?: number } = {}) {
+  constructor(message: string, status: number, metadata: { code?: string; resendAvailableAt?: string; resendSecondsRemaining?: number } = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = metadata.code;
     this.resendAvailableAt = metadata.resendAvailableAt;
     this.resendSecondsRemaining = metadata.resendSecondsRemaining;
   }
@@ -74,6 +76,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) {
     throw new ApiError(body.error || body.message || `Request failed (${response.status})`, response.status, {
+      code: typeof body.code === "string" ? body.code : undefined,
       resendAvailableAt: typeof body.resendAvailableAt === "string" ? body.resendAvailableAt : undefined,
       resendSecondsRemaining: typeof body.resendSecondsRemaining === "number" ? body.resendSecondsRemaining : undefined,
     });
@@ -282,6 +285,45 @@ export interface KycResponse {
   message?: string;
   documents: unknown[];
   verificationEvents: unknown[];
+  applicationPrefill?: {
+    applicationId?: string;
+    submittedAt?: string;
+    bvn?: string;
+    bvnMasked?: string;
+    bvnVerified?: boolean;
+    nin?: string;
+    ninMasked?: string;
+    ninVerified?: boolean;
+    livenessVerified?: boolean;
+    identificationType?: string;
+    identificationNumber?: string;
+    personalInfo?: Record<string, string | undefined>;
+    documents?: Array<{ slot: string; documentType: string; fileName?: string; mimeType?: string; sizeBytes?: number; available?: boolean; providerFileId?: string }>;
+  } | null;
+}
+
+// ---------------------------------------------------------------------------
+// Platform status (public) — maintenance mode, announcements and banners for
+// the customer-facing sliders, modal and dashboards.
+// ---------------------------------------------------------------------------
+export interface PlatformAnnouncement { id: string; message: string; isActive: boolean; createdAt: string; updatedAt?: string; }
+export interface PlatformBanner { id: string; name: string; imageData: string; linkUrl?: string; isActive: boolean; createdAt: string; updatedAt?: string; }
+export interface PlatformStatusResponse { ok: true; maintenanceMode: boolean; maintenanceMessage: string; announcements: PlatformAnnouncement[]; }
+
+export async function getPlatformStatus(): Promise<PlatformStatusResponse> {
+  return request("/api/v1/platform/status");
+}
+
+export async function getPlatformBanners(): Promise<{ ok: true; banners: PlatformBanner[] }> {
+  return request("/api/v1/platform/banners");
+}
+
+export async function reuseKycApplicationDocuments(): Promise<{ ok: true; reused: number; status: KycStatus; message: string }> {
+  return request("/api/v1/me/kyc/reuse-application-documents", { method: "POST", body: JSON.stringify({}) });
+}
+
+export async function notifyKycActionBlocked(action: "LOAN_DISBURSEMENT" | "INVESTMENT" | "INVESTOR_PAYOUT" | "WITHDRAWAL" | "EARLY_LIQUIDITY"): Promise<{ ok: true; notified: boolean; message: string }> {
+  return request("/api/v1/me/kyc/action-blocked", { method: "POST", body: JSON.stringify({ action }) });
 }
 export async function getMyKyc(): Promise<KycResponse> { return request("/api/v1/me/kyc"); }
 

@@ -85,6 +85,7 @@ async function main(): Promise<void> {
   });
   const kyc = storeMod.findOrCreateKycCase(borrowerId) as any;
   kyc.checklist.bvn = true; kyc.checklist.nin = true; kyc.checklist.liveness = true;
+  kyc.status = "VERIFIED"; // admin-approved KYC (required by the disbursement KYC gate)
   kyc.bvn = "12345678901"; kyc.nin = "12345678901";
 
   // --- 1. submit an application (what the borrower saw: 5% ANNUALIZED) ---

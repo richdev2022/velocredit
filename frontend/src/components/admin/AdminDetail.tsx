@@ -9,9 +9,13 @@ import {
   adminDisburseLoan,
   adminGetApplication,
   adminGetApplicationDraft,
+  adminListDisbursements,
+  adminRequestDisbursementAccountUpdate,
+  adminRetryDisbursement,
   adminUpdateStatus,
   type AdminApplicationDetail,
   type AdminApplicationDraftDetail,
+  type LoanDisbursement,
 } from "../../services/adminApi";
 import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
 import { documentDownloadUrl, documentPreviewUrl } from "../../utils/documentLinks";
@@ -264,6 +268,13 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
           </div>
         )}
       </div>
+
+      {/* Disbursements & transfers — full provider evidence, retry controls and
+          the account-update CTA live HERE so the main loan table stays lean. */}
+      <LoanTransfersSection
+        applicationId={app.applicationId || (app as unknown as { id?: string }).id || ""}
+        onActionMessage={(message) => setSaveMsg(message ?? null)}
+      />
 
       {/* Loan details */}
       <Card title="Loan Details">
@@ -770,3 +781,198 @@ function DetailRow({ label, value }: { label: string; value: any }) {
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// LoanTransfersSection — every Flutterwave transfer attempt for this loan with
+// its real provider response, retry controls and the "ask customer to update
+// account" CTA. Moved here from the main loan table so the table stays a
+// lean overview and the detail page holds the operational depth.
+// ---------------------------------------------------------------------------
+function LoanTransfersSection({ applicationId, onActionMessage }: { applicationId: string; onActionMessage?: (message: string | undefined) => void }) {
+  const [transfers, setTransfers] = useState<LoanDisbursement[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function load() {
+    try {
+      const response = await adminListDisbursements({ limit: 200 });
+      const matches = response.disbursements
+        .filter((d) => (d.loanId && d.applicationId === applicationId) || d.applicationId === applicationId)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setTransfers(matches);
+    } catch {
+      // Non-fatal — the section just shows an empty state.
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applicationId]);
+
+  async function disburse() {
+    setBusy("disburse");
+    setActionError("");
+    setNotice("");
+    try {
+      const response = await adminDisburseLoan(applicationId);
+      const transferStatus = String((response.disbursement as { status?: string } | undefined)?.status || "");
+      let outcome: string | undefined;
+      if (response.ok === false) {
+        outcome = String(response.error || response.message || "Disbursement failed — see the provider response on the transfer card.");
+        setActionError(outcome);
+      } else if (transferStatus === "SUCCESSFUL") {
+        outcome = String(response.message || "Disbursement successful.");
+        setNotice(outcome);
+      } else {
+        outcome = String(response.message || "Disbursement still processing — the final status is confirmed automatically.");
+        setNotice(outcome);
+      }
+      onActionMessage?.(outcome);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to initiate disbursement");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function retry(disbursementId: string) {
+    setBusy(disbursementId);
+    setActionError("");
+    setNotice("");
+    try {
+      const response = await adminRetryDisbursement(disbursementId);
+      const transferStatus = String((response.disbursement as { status?: string } | undefined)?.status || "");
+      if (response.ok === false) setActionError(String(response.error || response.message || "Retry failed — see the provider response on the transfer card."));
+      else if (transferStatus === "SUCCESSFUL") setNotice(String(response.message || "Retry successful."));
+      else setNotice(String(response.message || "Retry submitted — the final status is confirmed automatically."));
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to retry disbursement");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function requestAccountUpdate() {
+    setBusy("acct");
+    setActionError("");
+    setNotice("");
+    try {
+      const response = await adminRequestDisbursementAccountUpdate(applicationId);
+      setNotice(String(response.message || "Account update requested — the customer has been notified."));
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Unable to send the account-update request");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const latest = transfers[0];
+  const hasSuccessful = transfers.some((t) => t.status === "SUCCESSFUL");
+  const inFlight = transfers.some((t) => ["PROCESSING", "PENDING"].includes(t.status));
+
+  return (
+    <div className="velo-card p-4 sm:p-5 lg:p-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-velo-900 dark:text-white">Disbursements &amp; transfers</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            {transfers.length === 0
+              ? "No transfer attempts yet for this loan."
+              : `${transfers.length} attempt${transfers.length === 1 ? "" : "s"} · newest first.`}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {latest && latest.status === "FAILED" && (
+            <button type="button" className="btn-secondary text-xs" disabled={busy !== "" || inFlight} onClick={() => void retry(latest.id)}>
+              {busy === latest.id ? "Retrying…" : "Retry disbursement"}
+            </button>
+          )}
+          {!hasSuccessful && !inFlight && latest?.status !== "FAILED" && (
+            <button type="button" className="btn-primary text-xs" disabled={busy !== ""} onClick={() => void disburse()}>
+              {busy === "disburse" ? "Disbursing…" : "Disburse via Flutterwave"}
+            </button>
+          )}
+          {(latest?.status === "FAILED" || (!hasSuccessful && !inFlight)) && (
+            <button
+              type="button"
+              className="text-[11px] font-semibold text-amber-700 underline decoration-amber-400 underline-offset-2 hover:text-amber-800 disabled:opacity-50 dark:text-amber-400"
+              disabled={busy !== ""}
+              title="Notify the customer to re-provide a valid disbursement account from their dashboard settings"
+              onClick={() => void requestAccountUpdate()}
+            >
+              {busy === "acct" ? "Sending request…" : "Ask customer to update account"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {actionError && (
+        <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+          <span>{actionError}</span>
+          <button type="button" className="text-xs font-semibold underline" onClick={() => setActionError("")}>Dismiss</button>
+        </div>
+      )}
+      {notice && (
+        <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+          <span>{notice}</span>
+          <button type="button" className="text-xs font-semibold underline" onClick={() => setNotice("")}>Dismiss</button>
+        </div>
+      )}
+
+      {loading ? (
+        <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">Loading transfer records…</p>
+      ) : transfers.length === 0 ? (
+        <div className="mt-4 rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+          Once a disbursement is initiated, every transfer attempt and Flutterwave's real response appears here.
+        </div>
+      ) : (
+        <div className="mt-4 space-y-3">
+          {transfers.map((t) => (
+            <div key={t.id} className={`rounded-xl border p-4 ${t.status === "FAILED" ? "border-red-200 bg-red-50/50 dark:border-red-900/50 dark:bg-red-950/20" : t.status === "SUCCESSFUL" ? "border-emerald-200 bg-emerald-50/40 dark:border-emerald-900/50 dark:bg-emerald-950/20" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"}`}>
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <div className="text-xs font-mono text-slate-500 dark:text-slate-400">
+                  #{t.id.slice(0, 10)}…
+                  {t.retryOfId && <span className="ml-2 text-amber-600 dark:text-amber-400">(retry #{t.retryCount || 1})</span>}
+                </div>
+                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold uppercase ${t.status === "SUCCESSFUL" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : t.status === "FAILED" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"}`}>
+                  {t.status}
+                </span>
+              </div>
+              <div className="mt-2 grid gap-x-6 gap-y-1 text-xs text-slate-600 dark:text-slate-300 sm:grid-cols-2">
+                <div>Amount: <strong className="text-velo-900 dark:text-white">{formatNaira(Number(t.amountNaira || 0))}</strong></div>
+                <div>Created: {t.createdAt ? new Date(t.createdAt).toLocaleString() : "—"}</div>
+                <div>Bank: {t.bankName || t.bankCode || "—"} · Acc: {t.accountNumber ? `••••${String(t.accountNumber).slice(-4)}` : "—"}</div>
+                <div>Beneficiary: {t.accountName || "—"}</div>
+                {t.providerReference && <div className="sm:col-span-2">Provider ref: <span className="font-mono">{t.providerReference}</span></div>}
+              </div>
+              {t.status === "FAILED" && (
+                <div className="mt-3 rounded-md border border-red-200 bg-white px-3 py-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-300">
+                  <div className="font-semibold">Disbursement failed{t.error ? `: ${t.error}` : ""}.</div>
+                  <div className="mt-1">Review the provider response below and the borrower's account, then retry or ask the customer to update their account.</div>
+                </div>
+              )}
+              {t.status === "PROCESSING" && (
+                <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                  Transfer is being processed by the provider — the final status is confirmed automatically and this card updates within a minute or two.
+                </div>
+              )}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs font-semibold text-velo-700 hover:underline dark:text-velo-400">View provider response</summary>
+                <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-slate-50 p-3 font-mono text-[11px] text-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                  {JSON.stringify({ provider: t.providerTransfer, error: t.error }, null, 2)}
+                </pre>
+              </details>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -106,6 +106,7 @@ async function main(): Promise<void> {
   // KYC gate
   const kyc = storeMod.findOrCreateKycCase(b1) as any;
   kyc.checklist.bvn = true; kyc.checklist.nin = true; kyc.checklist.liveness = true;
+  kyc.status = "VERIFIED"; // admin-approved KYC (required by the disbursement KYC gate)
   kyc.bvn = "12345678901"; kyc.nin = "12345678901";
 
   try {

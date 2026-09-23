@@ -4,7 +4,8 @@ import Layout from "../components/Layout";
 import PasswordInput from "../components/PasswordInput";
 import { useAuth } from "../context/AuthContext";
 import { isValidEmail } from "../utils/validation";
-import { loginStepUpResendOtp, resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired, type LoginStepUpRequired } from "../services/apiClient";
+import { loginStepUpResendOtp, resendRegistrationOtp, type OtpChannel, type RegistrationVerification, type LoginOtpRequired, type LoginStepUpRequired, ApiError } from "../services/apiClient";
+import { config } from "../utils/config";
 import Icon from "../components/Icon";
 
 type Mode = "login" | "register" | "forgot";
@@ -51,6 +52,22 @@ export default function AccountAccess() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
+  // Maintenance mode: when the backend blocks a sign-in with code
+  // MAINTENANCE_MODE, show the beautiful maintenance modal instead of a
+  // plain error line.
+  const [maintenanceNotice, setMaintenanceNotice] = useState<string | null>(null);
+
+  // If maintenance is already ON, show the modal before the user even tries.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${config.apiUrl}/api/v1/platform/status`)
+      .then((response) => response.json())
+      .then((body: { maintenanceMode?: boolean; maintenanceMessage?: string }) => {
+        if (!cancelled && body.maintenanceMode) setMaintenanceNotice(body.maintenanceMessage || "Velo is currently undergoing scheduled maintenance.");
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const verification = signupVerification ?? loginStepUp;
@@ -201,7 +218,12 @@ export default function AccountAccess() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to continue");
+      if (err instanceof ApiError && err.code === "MAINTENANCE_MODE") {
+        setMaintenanceNotice(err.message);
+        setError("");
+      } else {
+        setError(err instanceof Error ? err.message : "Unable to continue");
+      }
     } finally {
       setBusy(false);
     }
@@ -912,6 +934,57 @@ export default function AccountAccess() {
           </div>
         </div>
       </div>
+
+      {/* Maintenance mode — a beautiful blocking modal: sign-in is paused while
+          the platform is under maintenance, and users are promised (and sent)
+          an email the moment it is back up. */}
+      {maintenanceNotice && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="maintenance-title"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-md px-4 animate-fade-in"
+        >
+          <div className="relative w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 shadow-2xl overflow-hidden">
+            <div className="relative bg-gradient-to-br from-amber-500 via-amber-600 to-orange-600 px-6 pt-8 pb-9 text-center text-white overflow-hidden">
+              <div className="absolute -top-14 -right-14 w-44 h-44 rounded-full bg-white/15 blur-2xl" />
+              <div className="absolute -bottom-16 -left-10 w-40 h-40 rounded-full bg-white/10 blur-3xl" />
+              <div className="relative mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-white/20 border border-white/30 backdrop-blur-sm">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" className="animate-spin-slow">
+                  <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </div>
+              <h2 id="maintenance-title" className="relative mt-4 text-2xl font-black leading-tight">
+                We&apos;ll be right back
+              </h2>
+              <p className="relative mt-1 text-sm text-white/85">
+                Scheduled maintenance in progress
+              </p>
+            </div>
+            <div className="px-6 sm:px-8 py-6 text-center">
+              <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+                {maintenanceNotice}
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0">
+                  <path d="M3 8l9 6 9-6M3 8v10a2 2 0 002 2h14a2 2 0 002-2V8M3 8a2 2 0 012-2h14a2 2 0 012 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                We&apos;ll email you the moment the system is back up
+              </div>
+              <p className="mt-4 text-[11px] leading-5 text-slate-400">
+                Your data and any pending transactions are safe. Thank you for your patience while we make Velo better.
+              </p>
+              <button
+                type="button"
+                onClick={() => setMaintenanceNotice(null)}
+                className="mt-5 w-full rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 transition"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dashboard picker — dual-role accounts choose where to land after
           signing in. They can always switch between dashboards later. */}

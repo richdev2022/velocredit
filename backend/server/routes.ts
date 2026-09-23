@@ -106,8 +106,8 @@ import {
   normalizeBankCodeForFlutterwave,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail } from "./email.js";
-import type { KycCategory, KycCategoryResult } from "./store.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail } from "./email.js";
+import type { KycCategory, KycCategoryResult, PlatformAnnouncement, PlatformBanner, Document as StoreDocument } from "./store.js";
 
 const router = Router();
 // Wallet/funding/withdrawal endpoints must respond in well under a second.
@@ -405,6 +405,253 @@ async function notifyLogin(user: { email: string; fullName: string }, req: AuthR
   try { await sendEmail({ to: user.email, name: user.fullName, ...template }); } catch { /* notification failure must not block login */ }
 }
 
+// ---------------------------------------------------------------------------
+// KYC gate helpers — investing, payouts, withdrawals and loan disbursement all
+// require the customer's KYC to be verified. When an action is blocked the
+// customer is told exactly which action needs the verification and receives an
+// email prompting them to complete their KYC.
+// ---------------------------------------------------------------------------
+type KycBlockedAction = "LOAN_DISBURSEMENT" | "INVESTMENT" | "INVESTOR_PAYOUT" | "WITHDRAWAL" | "EARLY_LIQUIDITY";
+function userKycVerified(userId: string): boolean {
+  const kycStatus = kycCases.find((item) => item.userId === userId)?.status;
+  const userStatus = users.find((u) => u.id === userId)?.kycStatus;
+  // The KYC case is the source of truth; the user record mirrors it. If the
+  // case was never started, fall back to the user record (admin-verified or
+  // legacy accounts that were verified before the case existed).
+  const effective = !kycStatus || kycStatus === "NOT_STARTED" ? (userStatus ?? kycStatus ?? "NOT_STARTED") : kycStatus;
+  return effective === "VERIFIED" || effective === "PARTIALLY_VERIFIED";
+}
+async function notifyKycBlocked(user: { id: string; email: string; fullName: string }, action: KycBlockedAction): Promise<void> {
+  const template = kycActionBlockedEmail({ name: user.fullName, action });
+  try { await sendEmail({ to: user.email, name: user.fullName, ...template }); } catch { /* notification failure must not block the API response */ }
+  notifications.push({
+    id: randomUUID(),
+    userId: user.id,
+    channel: "EMAIL",
+    kind: "KYC_ACTION_BLOCKED",
+    template: "kycActionBlocked",
+    subject: template.subject,
+    content: `KYC verification required before you can ${action.replace(/_/g, " ").toLowerCase()}.`,
+    status: "SENT",
+    relatedEntityType: "KYC",
+    relatedEntityId: "kyc-case",
+    retryCount: 0,
+    createdAt: new Date().toISOString(),
+    sentAt: new Date().toISOString(),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Profile hydration — the customer already provided their profile details
+// (phone, date of birth, address, occupation…) during the loan application.
+// Backfill ONLY empty user fields from the most recent application snapshot
+// (and verified KYC provider data) so the profile page shows what they gave us
+// without ever overwriting newer information they may have edited.
+// ---------------------------------------------------------------------------
+function hydrateUserProfileFromApplications(userId: string): boolean {
+  const user = users.find((item) => item.id === userId);
+  if (!user) return false;
+  const isEmpty = (value: unknown) => value == null || (typeof value === "string" && !value.trim()) || (typeof value === "object" && Object.keys(value as object).length === 0);
+  const application = loanApplications
+    .filter((item) => item.borrowerId === userId)
+    .sort((a, b) => String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? "")))[0];
+  const snapshot = (application?.customerSnapshot ?? {}) as Record<string, unknown>;
+  const personalInfo = (snapshot.personalInfo ?? {}) as Record<string, unknown>;
+  const kycProvider = kycCases.find((item) => item.userId === userId)?.providerRaw as Record<string, unknown> | undefined;
+  const providerBlock = ((kycProvider?.bvn ?? kycProvider?.nin) as { data?: Record<string, unknown> } | undefined)?.data ?? {};
+  const pick = (...sources: Array<Record<string, unknown> | undefined>) => {
+    for (const source of sources) {
+      if (!source) continue;
+      for (const [key, value] of Object.entries(source)) {
+        if (typeof value === "string" && value.trim()) return value.trim();
+        if (typeof value === "number") return String(value);
+      }
+    }
+    return undefined;
+  };
+  let changed = false;
+  if (isEmpty(user.dateOfBirth)) {
+    const dob = pick({ dateOfBirth: personalInfo.dateOfBirth ?? personalInfo.dob }, { dateOfBirth: providerBlock.dateOfBirth ?? (providerBlock as Record<string, unknown>).dob });
+    if (dob) { user.dateOfBirth = dob; changed = true; }
+  }
+  if (isEmpty(user.occupation)) {
+    const occupation = pick({ occupation: personalInfo.occupation }, { occupation: personalInfo.employmentStatus });
+    if (occupation) { user.occupation = occupation; changed = true; }
+  }
+  if (isEmpty(user.sourceOfFunds)) {
+    const funds = pick({ sourceOfFunds: personalInfo.sourceOfFunds }, { sourceOfFunds: (personalInfo.monthlyIncome as string) });
+    if (funds) { user.sourceOfFunds = funds; changed = true; }
+  }
+  if (isEmpty(user.residentialAddress)) {
+    const address = (personalInfo.residentialAddress ?? personalInfo.homeAddress ?? personalInfo.address) as unknown;
+    if (typeof address === "string" && address.trim()) {
+      user.residentialAddress = { line1: address.trim() };
+      changed = true;
+    } else if (address && typeof address === "object" && Object.keys(address as object).length) {
+      user.residentialAddress = address as Record<string, unknown>;
+      changed = true;
+    } else {
+      const street = pick({ residentialAddress: (snapshot.residentialAddress as string) });
+      if (street) { user.residentialAddress = { line1: street }; changed = true; }
+    }
+  }
+  if (changed) {
+    user.updatedAt = new Date().toISOString();
+    schedulePersist();
+  }
+  return changed;
+}
+
+// ---------------------------------------------------------------------------
+// KYC auto-pull on loan application submission — every KYC-relevant detail the
+// customer gave in the wizard (identity numbers, documents, liveness) is pulled
+// into their standalone KYC case so they never have to upload the same
+// documents twice. Any remaining human-review items surface on the admin KYC
+// dashboard and the customer is emailed at each lifecycle transition.
+// ---------------------------------------------------------------------------
+function documentTypeForSnapshotDoc(slot: string, identificationType?: string): StoreDocument["documentType"] | null {
+  switch (slot) {
+    case "proofOfAddress": return "PROOF_OF_ADDRESS";
+    case "signature": return "SIGNATURE";
+    case "identificationDocument":
+      if (identificationType && /passport/i.test(identificationType)) return "PASSPORT_PHOTO";
+      if (identificationType && /nin/i.test(identificationType)) return "NIN_SLIP";
+      if (identificationType && /bvn/i.test(identificationType)) return "BVN_SLIP";
+      return "ID_CARD_FRONT";
+    default: return null;
+  }
+}
+
+function pullKycFromSubmittedApplication(application: (typeof loanApplications)[number], userId: string): { createdDocuments: number; checklistUpdated: boolean } {
+  const kyc = findOrCreateKycCase(userId);
+  const snapshot = (application.customerSnapshot ?? {}) as Record<string, unknown>;
+  const appDocuments = (snapshot.documents ?? {}) as Record<string, { name?: string; type?: string; size?: number; data?: string }>;
+  const appKyc = (snapshot.kyc ?? {}) as Record<string, unknown>;
+  let createdDocuments = 0;
+  let checklistUpdated = false;
+
+  // 1) Identity numbers captured in the wizard flow into the KYC case.
+  for (const field of ["bvn", "nin"] as const) {
+    const value = typeof appKyc[field] === "string" ? (appKyc[field] as string) : "";
+    if (/^\d{11}$/.test(value) && !kyc.checklist[field]) {
+      kyc[field] = value;
+      kyc.checklist[field] = true;
+      checklistUpdated = true;
+    }
+  }
+  if (appKyc.bvnVerified === true && !kyc.checklist.bvn) { kyc.checklist.bvn = true; checklistUpdated = true; }
+  if (appKyc.ninVerified === true && !kyc.checklist.nin) { kyc.checklist.nin = true; checklistUpdated = true; }
+  if (appKyc.livenessVerified === true && !kyc.checklist.liveness) {
+    kyc.checklist.liveness = true;
+    kyc.livenessVerifiedAt = kyc.livenessVerifiedAt ?? new Date().toISOString();
+    if (!kyc.livenessStatus) kyc.livenessStatus = "SUCCESS";
+    checklistUpdated = true;
+  }
+
+  // 2) Documents uploaded in the wizard become reviewable KYC documents.
+  for (const [slot, doc] of Object.entries(appDocuments)) {
+    if (!doc || typeof doc !== "object") continue;
+    const documentType = documentTypeForSnapshotDoc(slot, typeof appKyc.identificationType === "string" ? appKyc.identificationType : undefined);
+    if (!documentType) continue;
+    const reference = `snapshot:${application.id}:${slot}`;
+    const duplicate = documents.some((item) => item.userId === userId && item.providerFileId === reference && item.documentType === documentType);
+    if (duplicate) continue;
+    documents.push({
+      id: randomUUID(),
+      userId,
+      applicationId: application.id,
+      documentSlot: slot,
+      documentType,
+      provider: "manual",
+      providerFileId: reference,
+      fileName: doc.name ?? `${slot}`,
+      mimeType: doc.type ?? "application/octet-stream",
+      sizeBytes: doc.size,
+      status: "PENDING_REVIEW",
+      version: 1,
+      createdAt: new Date().toISOString(),
+    });
+    createdDocuments += 1;
+    const checklistKey = documentType === "PROOF_OF_ADDRESS" ? "proofOfAddress" : documentType === "SIGNATURE" ? "signature" : null;
+    if (checklistKey && !kyc.checklist[checklistKey]) {
+      kyc.checklist[checklistKey] = true;
+      checklistUpdated = true;
+    }
+    const category: KycCategory | null = documentType === "PROOF_OF_ADDRESS" ? "ADDRESS" : documentType === "SIGNATURE" ? "SIGNATURE" : null;
+    if (category) setKycCategoryResult(kyc, category, "PENDING_REVIEW");
+  }
+
+  if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
+  markKycChecklistComplete(userId);
+  kyc.updatedAt = new Date().toISOString();
+  return { createdDocuments, checklistUpdated };
+}
+
+// ---------------------------------------------------------------------------
+// Standalone KYC prefill — expose the KYC details the customer gave during
+// their most recent loan application so the Verification page can pre-fill
+// identity numbers, personal details and reuse uploaded documents.
+// ---------------------------------------------------------------------------
+function applicationKycPrefill(userId: string): Record<string, unknown> | null {
+  const application = loanApplications
+    .filter((item) => item.borrowerId === userId)
+    .sort((a, b) => String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? "")))
+    .find((item) => {
+      const snap = (item.customerSnapshot ?? {}) as Record<string, unknown>;
+      const kyc = (snap.kyc ?? {}) as Record<string, unknown>;
+      return Boolean(kyc.bvn || kyc.nin || kyc.identificationNumber);
+    });
+  if (!application) return null;
+  const snapshot = (application.customerSnapshot ?? {}) as Record<string, unknown>;
+  const appKyc = (snapshot.kyc ?? {}) as Record<string, unknown>;
+  const personalInfo = (snapshot.personalInfo ?? {}) as Record<string, unknown>;
+  const appDocuments = (snapshot.documents ?? {}) as Record<string, { name?: string; type?: string; size?: number; data?: string }>;
+  const documentSummaries: Array<Record<string, unknown>> = [];
+  for (const [slot, doc] of Object.entries(appDocuments)) {
+    if (!doc || typeof doc !== "object") continue;
+    const documentType = documentTypeForSnapshotDoc(slot, typeof appKyc.identificationType === "string" ? appKyc.identificationType : undefined);
+    if (!documentType) continue;
+    documentSummaries.push({
+      slot,
+      documentType,
+      fileName: doc.name ?? slot,
+      mimeType: doc.type ?? "application/octet-stream",
+      sizeBytes: doc.size ?? 0,
+      available: Boolean(doc.data),
+      providerFileId: `snapshot:${application.id}:${slot}`,
+    });
+  }
+  const maskId = (value: unknown) => (typeof value === "string" && value.length >= 6 ? `${"*".repeat(Math.max(0, value.length - 4))}${value.slice(-4)}` : typeof value === "string" ? value : undefined);
+  return {
+    applicationId: application.applicationId || application.id,
+    submittedAt: application.submittedAt ?? application.createdAt,
+    bvn: typeof appKyc.bvn === "string" ? appKyc.bvn : undefined,
+    bvnMasked: maskId(appKyc.bvn),
+    bvnVerified: appKyc.bvnVerified === true,
+    nin: typeof appKyc.nin === "string" ? appKyc.nin : undefined,
+    ninMasked: maskId(appKyc.nin),
+    ninVerified: appKyc.ninVerified === true,
+    livenessVerified: appKyc.livenessVerified === true,
+    identificationType: typeof appKyc.identificationType === "string" ? appKyc.identificationType : undefined,
+    identificationNumber: maskId(appKyc.identificationNumber),
+    personalInfo: {
+      firstName: personalInfo.firstName,
+      middleName: personalInfo.middleName,
+      lastName: personalInfo.lastName,
+      fullName: personalInfo.fullName,
+      dateOfBirth: personalInfo.dateOfBirth ?? personalInfo.dob,
+      phone: personalInfo.phone,
+      email: personalInfo.email,
+      residentialAddress: personalInfo.residentialAddress ?? personalInfo.homeAddress ?? personalInfo.address,
+      city: personalInfo.city,
+      state: personalInfo.state,
+      lga: personalInfo.lga,
+      gender: personalInfo.gender,
+    },
+    documents: documentSummaries,
+  };
+}
+
 const loanNotificationPermission = "loan_notifications" as const;
 function hasUnresolvedBorrowing(userId: string, excludeApplicationId?: string): boolean {
   const openApplication = loanApplications.some((application) => application.borrowerId === userId && application.id !== excludeApplicationId && ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED"].includes(application.status));
@@ -640,6 +887,19 @@ router.post("/auth/login", async (req, res) => {
     });
     return;
   }
+  // Maintenance mode: customers are locked out with a friendly modal; admins
+  // can still sign in to operate the console and toggle maintenance back off.
+  const maintenanceSettings = getPlatformSettings();
+  if (maintenanceSettings.maintenanceMode === true && !user.roles.includes("ADMIN")) {
+    res.status(503).json({
+      ok: false,
+      code: "MAINTENANCE_MODE",
+      error: maintenanceSettings.maintenanceMessage?.trim()
+        ? maintenanceSettings.maintenanceMessage.trim()
+        : "Velo is currently undergoing scheduled maintenance. We'll email you as soon as the system is back up — thank you for your patience.",
+    });
+    return;
+  }
   if (user.otpLoginEnabled) {
     const channel = user.preferredOtpChannel ?? "EMAIL";
     const phone = loginOtpPhone(user.phone);
@@ -701,9 +961,44 @@ router.post("/auth/login/verify-otp", async (req, res) => {
   if (!result.ok || result.action !== "LOGIN_STEP_UP" || !result.userId) { res.status(400).json({ ok: false, error: result.error ?? "Invalid or expired OTP" }); return; }
   const user = users.find((item) => item.id === result.userId && item.isActive !== false && item.otpLoginEnabled);
   if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  // Maintenance mode also blocks the OTP second step for non-admin users.
+  const maintenanceSettings = getPlatformSettings();
+  if (maintenanceSettings.maintenanceMode === true && !user.roles.includes("ADMIN")) {
+    res.status(503).json({
+      ok: false,
+      code: "MAINTENANCE_MODE",
+      error: maintenanceSettings.maintenanceMessage?.trim()
+        ? maintenanceSettings.maintenanceMessage.trim()
+        : "Velo is currently undergoing scheduled maintenance. We'll email you as soon as the system is back up — thank you for your patience.",
+    });
+    return;
+  }
   user.lastLoginAt = new Date().toISOString();
   await notifyLogin(user, req);
   res.json({ ok: true, accessToken: issueToken(user), user: { id: user.id, email: user.email, fullName: user.fullName, phone: user.phone, roles: user.roles, kycStatus: user.kycStatus, createdAt: user.createdAt } });
+});
+
+// ---------------------------------------------------------------------------
+// Public platform status — consumed by the landing page, AccountAccess and the
+// customer dashboards to render the maintenance modal, announcement slider and
+// banner carousel without exposing any settings internals.
+// ---------------------------------------------------------------------------
+router.get("/platform/status", (_req, res) => {
+  const settings = getPlatformSettings();
+  res.json({
+    ok: true,
+    maintenanceMode: settings.maintenanceMode === true,
+    maintenanceMessage: settings.maintenanceMessage ?? "",
+    announcements: (settings.announcements ?? []).filter((item) => item.isActive).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+  });
+});
+
+router.get("/platform/banners", (_req, res) => {
+  const settings = getPlatformSettings();
+  res.json({
+    ok: true,
+    banners: (settings.banners ?? []).filter((item) => item.isActive).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+  });
 });
 
 router.post("/auth/admin/login", async (req, res) => {
@@ -1072,6 +1367,10 @@ router.get("/me", requireAuth, (req: AuthRequest, res) => {
     res.status(404).json({ ok: false, error: "User not found" });
     return;
   }
+  // Profile autofill: the customer's phone, date of birth, address, occupation
+  // etc. were already provided during their loan application — backfill any
+  // empty profile fields so the profile page shows the details they gave us.
+  hydrateUserProfileFromApplications(user.id);
   res.json({
     ok: true,
     user: {
@@ -1437,6 +1736,10 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   const safeVerificationEvents = identityVerificationEvents
     .filter((event) => event.kycCaseId === kyc.id)
     .map(({ rawResponse: _rawResponse, ...event }) => event);
+  // Standalone KYC prefill: details the customer gave during their loan
+  // application (identity numbers, personal data, uploaded documents) so the
+  // Verification page can reuse them instead of asking for everything again.
+  const applicationPrefill = applicationKycPrefill(req.user!.id);
   res.json({
     ok: true,
     status: kyc.status,
@@ -1457,6 +1760,7 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
     normalizedFields: Object.keys(normalizedFields).length ? normalizedFields : undefined,
     profilePrefill: Object.keys(profilePrefill).length ? profilePrefill : undefined,
     proofOfAddressUrl,
+    applicationPrefill,
   });
 });
 
@@ -1517,6 +1821,11 @@ router.post("/me/kyc", requireAuth, async (req: AuthRequest, res) => {
   kyc.updatedAt = new Date().toISOString();
   markKycChecklistComplete(user.id);
   if (!(await persistMutation(res))) return;
+  // KYC lifecycle email — submitted for review.
+  if (kyc.status === "PENDING_VERIFICATION" && user.email) {
+    const template = kycSubmittedEmail({ name: user.fullName, source: "KYC_PAGE" });
+    void sendEmail({ to: user.email, name: user.fullName, ...template }).catch(() => undefined);
+  }
   res.status(202).json({
     ok: true,
     status: kyc.status,
@@ -1528,6 +1837,62 @@ router.post("/me/kyc", requireAuth, async (req: AuthRequest, res) => {
         ? "KYC submitted for verification. Provider credentials are required for automated checks."
         : "KYC updated. Verify your BVN and NIN and upload proof of address to submit.",
   });
+});
+
+// ---------------------------------------------------------------------------
+// Reuse loan-application KYC documents — one click on the Verification page
+// pulls the documents the customer uploaded during their loan application
+// (ID, proof of address, signature) into their KYC case, so they never have to
+// upload the same files twice.
+// ---------------------------------------------------------------------------
+router.post("/me/kyc/reuse-application-documents", requireAuth, async (req: AuthRequest, res) => {
+  const user = users.find((u) => u.id === req.user?.id);
+  if (!user) {
+    res.status(404).json({ ok: false, error: "User not found" });
+    return;
+  }
+  const application = loanApplications
+    .filter((item) => item.borrowerId === user.id)
+    .sort((a, b) => String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? "")))
+    .find((item) => {
+      const snap = (item.customerSnapshot ?? {}) as Record<string, unknown>;
+      const docs = (snap.documents ?? {}) as Record<string, unknown>;
+      return Boolean(docs.proofOfAddress || docs.signature || docs.identificationDocument);
+    });
+  if (!application) {
+    res.status(404).json({ ok: false, error: "No loan application with uploaded documents was found on your account." });
+    return;
+  }
+  const result = pullKycFromSubmittedApplication(application, user.id);
+  const kyc = findOrCreateKycCase(user.id);
+  schedulePersist();
+  res.json({
+    ok: true,
+    reused: result.createdDocuments,
+    checklist: kyc.checklist,
+    status: kyc.status,
+    message: result.createdDocuments > 0
+      ? `${result.createdDocuments} document${result.createdDocuments === 1 ? "" : "s"} pulled from your loan application into your KYC verification.`
+      : "Your loan application documents were already attached to your KYC verification.",
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KYC pending notification — the customer tried an action their dashboard
+// gates (invest, withdraw, payout…) while unverified. Send the "verify your
+// KYC to trigger {action}" email so they know exactly what to do next.
+// ---------------------------------------------------------------------------
+router.post("/me/kyc/action-blocked", requireAuth, async (req: AuthRequest, res) => {
+  const parsed = z.object({ action: z.enum(["LOAN_DISBURSEMENT", "INVESTMENT", "INVESTOR_PAYOUT", "WITHDRAWAL", "EARLY_LIQUIDITY"]) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const user = users.find((u) => u.id === req.user?.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  if (userKycVerified(user.id)) {
+    res.json({ ok: true, notified: false, message: "Your KYC is already verified — you can retry the action now." });
+    return;
+  }
+  await notifyKycBlocked(user, parsed.data.action);
+  res.json({ ok: true, notified: true, message: "We emailed you a link to complete your KYC verification." });
 });
 
 router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => {
@@ -2339,9 +2704,13 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), async
   const user = users.find((u) => u.id === req.user?.id);
   const kyc = findOrCreateKycCase(req.user!.id);
   if (!user || kyc.status !== "VERIFIED" && kyc.status !== "PARTIALLY_VERIFIED") {
+    // Tell the investor exactly what to do — email + in-app notification.
+    if (user) void notifyKycBlocked(user, "INVESTMENT");
     res.status(409).json({
       ok: false,
-      error: "KYC must be completed and verified before creating an investment.",
+      code: "KYC_REQUIRED",
+      error: "Your KYC verification is pending. Complete your identity verification before you can invest.",
+      kycStatus: kyc.status,
     });
     return;
   }
@@ -2417,6 +2786,13 @@ router.post("/investor/investments/:id/liquidity", requireAuth, requireRole("INV
   }
   if (investment.status !== "ACTIVE") {
     res.status(409).json({ ok: false, error: `Investment is ${investment.status} and cannot request early liquidity.` });
+    return;
+  }
+  // KYC gate: payouts (including early liquidity) require verified identity.
+  if (!userKycVerified(req.user!.id)) {
+    const requester = users.find((u) => u.id === req.user!.id);
+    if (requester) void notifyKycBlocked(requester, "EARLY_LIQUIDITY");
+    res.status(409).json({ ok: false, code: "KYC_REQUIRED", error: "Your KYC verification is pending. Complete your identity verification before requesting early liquidity." });
     return;
   }
   const plan = investment.planId ? investmentPlans.find((p) => p.id === investment.planId) : undefined;
@@ -2722,6 +3098,22 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
   const accountUpdateLoans = userLoans
     .filter((loan) => loan.disbursementAccountNeedsUpdate === true)
     .map((loan) => ({ loanId: loan.id, applicationId: loan.applicationId, requestedAt: loan.disbursementAccountRequestedAt ?? null }));
+  // Loan eligibility: a borrower with a submitted application or an
+  // outstanding loan cannot request another loan until it is fully repaid.
+  const openApplication = userApplications.find((item) => ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED"].includes(String(item.status)));
+  const activeLoan = userLoans.find((item) => !["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(item.status));
+  const loanEligibility = openApplication || activeLoan
+    ? {
+        canApply: false,
+        reason: openApplication
+          ? "You already have a loan application under review. You can apply for a new loan once it is completed and your current loan is fully repaid."
+          : "You have an active loan. You can apply for a new loan once your current loan is fully repaid.",
+        activeApplicationId: openApplication?.applicationId ?? null,
+        activeApplicationStatus: openApplication?.status ?? null,
+        activeLoanId: activeLoan?.id ?? null,
+        activeLoanStatus: activeLoan?.status ?? null,
+      }
+    : { canApply: true, reason: null as string | null, activeApplicationId: null as string | null, activeApplicationStatus: null as string | null, activeLoanId: null as string | null, activeLoanStatus: null as string | null };
   // Decorate every application/loan with resolved product fields so the UI can
   // always render loan information (name, interest, fees, range) — even for
   // applications created before products were linked, or whose product was
@@ -2740,6 +3132,7 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
     disbursementAccount,
     accountUpdateRequested: accountUpdateLoans.length > 0,
     accountUpdateLoans,
+    loanEligibility,
   });
 });
 
@@ -3201,8 +3594,26 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       occurredAt: now,
       createdAt: now,
     });
+    // One-shot submission path: pull the KYC details + documents captured in
+    // the application into the customer's standalone KYC case (same contract
+    // as the draft /submit endpoint below).
+    let kycPulled: { createdDocuments: number; checklistUpdated: boolean } | null = null;
+    let kycAutoSubmitted = false;
+    try {
+      const kycBeforePull = findOrCreateKycCase(req.user!.id);
+      const kycWasAlreadySubmitted = ["PENDING_VERIFICATION", "VERIFIED", "REJECTED", "REVIEWING"].includes(kycBeforePull.status);
+      kycPulled = pullKycFromSubmittedApplication(application, req.user!.id);
+      const kycAfter = findOrCreateKycCase(req.user!.id);
+      kycAutoSubmitted = kycAfter.status === "PENDING_VERIFICATION" && !kycWasAlreadySubmitted;
+      if (kycAutoSubmitted && user?.email) {
+        const template = kycSubmittedEmail({ name: user.fullName, source: "LOAN_APPLICATION" });
+        void sendEmail({ to: user.email, name: user.fullName, ...template }).catch(() => undefined);
+      }
+    } catch (kycError) {
+      console.warn(`[routes] KYC auto-pull failed on application creation user=${req.user!.id}:`, kycError);
+    }
     if (!(await persistMutation(res))) return;
-    res.status(201).json({ ok: true, application });
+    res.status(201).json({ ok: true, application, kycPulled, kycAutoSubmitted });
   } catch (_e) {
     console.error("[routes] unexpected POST /borrower/applications error:", _e);
     if (res.headersSent) return;
@@ -3359,8 +3770,31 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
       };
       console.info(`[routes] application ${application.applicationId} resubmitted after rejection user=${req.user!.id}`);
     }
+    // KYC auto-pull: every identity detail + document the customer provided in
+    // the wizard is pulled into their standalone KYC case automatically. Items
+    // that still need a human decision (proof of address, signature) surface
+    // on the admin KYC dashboard, and the customer is emailed about the
+    // submission. Existing VERIFIED status is never downgraded.
+    let kycPulled: { createdDocuments: number; checklistUpdated: boolean } | null = null;
+    let kycAutoSubmitted = false;
+    try {
+      const kycBeforePull = findOrCreateKycCase(req.user!.id);
+      const kycWasAlreadySubmitted = ["PENDING_VERIFICATION", "VERIFIED", "REJECTED", "REVIEWING"].includes(kycBeforePull.status);
+      kycPulled = pullKycFromSubmittedApplication(application, req.user!.id);
+      const kycAfter = findOrCreateKycCase(req.user!.id);
+      kycAutoSubmitted = kycAfter.status === "PENDING_VERIFICATION" && !kycWasAlreadySubmitted;
+      if (kycAutoSubmitted) {
+        const kycUser = users.find((u) => u.id === req.user!.id);
+        if (kycUser?.email) {
+          const template = kycSubmittedEmail({ name: kycUser.fullName, source: "LOAN_APPLICATION" });
+          void sendEmail({ to: kycUser.email, name: kycUser.fullName, ...template }).catch(() => undefined);
+        }
+      }
+    } catch (kycError) {
+      console.warn(`[routes] KYC auto-pull failed on submit user=${req.user!.id}:`, kycError);
+    }
     if (!(await persistMutation(res))) return;
-    res.json({ ok: true, application, resubmitted: isResubmission });
+    res.json({ ok: true, application, resubmitted: isResubmission, kycPulled, kycAutoSubmitted });
     if (!wasSubmitted) void sendLoanEmails(application, "SUBMITTED");
   } catch (_e) {
     console.error("[routes] unexpected POST /borrower/applications/:id/submit error:", _e);
@@ -3821,6 +4255,17 @@ router.post("/admin/payouts/:payoutId/retry", requireAuth, requireRole("ADMIN"),
   }
   if (payout.status !== "FAILED") {
     res.status(409).json({ ok: false, error: "Only definitively failed payouts can be retried." });
+    return;
+  }
+  // KYC gate: retries are still payouts — the investor's KYC must be verified.
+  if (!userKycVerified(payout.userId)) {
+    const investor = users.find((u) => u.id === payout.userId);
+    if (investor) void notifyKycBlocked(investor, "INVESTOR_PAYOUT");
+    res.status(409).json({
+      ok: false,
+      code: "KYC_REQUIRED",
+      error: `The investor's KYC verification is not complete${investor ? ` (${investor.fullName})` : ""}. The payout cannot be retried until the investor completes identity verification.`,
+    });
     return;
   }
   const account = payoutAccounts.find((item) => item.userId === payout.userId);
@@ -4548,12 +4993,30 @@ router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), as
   // /uc?export=download URL (download). For other providers we fall back to
   // any URL fields already stored on the document.
   const isGoogleDrive = doc.provider === "google_drive";
+  // Documents pulled automatically from a loan application snapshot reference
+  // the original upload (`snapshot:<applicationId>:<slot>`) — serve them from
+  // the application's stored base64 payload.
+  let snapshotPreviewUrl = "";
+  let snapshotDownloadUrl = "";
+  if (doc.provider === "manual" && doc.providerFileId.startsWith("snapshot:")) {
+    const [, applicationId, slot] = doc.providerFileId.split(":");
+    const application = loanApplications.find((item) => item.id === applicationId);
+    const snapshotDoc = slot
+      ? ((application?.customerSnapshot as Record<string, unknown> | undefined)?.documents as Record<string, { data?: string; type?: string } | undefined> | undefined)?.[slot]
+      : undefined;
+    if (snapshotDoc?.data) {
+      const mimeType = snapshotDoc.type || doc.mimeType || "application/octet-stream";
+      const dataUrl = `data:${mimeType};base64,${snapshotDoc.data}`;
+      snapshotPreviewUrl = dataUrl;
+      snapshotDownloadUrl = dataUrl;
+    }
+  }
   const previewUrl = isGoogleDrive && doc.providerFileId
     ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(doc.providerFileId)}`
-    : (doc as { previewUrl?: string }).previewUrl ?? "";
+    : snapshotPreviewUrl || ((doc as { previewUrl?: string }).previewUrl ?? "");
   const downloadUrl = isGoogleDrive && doc.providerFileId
     ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(doc.providerFileId)}`
-    : (doc as { downloadUrl?: string }).downloadUrl ?? "";
+    : snapshotDownloadUrl || ((doc as { downloadUrl?: string }).downloadUrl ?? "");
   res.json({
     ok: true,
     document: {
@@ -4569,6 +5032,7 @@ router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), as
       createdAt: doc.createdAt,
       previewUrl,
       downloadUrl,
+      source: doc.providerFileId.startsWith("snapshot:") ? "loan_application" : doc.provider,
     },
   });
 });
@@ -5136,6 +5600,18 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     res.status(409).json({ ok: false, error: "Loan manager approval is required before disbursement" });
     return;
   }
+  // KYC gate: the borrower's identity verification must be complete before
+  // funds leave the platform. Admin sees a precise reason instead of a
+  // provider failure after the fact.
+  if (!userKycVerified(loan.borrowerId)) {
+    const borrower = users.find((u) => u.id === loan.borrowerId);
+    res.status(409).json({
+      ok: false,
+      code: "KYC_REQUIRED",
+      error: `KYC verification is not complete for this borrower${borrower ? ` (${borrower.fullName})` : ""}. The borrower must complete and be approved on identity verification before this loan can be disbursed.`,
+    });
+    return;
+  }
   const snapshot = (application?.customerSnapshot ?? {}) as {
     fullName?: string;
     disbursementAccount?: { accountName?: string; accountNumber?: string; bankCode?: string; bankName?: string };
@@ -5626,6 +6102,18 @@ router.post("/admin/payouts/:payoutId/approve", requireAuth, requireRole("ADMIN"
     res.status(409).json({ ok: false, error: `Payout is ${payout.status}, cannot approve.` });
     return;
   }
+  // KYC gate: no investor receives money — auto or manual — before their KYC
+  // is verified and approved.
+  if (!userKycVerified(payout.userId)) {
+    const investor = users.find((u) => u.id === payout.userId);
+    if (investor) void notifyKycBlocked(investor, "INVESTOR_PAYOUT");
+    res.status(409).json({
+      ok: false,
+      code: "KYC_REQUIRED",
+      error: `The investor's KYC verification is not complete${investor ? ` (${investor.fullName})` : ""}. The payout stays on hold until the investor completes identity verification.`,
+    });
+    return;
+  }
   const account = payoutAccounts.find((item) => item.userId === payout.userId && item.status === "VERIFIED");
   const snapshot = (payout.payoutAccountSnapshot ?? {}) as { accountNumber?: string; bankCode?: string; accountName?: string };
   const accountNumber = snapshot.accountNumber ?? account?.accountNumber;
@@ -5850,6 +6338,20 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     });
     return;
   }
+  // KYC gate: wallet withdrawals are payouts and require verified identity.
+  // Checked BEFORE the OTP so the customer isn't burned on a challenge that
+  // cannot succeed anyway.
+  const precheckWallet = findWallet(userId);
+  const precheckInvestor = users.find((u) => u.id === userId);
+  if (!precheckWallet || !precheckInvestor) {
+    res.status(404).json({ ok: false, error: "Wallet not found" });
+    return;
+  }
+  if (!userKycVerified(userId)) {
+    void notifyKycBlocked(precheckInvestor, "WITHDRAWAL");
+    res.status(409).json({ ok: false, code: "KYC_REQUIRED", error: "Your KYC verification is pending. Complete your identity verification before withdrawing." });
+    return;
+  }
   const verification = await verifyOtpChallenge(parsed.data.otpChallengeId, parsed.data.otpCode);
   if (!verification.ok || verification.action !== "WITHDRAWAL" || verification.userId !== userId) { res.status(400).json({ ok: false, error: "Invalid or expired OTP" }); return; }
   const wallet = findWallet(userId);
@@ -6048,13 +6550,15 @@ router.put("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async 
     investorWithdrawalFeeFlatNaira: z.number().min(0).optional(),
     investorWithdrawalMinAmountNaira: z.number().min(200).optional(),
     defaultInvestmentAnnualRatePercent: z.number().min(0).max(100).optional(),
+    maintenanceMode: z.boolean().optional(),
+    maintenanceMessage: z.string().max(500).optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const updates: Record<string, number> = {};
+  const updates: Record<string, unknown> = {};
   if (parsed.data.investorWithdrawalFeePercent !== undefined) {
     updates.investorWithdrawalFeePercent = parsed.data.investorWithdrawalFeePercent;
   }
@@ -6069,9 +6573,145 @@ router.put("/admin/settings/platform", requireAuth, requireRole("ADMIN"), async 
   if (parsed.data.defaultInvestmentAnnualRatePercent !== undefined) {
     updates.defaultInvestmentAnnualRatePercent = parsed.data.defaultInvestmentAnnualRatePercent;
   }
+  if (parsed.data.maintenanceMessage !== undefined) {
+    updates.maintenanceMessage = parsed.data.maintenanceMessage;
+  }
+  const before = getPlatformSettings();
+  const maintenanceToggled = parsed.data.maintenanceMode !== undefined && parsed.data.maintenanceMode !== (before.maintenanceMode === true);
+  if (parsed.data.maintenanceMode !== undefined) {
+    updates.maintenanceMode = parsed.data.maintenanceMode;
+  }
   const updated = updatePlatformSettings(updates);
+  recordAdminAudit(req, maintenanceToggled ? (updated.maintenanceMode ? "MAINTENANCE_MODE_ENABLED" : "MAINTENANCE_MODE_DISABLED") : "PLATFORM_SETTINGS_UPDATED", "PLATFORM_SETTINGS", updated.id, { maintenanceMode: updated.maintenanceMode, message: updated.maintenanceMessage });
+  // Maintenance-mode email blast: every active customer is notified the moment
+  // the toggle flips (ON: "we'll email you when we're back", OFF: "we're back").
+  let emailedCount: number | null = null;
+  if (maintenanceToggled) {
+    schedulePersist();
+    const recipients = users.filter((u) => u.isActive !== false && !u.roles.includes("ADMIN") && Boolean(u.email));
+    emailedCount = recipients.length;
+    void (async () => {
+      let delivered = 0;
+      for (const recipient of recipients) {
+        try {
+          const template = maintenanceModeEmail({ name: recipient.fullName, isOn: updated.maintenanceMode === true, message: updated.maintenanceMessage });
+          await sendEmail({ to: recipient.email, name: recipient.fullName, ...template });
+          delivered += 1;
+        } catch { /* best-effort blast — per-user failures are logged by sendEmail */ }
+      }
+      console.info(`[routes] maintenance mode ${updated.maintenanceMode ? "ON" : "OFF"} email blast: ${delivered}/${recipients.length} delivered`);
+    })();
+  }
   if (!(await persistMutation(res))) return;
-  res.json({ ok: true, settings: updated });
+  res.json({ ok: true, settings: updated, maintenanceEmailed: emailedCount ?? undefined });
+});
+
+// ---------------------------------------------------------------------------
+// Announcements — admin-authored messages rendered as a smooth horizontal text
+// slider (with an alert icon) on the Borrower and Investor dashboards.
+// ---------------------------------------------------------------------------
+router.get("/admin/announcements", requireAuth, requireRole("ADMIN"), (_req, res) => {
+  const settings = getPlatformSettings();
+  res.json({ ok: true, announcements: (settings.announcements ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
+});
+
+router.post("/admin/announcements", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const parsed = z.object({ message: z.string().min(3).max(280) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const settings = getPlatformSettings();
+  const now = new Date().toISOString();
+  const announcement: PlatformAnnouncement = { id: randomUUID(), message: parsed.data.message.trim(), isActive: true, createdAt: now, updatedAt: now };
+  settings.announcements = [...(settings.announcements ?? []), announcement];
+  settings.updatedAt = now;
+  recordAdminAudit(req, "ANNOUNCEMENT_CREATED", "PLATFORM_SETTINGS", String(announcement.id), { message: announcement.message });
+  if (!(await persistMutation(res))) return;
+  res.status(201).json({ ok: true, announcement });
+});
+
+router.patch("/admin/announcements/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const settings = getPlatformSettings();
+  const announcement = (settings.announcements ?? []).find((item) => item.id === req.params.id);
+  if (!announcement) { res.status(404).json({ ok: false, error: "Announcement not found" }); return; }
+  const parsed = z.object({ message: z.string().min(3).max(280).optional(), isActive: z.boolean().optional() }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  if (parsed.data.message !== undefined) announcement.message = parsed.data.message.trim();
+  if (parsed.data.isActive !== undefined) announcement.isActive = parsed.data.isActive;
+  announcement.updatedAt = new Date().toISOString();
+  settings.updatedAt = announcement.updatedAt;
+  recordAdminAudit(req, "ANNOUNCEMENT_UPDATED", "PLATFORM_SETTINGS", String(announcement.id), { isActive: announcement.isActive });
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, announcement });
+});
+
+router.delete("/admin/announcements/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const settings = getPlatformSettings();
+  const before = (settings.announcements ?? []).length;
+  settings.announcements = (settings.announcements ?? []).filter((item) => item.id !== req.params.id);
+  if (settings.announcements.length === before) { res.status(404).json({ ok: false, error: "Announcement not found" }); return; }
+  settings.updatedAt = new Date().toISOString();
+  recordAdminAudit(req, "ANNOUNCEMENT_DELETED", "PLATFORM_SETTINGS", String(req.params.id), {});
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, deleted: true });
+});
+
+// ---------------------------------------------------------------------------
+// Banners — admin-uploaded images shown as an auto-sliding carousel on the
+// Borrower and Investor dashboards. Stored as data URLs inside platform
+// settings so they survive persistence without a separate file store.
+// ---------------------------------------------------------------------------
+router.get("/admin/banners", requireAuth, requireRole("ADMIN"), (_req, res) => {
+  const settings = getPlatformSettings();
+  res.json({ ok: true, banners: (settings.banners ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
+});
+
+router.post("/admin/banners", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const parsed = z.object({
+    name: z.string().min(1).max(120),
+    // Accept a raw data URL or a bare base64 payload with an explicit mimeType.
+    imageData: z.string().min(32).max(6_000_000),
+    mimeType: z.string().regex(/^image\//).optional(),
+    linkUrl: z.string().max(500).optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  let imageData = parsed.data.imageData;
+  if (!imageData.startsWith("data:")) {
+    imageData = `data:${parsed.data.mimeType ?? "image/jpeg"};base64,${imageData}`;
+  }
+  const settings = getPlatformSettings();
+  const now = new Date().toISOString();
+  const banner: PlatformBanner = { id: randomUUID(), name: parsed.data.name.trim(), imageData, linkUrl: parsed.data.linkUrl?.trim() || undefined, isActive: true, createdAt: now, updatedAt: now };
+  settings.banners = [...(settings.banners ?? []), banner];
+  settings.updatedAt = now;
+  recordAdminAudit(req, "BANNER_UPLOADED", "PLATFORM_SETTINGS", String(banner.id), { name: banner.name });
+  if (!(await persistMutation(res))) return;
+  res.status(201).json({ ok: true, banner: { ...banner, imageData: undefined }, bannerId: banner.id });
+});
+
+router.patch("/admin/banners/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const settings = getPlatformSettings();
+  const banner = (settings.banners ?? []).find((item) => item.id === req.params.id);
+  if (!banner) { res.status(404).json({ ok: false, error: "Banner not found" }); return; }
+  const parsed = z.object({ isActive: z.boolean().optional(), name: z.string().min(1).max(120).optional(), linkUrl: z.string().max(500).optional() }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  if (parsed.data.isActive !== undefined) banner.isActive = parsed.data.isActive;
+  if (parsed.data.name !== undefined) banner.name = parsed.data.name.trim();
+  if (parsed.data.linkUrl !== undefined) banner.linkUrl = parsed.data.linkUrl.trim() || undefined;
+  banner.updatedAt = new Date().toISOString();
+  settings.updatedAt = banner.updatedAt;
+  recordAdminAudit(req, "BANNER_UPDATED", "PLATFORM_SETTINGS", String(banner.id), { isActive: banner.isActive });
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, banner: { ...banner, imageData: undefined } });
+});
+
+router.delete("/admin/banners/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const settings = getPlatformSettings();
+  const before = (settings.banners ?? []).length;
+  settings.banners = (settings.banners ?? []).filter((item) => item.id !== req.params.id);
+  if (settings.banners.length === before) { res.status(404).json({ ok: false, error: "Banner not found" }); return; }
+  settings.updatedAt = new Date().toISOString();
+  recordAdminAudit(req, "BANNER_DELETED", "PLATFORM_SETTINGS", String(req.params.id), {});
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, deleted: true });
 });
 
 router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
@@ -6605,7 +7245,7 @@ router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER
   if (borrowerHasAccountUpdateRequest(borrowerId)) {
     // URGENT path (loan disbursal blocked on this account): verify the new
     // account with Flutterwave first — a definitive rejection means the
-    // customer mistyped something and we must NOT map a broken account.
+    // customer mistyped something and we must NOT queue a broken account.
     try {
       await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode, parsed.data.bankName);
     } catch (error) {
@@ -6619,7 +7259,7 @@ router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER
       // blocking the customer on an outage would be worse.
       console.warn(`[routes] urgent disbursement-account update accepted without verification for user=${borrowerId}: ${message}`);
     }
-    // Bank-code normalization: the saved account must always carry a
+    // Bank-code normalization: the queued account must always carry a
     // Flutterwave-native code (prevents a repeat of "Unknown Bank Code").
     let normalizedBankCode = parsed.data.bankCode;
     try {
@@ -6629,52 +7269,31 @@ router.post("/borrower/disbursement-account", requireAuth, requireRole("BORROWER
     }
     const accountPayload = { ...parsed.data, bankCode: normalizedBankCode };
     const existingAccount = disbursementAccounts.find((a) => a.borrowerId === borrowerId);
-    let savedAccount: (typeof disbursementAccounts)[number];
-    if (existingAccount) {
-      Object.assign(existingAccount, {
-        ...accountPayload,
-        status: "ACTIVE",
-        rejectionReason: null,
-        updatedAt: now,
-      });
-      savedAccount = existingAccount;
-    } else {
-      savedAccount = {
-        id: randomUUID(),
-        borrowerId,
-        ...accountPayload,
-        status: "ACTIVE" as const,
-        createdAt: now,
-        updatedAt: now,
-        rejectionReason: null,
-      } as (typeof disbursementAccounts)[number];
-      disbursementAccounts.push(savedAccount);
-    }
-    const stamped = stampAccountOnOpenApplications(borrowerId, accountPayload);
-    // Audit trail: recorded as AUTO_APPROVED (urgency-verified path).
-    accountChangeRequests.push({
+    // Every account CHANGE is logged for admin review and approval BEFORE it
+    // takes effect — the current account stays active until an admin approves.
+    const request = {
       id: randomUUID(),
       userId: borrowerId,
       type: "BORROWER_DISBURSEMENT_ACCOUNT" as const,
-      status: "AUTO_APPROVED" as const,
+      status: "PENDING_APPROVAL" as const,
       existingSnapshot: existingAccount ? JSON.parse(JSON.stringify(existingAccount)) : null,
       newSnapshot: accountPayload as unknown as Record<string, unknown>,
-      reason: "Urgent update — loan disbursal was blocked on the previous account; applied immediately",
-      reviewedBy: "system:auto-approved",
-      reviewedAt: now,
+      reason: "Urgent update — loan disbursal was blocked on the previous account; awaiting admin approval",
+      reviewedBy: null,
+      reviewedAt: null,
       rejectionReason: null,
       createdAt: now,
       updatedAt: now,
-    });
-    clearBorrowerAccountUpdateFlags(borrowerId);
+    };
+    accountChangeRequests.push(request);
     schedulePersist();
-    console.info(`[routes] urgent disbursement-account update applied for user=${borrowerId} (stamped onto ${stamped} open application(s))`);
-    res.json({
+    console.info(`[routes] urgent disbursement-account update QUEUED for admin approval user=${borrowerId}`);
+    res.status(202).json({
       ok: true,
-      account: savedAccount,
-      applied: true,
-      stampedApplications: stamped,
-      message: "Your new disbursement account has been verified and attached to your loan. Disbursement can now proceed.",
+      pendingApproval: true,
+      applied: false,
+      request,
+      message: "Your new disbursement account has been verified and submitted. It will take effect as soon as the admin approves the change.",
     });
     return;
   }
@@ -6761,8 +7380,8 @@ router.put("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"
   }
   const now = new Date().toISOString();
   if (borrowerHasAccountUpdateRequest(borrowerId)) {
-    // URGENT path — mirror of the POST handler: verify, apply immediately,
-    // stamp onto open applications, clear the attention flags.
+    // URGENT path — mirror of the POST handler: verify, then QUEUE for admin
+    // approval (changes never take effect without an admin approving them).
     try {
       await resolveBankAccount(parsed.data.accountNumber, parsed.data.bankCode, parsed.data.bankName);
     } catch (error) {
@@ -6781,36 +7400,29 @@ router.put("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"
       // Keep the provided code if the live list is unavailable.
     }
     const accountPayload = { ...parsed.data, bankCode: normalizedBankCode };
-    Object.assign(existing, {
-      ...accountPayload,
-      status: "ACTIVE",
-      rejectionReason: null,
-      updatedAt: now,
-    });
-    const stamped = stampAccountOnOpenApplications(borrowerId, accountPayload);
-    accountChangeRequests.push({
+    const request = {
       id: randomUUID(),
       userId: borrowerId,
       type: "BORROWER_DISBURSEMENT_ACCOUNT" as const,
-      status: "AUTO_APPROVED" as const,
+      status: "PENDING_APPROVAL" as const,
       existingSnapshot: JSON.parse(JSON.stringify(existing)),
       newSnapshot: accountPayload as unknown as Record<string, unknown>,
-      reason: "Urgent update — loan disbursal was blocked on the previous account; applied immediately",
-      reviewedBy: "system:auto-approved",
-      reviewedAt: now,
+      reason: "Urgent update — loan disbursal was blocked on the previous account; awaiting admin approval",
+      reviewedBy: null,
+      reviewedAt: null,
       rejectionReason: null,
       createdAt: now,
       updatedAt: now,
-    });
-    clearBorrowerAccountUpdateFlags(borrowerId);
+    };
+    accountChangeRequests.push(request);
     schedulePersist();
-    console.info(`[routes] urgent disbursement-account update (PUT) applied for user=${borrowerId} (stamped onto ${stamped} open application(s))`);
-    res.json({
+    console.info(`[routes] urgent disbursement-account update (PUT) QUEUED for admin approval user=${borrowerId}`);
+    res.status(202).json({
       ok: true,
-      account: existing,
-      applied: true,
-      stampedApplications: stamped,
-      message: "Your new disbursement account has been verified and attached to your loan. Disbursement can now proceed.",
+      pendingApproval: true,
+      applied: false,
+      request,
+      message: "Your new disbursement account has been verified and submitted. It will take effect as soon as the admin approves the change.",
     });
     return;
   }

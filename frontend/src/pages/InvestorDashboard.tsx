@@ -21,6 +21,7 @@ import {
   verifyWalletFunding,
   confirmKycOwnershipOtp,
   resendKycOwnershipOtp,
+  notifyKycActionBlocked,
   type KycOtpChallenge,
   initializeLoanRepayment,
   createInvestment,
@@ -30,6 +31,7 @@ import {
 import { config } from "../utils/config";
 import { documentDownloadUrl, documentPreviewUrl } from "../utils/documentLinks";
 import Icon from "../components/Icon";
+import { AnnouncementSlider, BannerCarousel } from "../components/EngagementWidgets";
 
 const money = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -611,6 +613,18 @@ export default function InvestorDashboard() {
   }
 
   function openInvestModal(plan: Plan) {
+    // KYC gate: always check the verification status before the investor can
+    // invest. Unverified investors get a clear banner + a path to the
+    // standalone KYC page instead of a failed API call, and an email explains
+    // how to unlock investing.
+    if (user?.kycStatus !== "VERIFIED" && user?.kycStatus !== "PARTIALLY_VERIFIED") {
+      const text = "Your KYC verification is pending. Complete your identity verification before you can invest.";
+      setError(text);
+      showToast(text, "error");
+      void notifyKycActionBlocked("INVESTMENT").catch(() => undefined);
+      setInvestModalOpen(false);
+      return;
+    }
     setInvestModalPlan(plan);
     setInvestModalAmount(String(plan.minAmountNaira || 10000));
     setInvestModalOpen(true);
@@ -1164,6 +1178,20 @@ function InvestorOverview(props: any) {
             {user?.kycStatus === "VERIFIED" ? "KYC verified" : "KYC action required"}
           </span>
         </div>
+
+        {/* Admin announcements (smooth horizontal text slider) + banner carousel */}
+        <AnnouncementSlider />
+        <BannerCarousel />
+
+        {user?.kycStatus !== "VERIFIED" && user?.kycStatus !== "PARTIALLY_VERIFIED" && (
+          <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
+            <span>
+              Your identity verification is pending — investing, payouts and withdrawals unlock once your KYC is approved.
+              Details from your loan application are already pre-filled on the verification page.
+            </span>
+            <Link to="/kyc" className="btn-primary shrink-0 text-xs">Complete KYC verification</Link>
+          </div>
+        )}
 
         {error && (
           <div className="rounded-xl border border-red-100 bg-red-50 dark:bg-red-900/20 dark:border-red-900/30 p-4 text-sm text-red-700 dark:text-red-400">

@@ -608,6 +608,25 @@ export interface AdminLedgerEntry {
   createdAt: string;
 }
 
+export interface PlatformAnnouncement {
+  id: string;
+  message: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface PlatformBanner {
+  id: string;
+  name: string;
+  /** Data URL (base64) so the banner survives both in-memory and Postgres (jsonb) persistence. */
+  imageData: string;
+  linkUrl?: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface PlatformSettings {
   id: string;
   investorWithdrawalFeePercent: number;
@@ -615,6 +634,12 @@ export interface PlatformSettings {
   investorWithdrawalMinAmountNaira: number;
   investorEarningRateOverrides: Record<string, number>;
   defaultInvestmentAnnualRatePercent: number;
+  /** When true, non-admin sign-in is blocked with a maintenance modal and every active user is emailed. */
+  maintenanceMode?: boolean;
+  maintenanceMessage?: string;
+  maintenanceUpdatedAt?: string;
+  announcements?: PlatformAnnouncement[];
+  banners?: PlatformBanner[];
   updatedAt: string;
   createdAt: string;
 }
@@ -1647,6 +1672,8 @@ export function getPlatformSettings(): PlatformSettings {
     if (existing.investorWithdrawalMinAmountNaira === undefined) {
       existing.investorWithdrawalMinAmountNaira = 200;
     }
+    if (!Array.isArray(existing.announcements)) existing.announcements = [];
+    if (!Array.isArray(existing.banners)) existing.banners = [];
     return existing;
   }
   const now = new Date().toISOString();
@@ -1657,6 +1684,10 @@ export function getPlatformSettings(): PlatformSettings {
     investorWithdrawalMinAmountNaira: 200,
     investorEarningRateOverrides: {},
     defaultInvestmentAnnualRatePercent: 12,
+    maintenanceMode: false,
+    maintenanceMessage: "",
+    announcements: [],
+    banners: [],
     updatedAt: now,
     createdAt: now,
   };
@@ -1664,7 +1695,7 @@ export function getPlatformSettings(): PlatformSettings {
   return defaults;
 }
 
-export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "investorWithdrawalFeePercent" | "investorWithdrawalFeeFlatMinor" | "investorWithdrawalMinAmountNaira" | "investorEarningRateOverrides" | "defaultInvestmentAnnualRatePercent">>): PlatformSettings {
+export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "investorWithdrawalFeePercent" | "investorWithdrawalFeeFlatMinor" | "investorWithdrawalMinAmountNaira" | "investorEarningRateOverrides" | "defaultInvestmentAnnualRatePercent" | "maintenanceMode" | "maintenanceMessage">>): PlatformSettings {
   const settings = getPlatformSettings();
   if (updates.investorWithdrawalFeePercent !== undefined) {
     settings.investorWithdrawalFeePercent = Math.max(0, Math.min(100, Number(updates.investorWithdrawalFeePercent)));
@@ -1680,6 +1711,13 @@ export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "
   }
   if (updates.defaultInvestmentAnnualRatePercent !== undefined) {
     settings.defaultInvestmentAnnualRatePercent = Math.max(0, Math.min(100, Number(updates.defaultInvestmentAnnualRatePercent)));
+  }
+  if (updates.maintenanceMode !== undefined) {
+    settings.maintenanceMode = Boolean(updates.maintenanceMode);
+    settings.maintenanceUpdatedAt = new Date().toISOString();
+  }
+  if (updates.maintenanceMessage !== undefined) {
+    settings.maintenanceMessage = String(updates.maintenanceMessage).slice(0, 500);
   }
   settings.updatedAt = new Date().toISOString();
   return settings;

@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { createInvestorPayout, normalizeBankCodeForFlutterwave } from "./providers/flutterwave.js";
 import {
   investments,
+  kycCases,
   payoutAccounts,
   payouts,
+  users,
   type Payout,
   findWallet,
   appendLedger,
@@ -31,6 +33,14 @@ async function yieldEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(() => resolve()));
 }
 
+/** KYC gate for automatic payouts: the investor must be VERIFIED before money moves. */
+export function investorKycSatisfied(investorId: string): boolean {
+  const kycStatus = kycCases.find((item) => item.userId === investorId)?.status;
+  const userStatus = users.find((u) => u.id === investorId)?.kycStatus;
+  const effective = !kycStatus || kycStatus === "NOT_STARTED" ? (userStatus ?? kycStatus ?? "NOT_STARTED") : kycStatus;
+  return effective === "VERIFIED" || effective === "PARTIALLY_VERIFIED";
+}
+
 export async function runInvestmentMaturitySweep(now = new Date(), batchSize = 200): Promise<void> {
   const candidates: Array<typeof investments[number]> = [];
   for (const investment of investments) {
@@ -48,6 +58,33 @@ export async function runInvestmentMaturitySweep(now = new Date(), batchSize = 2
       const amountMinor = Math.round(amountNaira * 100);
       const principalMinor = Math.round(Number(investment.amountNaira ?? 0) * 100);
       const earningsMinor = Math.round(Number(investment.expectedEarningsNaira ?? 0) * 100);
+      // KYC gate (automatic payout): hold the payout for admin approval when
+      // the investor's identity verification is not complete. The investment
+      // matures into a PENDING_APPROVAL payout that the admin queue releases
+      // once KYC is verified — the customer is notified what to do.
+      if (!investorKycSatisfied(investment.investorId)) {
+        const heldPayout: Payout = {
+          id: randomUUID(),
+          investmentId: investment.id,
+          userId: investment.investorId,
+          payoutType: "INVESTMENT_MATURITY",
+          principalNaira: Number(investment.amountNaira ?? 0),
+          earningsNaira: Number(investment.expectedEarningsNaira ?? 0),
+          feesNaira: 0,
+          amountNaira,
+          currency: "NGN",
+          status: "PENDING_APPROVAL",
+          payoutAccountSnapshot: account as unknown as Record<string, unknown>,
+          error: "Held: investor KYC verification is pending. Approve after the investor completes KYC.",
+          retryCount: 0,
+          createdAt: now.toISOString(),
+          updatedAt: now.toISOString(),
+        };
+        payouts.push(heldPayout);
+        investment.status = "PAYOUT_PENDING";
+        investment.updatedAt = now.toISOString();
+        continue;
+      }
       const wallet = findWallet(investment.investorId);
       appendAdminLedger({
         entryType: "INVESTMENT_RETURN",

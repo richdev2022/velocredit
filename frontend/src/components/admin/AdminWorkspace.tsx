@@ -674,202 +674,160 @@ function Payouts() {
 function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   const [rows, setRows] = useState<any[]>([]);
   const [loanRecords, setLoanRecords] = useState<any[]>([]);
-  const [disbursements, setDisbursements] = useState<LoanDisbursement[]>([]);
   const [error, setError] = useState("");
-  const [actionError, setActionError] = useState("");
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
-  const [busy, setBusy] = useState("");
-  const [actionNotice, setActionNotice] = useState("");
-  const size = 20;
-  const loadDisbursements = () => adminListDisbursements({ limit: 500 }).then((r) => setDisbursements(r.disbursements)).catch(() => setDisbursements([]));
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const size = 15;
+
+  // Debounce the search box so we do not hit the API on every keystroke.
   useEffect(() => {
-    const load = () => adminListLoans(size, page * size).then((response) => {
-      setRows(response.loans);
-      setLoanRecords(((response as any).loanRecords) || []);
-      setTotal(response.meta?.total || response.loans.length);
-    }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load loans"));
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(0);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
+    const load = () => {
+      const params = new URLSearchParams();
+      params.set("limit", String(size));
+      params.set("offset", String(page * size));
+      if (search) params.set("search", search);
+      if (statusFilter) params.set("status", statusFilter);
+      return fetch(`/api/v1/admin/loans?${params.toString()}`, { headers: adminLoansHeaders() })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Unable to load loans"))))
+        .then((response) => {
+          setRows(response.loans);
+          setLoanRecords(response.loanRecords || []);
+          setTotal(response.meta?.total || response.loans.length);
+        })
+        .catch((err) => setError(err instanceof Error ? err.message : "Unable to load loans"));
+    };
+    setError("");
     void load();
-    loadDisbursements();
-    const interval = window.setInterval(() => { void load(); loadDisbursements(); }, 3000);
-    return () => window.clearInterval(interval);
-  }, [page]);
-  async function disburseLoan(applicationId: string) {
-    setBusy(applicationId);
-    setActionError("");
-    setActionNotice("");
-    try {
-      // The route now WAITS for Flutterwave's real final answer, so this
-      // response carries the actual provider outcome (SUCCESSFUL / FAILED /
-      // still-processing). The button stays disabled for the whole wait.
-      const response = await adminDisburseLoan(applicationId);
-      const transferStatus = String((response.disbursement as { status?: string } | undefined)?.status || "");
-      setLoanRecords((current) => [...current.filter((loan) => loan.id !== (response.loan as any).id), response.loan]);
-      if (response.ok === false) {
-        setActionError(String(response.error || response.message || "Disbursement failed — see the provider response on the transfer card."));
-      } else if (transferStatus === "SUCCESSFUL") {
-        setActionNotice(String(response.message || "Disbursement successful."));
-      }
-      await loadDisbursements();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Unable to initiate disbursement");
-    } finally {
-      setBusy("");
-    }
-  }
-  async function requestAccountUpdate(loanApp: any) {
-    setBusy(`acct-${loanApp.id}`);
-    setActionError("");
-    setActionNotice("");
-    try {
-      const response = await adminRequestDisbursementAccountUpdate(loanApp.id);
-      setActionNotice(String(response.message || "Account update requested — the customer has been notified."));
-      const load = () => adminListLoans(size, page * size).then((resp) => {
-        setRows(resp.loans);
-        setLoanRecords(((resp as any).loanRecords) || []);
-        setTotal(resp.meta?.total || resp.loans.length);
-      }).catch(() => undefined);
-      void load();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Unable to send the account-update request");
-    } finally {
-      setBusy("");
-    }
-  }
-  function disbursementsForLoan(loanAppId: string, loanRecordId?: string) {
-    return disbursements
-      .filter((d) => (loanRecordId && d.loanId === loanRecordId) || d.applicationId === loanAppId)
-      .slice()
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }
-  // Disbursement button state machine (per loan application):
-  //   done      — a transfer succeeded (or the loan reached a post-disbursement
-  //               lifecycle status): the Disburse button must NEVER appear again.
-  //   inFlight  — an actual transfer is PROCESSING/PENDING: no button, waiting
-  //               for the provider.
-  //   failed    — the latest transfer FAILED: show status + provider response
-  //               (in the transfer card) and offer "Retry disbursement".
-  //   ready     — approved and awaiting disbursement. NOTE: a freshly approved
-  //               loan is created with status DISBURSEMENT_PENDING BEFORE any
-  //               transfer exists, so that status alone must NOT be treated as
-  //               in-flight — only real transfer records gate the button.
-  //   locked    — anything else (not approved yet).
-  const disbursedDoneStatuses = ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF"];
-  function disburseActionFor(loanApp: any, loanRecord: any, transfers: LoanDisbursement[]): { kind: "done" | "inFlight" | "failed" | "ready" | "locked" } {
-    const loanStatus = String(loanRecord?.status || "");
-    const hasSuccessfulTransfer = transfers.some((t) => t.status === "SUCCESSFUL");
-    const inFlightTransfer = transfers.some((t) => ["PROCESSING", "PENDING"].includes(t.status));
-    if (hasSuccessfulTransfer || disbursedDoneStatuses.includes(loanStatus)) return { kind: "done" };
-    if (inFlightTransfer) return { kind: "inFlight" };
-    if (transfers.length > 0 && transfers[0]?.status === "FAILED") return { kind: "failed" };
-    if (loanApp.status === "APPROVED" || ["APPROVED", "DISBURSEMENT_PENDING"].includes(loanStatus)) return { kind: "ready" };
-    return { kind: "locked" };
-  }
-  return <Panel title="Loan management & disbursement tracking" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} applications · {disbursements.length} transfer records</span>}>{error ? <ErrorBox message={error} /> : <>
-    {actionError && (
-      <div className="mx-3 mt-3 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
-        <span>{actionError}</span>
-        <button type="button" className="text-xs font-semibold underline" onClick={() => setActionError("")}>Dismiss</button>
+  }, [page, search, statusFilter]);
+
+  const statusOptions = [
+    "", "DRAFT", "IN_PROGRESS", "SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED",
+    "APPROVED", "REJECTED", "DISBURSEMENT_PENDING", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "CANCELLED", "WRITTEN_OFF",
+  ];
+
+  return <Panel title="Loan management" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} application{total === 1 ? "" : "s"}</span>}>
+    {error && <ErrorBox message={error} />}
+    {!error && <>
+    {/* Search + status filter toolbar */}
+    <div className="mx-3 mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="relative flex-1 sm:max-w-xs">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="m20 20-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+        <input
+          type="search"
+          value={searchInput}
+          onChange={(event) => setSearchInput(event.target.value)}
+          placeholder="Search by ID, name, email, phone…"
+          className="velo-input w-full pl-9 text-sm"
+        />
       </div>
-    )}
-    {actionNotice && (
-      <div className="mx-3 mt-3 flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
-        <span>{actionNotice}</span>
-        <button type="button" className="text-xs font-semibold underline" onClick={() => setActionNotice("")}>Dismiss</button>
-      </div>
-    )}
-    {rows.length ? <Table headers={["Application / Loan", "Borrower", "Principal", "Application status", "Disbursements", "Actions", "Created"]}>{rows.map((loanApp) => {
+      <select
+        value={statusFilter}
+        onChange={(event) => { setStatusFilter(event.target.value); setPage(0); }}
+        className="velo-input text-sm sm:w-56"
+        aria-label="Filter by status"
+      >
+        {statusOptions.map((option) => (
+          <option key={option || "all"} value={option}>{option ? option.replace(/_/g, " ") : "All statuses"}</option>
+        ))}
+      </select>
+    </div>
+
+    {rows.length ? <>
+    <Table headers={["Application / Loan", "Borrower", "Principal", "Status", "Latest transfer", "Created", ""]}>{rows.map((loanApp) => {
     const appId = loanApp.id;
     const matchingLoanRecord = loanRecords.find((l: any) => l.applicationId === appId || l.id === appId);
     const loanRecordId = matchingLoanRecord?.id;
-    const transfers = disbursementsForLoan(appId, loanRecordId);
-    const action = disburseActionFor(loanApp, matchingLoanRecord, transfers);
+    const effectiveStatus = String(matchingLoanRecord?.status || loanApp.status || "");
     return (
-      <React.Fragment key={loanApp.id || loanApp.applicationId}>
-        <tr>
-          <td className="px-3 py-3">
-            <button type="button" onClick={() => onSelect?.(loanApp.applicationId || loanApp.id)} className="font-mono text-xs font-semibold text-velo-700 hover:underline dark:text-velo-400">{loanApp.applicationId || loanApp.id}</button>
-            {loanRecordId && loanRecordId !== appId && <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Loan record: {String(loanRecordId).slice(0, 12)}…</div>}
-          </td>
-          <td className="px-3 py-3 dark:text-slate-300">
-            <div>{loanApp.customerSnapshot?.fullName || loanApp.borrowerId || "—"}</div>
-            {loanApp.customerSnapshot?.email && <div className="text-[11px] text-slate-500 dark:text-slate-400">{loanApp.customerSnapshot.email}</div>}
-          </td>
-          <td className="px-3 py-3 font-semibold dark:text-slate-200">{formatNaira(Number(loanApp.principalNaira || loanApp.amountNaira || 0))}</td>
-          <td className="px-3 py-3">
-            <StatusBadge status={matchingLoanRecord?.status || loanApp.status} />
-            {matchingLoanRecord?.disbursementAccountNeedsUpdate === true && (
-              <div className="mt-1 inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
-                Account update requested
-              </div>
-            )}
-          </td>
-          <td className="px-3 py-3">
-            {transfers.length > 0
-              ? (<div className="space-y-2">
-                  {transfers.map((t) => (
-                    <div key={t.id} className={`rounded-lg border p-3 ${t.status === "FAILED" ? "border-red-200 bg-red-50/50 dark:border-red-900/50 dark:bg-red-950/20" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"}`}>
-                      <div className="flex flex-wrap items-center gap-2 justify-between">
-                        <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">#{t.id.slice(0, 10)}…{t.retryOfId ? <span className="ml-2 text-amber-600 dark:text-amber-400">(retry #{t.retryCount || 1})</span> : ""}</div>
-                        <StatusBadge status={t.status} />
-                      </div>
-                      <div className="mt-2 text-[11px] text-slate-600 dark:text-slate-300">
-                        <div>Amount: <strong className="text-velo-900 dark:text-white">{formatNaira(Number(t.amountNaira || 0))}</strong></div>
-                        <div className="mt-0.5">Bank: {t.bankName || t.bankCode || "—"} · Acc: {t.accountNumber ? `••••${String(t.accountNumber).slice(-4)}` : "—"} · {t.accountName || ""}</div>
-                        <div className="mt-0.5">Created: {t.createdAt ? new Date(t.createdAt).toLocaleString() : "—"}</div>
-                        {t.providerReference && <div className="mt-0.5">Provider ref: <span className="font-mono">{t.providerReference}</span></div>}
-                      </div>
-                      <div className="mt-2"><ProviderResponse title="View provider response" data={t.providerTransfer} error={t.error} /></div>
-                      {t.status === "FAILED" && (
-                        <div className="mt-3 rounded-md border border-red-200 bg-white px-3 py-2 text-[11px] text-red-700 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-300">
-                          <div className="font-semibold">Disbursement failed{t.error ? `: ${t.error}` : ""}.</div>
-                          <div className="mt-1">Review the provider response above{t.bankName ? ` and the borrower's account (${t.bankName} · ••••${String(t.accountNumber || "").slice(-4)})` : ""}, then click <strong>Retry disbursement</strong> in the Actions column to trigger it again. The button below stays disabled while a transfer is being processed, and disappears permanently once a transfer succeeds.</div>
-                        </div>
-                      )}
-                      {t.status === "PROCESSING" && (
-                        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
-                          Transfer is being processed by the provider. The final status is confirmed automatically — this row updates within a minute or two.
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>)
-              : <span className="text-xs text-slate-400 dark:text-slate-500">No disbursement records</span>}
-          </td>
-          <td className="px-3 py-3">
-            {action.kind === "ready" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Disbursing…" : "Disburse"}</button>}
-            {action.kind === "failed" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Disbursing…" : "Retry disbursement"}</button>}
-            {(action.kind === "ready" || action.kind === "failed") && (
-              <div className="mt-2">
-                <button
-                  type="button"
-                  className="text-[11px] font-semibold text-amber-700 underline decoration-amber-400 underline-offset-2 hover:text-amber-800 disabled:opacity-50 dark:text-amber-400"
-                  disabled={busy === `acct-${appId}`}
-                  title="Notify the customer to re-provide a valid disbursement account from their dashboard settings"
-                  onClick={() => void requestAccountUpdate(loanApp)}
-                >
-                  {busy === `acct-${appId}` ? "Sending request…" : "Ask customer to update account"}
-                </button>
-              </div>
-            )}
-            {action.kind === "inFlight" && (
-              <span className="inline-flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
-                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" aria-hidden="true"></span>
-                Disbursement in progress…
-              </span>
-            )}
-            {action.kind === "done" && (
-              <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-                <span aria-hidden="true">✓</span> Disbursed
-              </span>
-            )}
-            {action.kind === "locked" && <span className="text-xs text-slate-400 dark:text-slate-500">Approve to disburse</span>}
-          </td>
-          <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{loanApp.createdAt ? new Date(loanApp.createdAt).toLocaleDateString() : "—"}</td>
-        </tr>
-      </React.Fragment>
+      <tr key={loanApp.id || loanApp.applicationId} className="cursor-pointer hover:bg-velo-50/40 dark:hover:bg-slate-800/40" onClick={() => onSelect?.(loanApp.applicationId || loanApp.id)}>
+        <td className="px-3 py-3">
+          <div className="font-mono text-xs font-semibold text-velo-700 hover:underline dark:text-velo-400">{loanApp.applicationId || loanApp.id}</div>
+          {loanApp.productSnapshot?.productName && <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{String(loanApp.productSnapshot.productName)}</div>}
+        </td>
+        <td className="px-3 py-3 dark:text-slate-300">
+          <div className="text-sm">{loanApp.customerSnapshot?.fullName || loanApp.borrowerId || "—"}</div>
+          {loanApp.customerSnapshot?.email && <div className="text-[11px] text-slate-500 dark:text-slate-400">{loanApp.customerSnapshot.email}</div>}
+        </td>
+        <td className="px-3 py-3 font-semibold dark:text-slate-200">{formatNaira(Number(loanApp.principalNaira || loanApp.amountNaira || 0))}<div className="text-[11px] font-normal text-slate-500 dark:text-slate-400">{loanApp.tenureDays ? `${loanApp.tenureDays} days` : ""}</div></td>
+        <td className="px-3 py-3">
+          <StatusBadge status={effectiveStatus} />
+          {matchingLoanRecord?.disbursementAccountNeedsUpdate === true && (
+            <div className="mt-1 inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+              Account update requested
+            </div>
+          )}
+        </td>
+        <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">
+          <LatestTransferChip applicationId={appId} loanRecordId={loanRecordId} />
+        </td>
+        <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{loanApp.createdAt ? new Date(loanApp.createdAt).toLocaleDateString() : "—"}</td>
+        <td className="px-3 py-3 text-right">
+          <button type="button" className="btn-secondary text-xs" onClick={(event) => { event.stopPropagation(); onSelect?.(loanApp.applicationId || loanApp.id); }}>View detail</button>
+        </td>
+      </tr>
     );
-  })}</Table> : <Empty />}{!error && <Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} />}</>}</Panel>;
+  })}</Table>
+    <Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} />
+    </> : <Empty text={search || statusFilter ? "No applications match your search or filter." : "No loan applications yet."} />}
+    </>}
+  </Panel>;
 }
+
+// Lightweight latest-transfer chip for the loan table — keeps the main table
+// lean while still surfacing disbursement state at a glance. Full transfer
+// history, provider responses and retry controls live on the detail page.
+function LatestTransferChip({ applicationId, loanRecordId }: { applicationId: string; loanRecordId?: string }) {
+  const [transfer, setTransfer] = useState<LoanDisbursement | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    adminListDisbursements({ limit: 200 })
+      .then((r) => {
+        if (cancelled) return;
+        const matches = r.disbursements
+          .filter((d) => (loanRecordId && d.loanId === loanRecordId) || d.applicationId === applicationId)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setTransfer(matches[0] ?? null);
+      })
+      .catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; };
+  }, [applicationId, loanRecordId]);
+  if (error) return <span>—</span>;
+  if (!transfer) return <span className="text-slate-400 dark:text-slate-500">No transfer yet</span>;
+  const tone = transfer.status === "SUCCESSFUL"
+    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+    : transfer.status === "FAILED"
+    ? "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+    : transfer.status === "PROCESSING" || transfer.status === "PENDING"
+    ? "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+    : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${tone}`}>
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${transfer.status === "SUCCESSFUL" ? "bg-emerald-500" : transfer.status === "FAILED" ? "bg-red-500" : "bg-amber-500 animate-pulse"}`} />
+      {transfer.status}
+      <span className="font-normal text-slate-400">· {formatNaira(Number(transfer.amountNaira || 0))}</span>
+    </span>
+  );
+}
+
+function adminLoansHeaders(): HeadersInit {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const adminToken = sessionStorage.getItem("velo:admin-token");
+  const token = adminToken || sessionStorage.getItem("velo:access-token");
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
 function Reconciliation() { const [data, setData] = useState<any>(null); const [error, setError] = useState(""); useEffect(() => { adminGetReconciliation().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load reconciliation")); }, []); const keys = ["providerEvents", "unverifiedDeposits", "unverifiedRepayments", "pendingPayouts", "pendingWithdrawals"]; return <Panel title="Reconciliation center">{error ? <ErrorBox message={error} /> : data ? <div className="space-y-5"><div className="rounded-xl border border-velo-100 dark:border-velo-900/40 bg-velo-50/60 dark:bg-velo-900/20 p-4"><h3 className="font-semibold text-velo-900 dark:text-velo-100">What is matched</h3><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Each queue is matched against the provider reference, internal record ID, user, amount, currency, and current status before it is marked resolved.</p><div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300">{Object.entries(data.guide || {}).map(([key, value]) => <div key={key}><strong className="text-slate-900 dark:text-white">{key.replace(/([A-Z])/g, " $1")}:</strong> {String(value)}</div>)}</div></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{keys.map((key) => <div key={key} className="rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{key.replace(/([A-Z])/g, " $1")}</div><div className="mt-2 text-2xl font-semibold text-velo-900 dark:text-white">{data[key]?.length || 0}</div></div>)}</div></div> : <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading reconciliation…</div>}</Panel>; }
 function Audit() { const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const size = 20; useEffect(() => { adminListAuditLogs({ limit: size, offset: page * size }).then((body) => { setRows(body.logs || []); setTotal(body.meta?.total || 0); }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load audit logs")); }, [page]); return <Panel title="Audit log" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} events</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <><Table headers={["Date", "User / actor", "Action", "Details", "Network"]}>{rows.map((row) => <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40"><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{new Date(row.createdAt).toLocaleString()}</td><td className="px-3 py-3 text-xs text-slate-700 dark:text-slate-200">{row.actor?.fullName || "System"}<br /><span className="text-slate-400">{row.actor?.email || "Automated process"}</span></td><td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{row.action}</td><td className="max-w-xs px-3 py-3 text-xs text-slate-600 dark:text-slate-300">{row.targetUser ? `${row.targetUser.fullName} (${row.targetUser.email})` : ""}{row.resourceType ? ` · ${row.resourceType} ${row.resourceId || ""}` : ""}<pre className="mt-1 whitespace-pre-wrap text-[10px] text-slate-400">{row.metadata ? JSON.stringify(row.metadata) : ""}</pre></td><td className="px-3 py-3 text-[10px] text-slate-500 dark:text-slate-400">{row.ipAddress || "—"}<br />{row.userAgent || "—"}</td></tr>)}</Table><Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} /></> : <Empty />}</Panel>; }
