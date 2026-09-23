@@ -70,7 +70,7 @@ export default function AdminBorrowerDetail({ borrower, onBack, onSelectLoan }: 
     <section className="velo-card p-5 sm:p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <div className="flex flex-wrap items-center gap-2"><h1 className="text-xl font-bold text-velo-900 dark:text-white">{borrower.fullName || "Borrower"}</h1><span className="badge bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-300">Borrower</span></div>
+          <div className="flex flex-wrap items-center gap-2"><h1 className="text-xl font-semibold text-velo-900 dark:text-white">{borrower.fullName || "Borrower"}</h1><span className="badge bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-300">Borrower</span></div>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{borrower.email || "—"} {borrower.phone ? `· ${borrower.phone}` : ""}</p>
           <p className="mt-2 font-mono text-xs text-slate-400">{borrower.id}</p>
         </div>

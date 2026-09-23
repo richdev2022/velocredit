@@ -93,6 +93,13 @@ function txStatus(raw: unknown): string | undefined {
   return String(raw).toUpperCase().replace(/_/g, " ");
 }
 
+// Invalid timestamps (missing/legacy rows) must not poison the list sort with
+// NaN comparisons — clamp them to 0.
+function safeTxTime(value: string | undefined): number {
+  const t = new Date(value ?? "").getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 const TX_STATUS_TONES: Array<{ tone: "emerald" | "amber" | "red" | "slate"; match: string[] }> = [
   { tone: "emerald", match: ["SUCCESSFUL", "COMPLETED", "ACTIVE", "PAID OUT", "VERIFIED", "MATURED"] },
   { tone: "amber", match: ["PENDING", "PROCESSING", "LIQUIDITY REQUESTED", "LIQUIDITY APPROVED", "MATURITY PENDING", "PAYOUT PENDING", "PENDING REVIEW", "PENDING APPROVAL", "UNDER REVIEW"] },
@@ -700,7 +707,7 @@ export default function InvestorDashboard() {
               )}
             </svg>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-bold leading-5">{toast.text}</div>
+              <div className="text-sm font-semibold leading-5">{toast.text}</div>
             </div>
             <button
               type="button"
@@ -746,11 +753,11 @@ export default function InvestorDashboard() {
             <div className="absolute bottom-0 left-0 w-32 h-32 rounded-full bg-velo-400/10 blur-3xl pointer-events-none" />
             <div className="relative overflow-y-auto lg:overflow-y-auto lg:max-h-full max-h-screen pb-20 lg:pb-4 pr-1">
               <div className="flex items-center gap-3 p-3 rounded-2xl bg-white/60 dark:bg-slate-800/60 border border-emerald-100/70 dark:border-slate-700/60 backdrop-blur">
-                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white font-black text-lg shadow-md shadow-emerald-500/30">
+                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white font-bold text-lg shadow-md shadow-emerald-500/30">
                   {user?.fullName?.charAt(0)?.toUpperCase() || "V"}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-bold text-velo-900 dark:text-white truncate">
+                  <div className="text-sm font-semibold text-velo-900 dark:text-white truncate">
                     {user?.fullName || "Investor"}
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
@@ -775,7 +782,7 @@ export default function InvestorDashboard() {
                     >
                       <span className={`text-xl shrink-0 ${active ? "" : "opacity-90"}`}><MenuIcon name={item.icon} /></span>
                       <div className="flex-1 min-w-0">
-                        <div className={`text-sm font-bold ${active ? "" : "group-hover:font-extrabold"}`}>{item.label}</div>
+                        <div className={`text-sm font-semibold ${active ? "" : "group-hover:font-bold"}`}>{item.label}</div>
                         {item.hint && (
                           <div className={`text-[10px] truncate ${active ? "text-emerald-50/90" : "text-slate-500 dark:text-slate-400"}`}>{item.hint}</div>
                         )}
@@ -790,8 +797,8 @@ export default function InvestorDashboard() {
 
               <div className="mt-6 sm:mt-8 pt-4 sm:pt-5 border-t border-emerald-100/80 dark:border-slate-800">
                 <div className="rounded-2xl bg-gradient-to-br from-emerald-600 to-emerald-700 text-white p-4 shadow-lg shadow-emerald-600/20">
-                  <div className="text-[11px] uppercase tracking-wider font-bold text-emerald-100/85">KYC status</div>
-                  <div className="mt-1 inline-flex items-center gap-2 text-lg font-black">
+                  <div className="text-[11px] uppercase tracking-wider font-semibold text-emerald-100/85">KYC status</div>
+                  <div className="mt-1 inline-flex items-center gap-2 text-lg font-bold">
                     {user?.kycStatus === "VERIFIED" ? <><Icon name="check" size={18} />Verified</> : user?.kycStatus === "PENDING_VERIFICATION" ? <><Icon name="clock" size={18} />Reviewing</> : <><Icon name="lock" size={18} />Action needed</>}
                   </div>
                   <div className="mt-1 text-[11px] text-emerald-100/80">
@@ -825,7 +832,7 @@ export default function InvestorDashboard() {
             </button>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Investor dashboard</div>
-              <div className="text-base font-extrabold text-velo-900 dark:text-white truncate">
+              <div className="text-base font-bold text-velo-900 dark:text-white truncate">
                 {investorMenu.find((m) => m.key === view)?.label || "Overview"}
               </div>
             </div>
@@ -946,7 +953,7 @@ export default function InvestorDashboard() {
           <div className="velo-card w-full max-w-md p-6 shadow-2xl animate-slide-in-left">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-velo-900 dark:text-white">Fund your wallet</h3>
+                <h3 className="text-lg font-semibold text-velo-900 dark:text-white">Fund your wallet</h3>
                 <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Enter an amount to deposit and start investing.</p>
               </div>
               <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setFundModalOpen(false)} aria-label="Close">
@@ -957,8 +964,8 @@ export default function InvestorDashboard() {
               <label className="velo-label block">
                 Amount (NGN)
                 <div className="relative mt-1">
-                  <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500 font-bold text-sm pointer-events-none">₦</span>
-                  <input className="velo-input !pl-12 font-bold" type="number" min="1000" step="100" value={fundModalAmount} onChange={(e) => setFundModalAmount(e.target.value)} required autoFocus />
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500 font-semibold text-sm pointer-events-none">₦</span>
+                  <input className="velo-input !pl-12 font-semibold" type="number" min="1000" step="100" value={fundModalAmount} onChange={(e) => setFundModalAmount(e.target.value)} required autoFocus />
                 </div>
                 <span className="mt-1 block text-xs text-slate-500">Minimum deposit: ₦1,000</span>
               </label>
@@ -978,7 +985,7 @@ export default function InvestorDashboard() {
           <div className="velo-card w-full max-w-md p-6 shadow-2xl animate-slide-in-left">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-velo-900 dark:text-white">Invest in {investModalPlan.name}</h3>
+                <h3 className="text-lg font-semibold text-velo-900 dark:text-white">Invest in {investModalPlan.name}</h3>
                 <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{investModalPlan.tenureDays} days · {investModalPlan.annualRatePercent}% p.a.</p>
               </div>
               <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => { setInvestModalOpen(false); setInvestModalPlan(null); }} aria-label="Close">
@@ -986,16 +993,16 @@ export default function InvestorDashboard() {
               </button>
             </div>
             <div className="mt-4 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 p-4 text-sm space-y-1 border border-emerald-100 dark:border-emerald-900/30">
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Min investment</span><span className="font-bold text-velo-900 dark:text-white">₦{Number(investModalPlan.minAmountNaira).toLocaleString()}</span></div>
-              {investModalPlan.maxAmountNaira && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Max investment</span><span className="font-bold text-velo-900 dark:text-white">₦{Number(investModalPlan.maxAmountNaira).toLocaleString()}</span></div>}
-              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Available wallet</span><span className="font-bold text-emerald-600">{money.format(available)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Min investment</span><span className="font-semibold text-velo-900 dark:text-white">₦{Number(investModalPlan.minAmountNaira).toLocaleString()}</span></div>
+              {investModalPlan.maxAmountNaira && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Max investment</span><span className="font-semibold text-velo-900 dark:text-white">₦{Number(investModalPlan.maxAmountNaira).toLocaleString()}</span></div>}
+              <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Available wallet</span><span className="font-semibold text-emerald-600">{money.format(available)}</span></div>
             </div>
             <form onSubmit={handleInvestModalSubmit} className="mt-5 space-y-4">
               <label className="velo-label block">
                 Amount to invest (NGN)
                 <div className="relative mt-1">
-                  <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500 font-bold text-sm pointer-events-none">₦</span>
-                  <input className="velo-input !pl-12 font-bold" type="number" min={investModalPlan.minAmountNaira} max={investModalPlan.maxAmountNaira} step="100" value={investModalAmount} onChange={(e) => setInvestModalAmount(e.target.value)} required autoFocus />
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500 font-semibold text-sm pointer-events-none">₦</span>
+                  <input className="velo-input !pl-12 font-semibold" type="number" min={investModalPlan.minAmountNaira} max={investModalPlan.maxAmountNaira} step="100" value={investModalAmount} onChange={(e) => setInvestModalAmount(e.target.value)} required autoFocus />
                 </div>
               </label>
               <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
@@ -1042,7 +1049,7 @@ function InvestorOverview(props: any) {
                 </svg>
               </div>
               <div>
-                <div className="text-sm font-bold text-velo-900 dark:text-white">
+                <div className="text-sm font-semibold text-velo-900 dark:text-white">
                   Investor Dashboard
                 </div>
                 {user.roles.includes("BORROWER") ? (
@@ -1143,7 +1150,7 @@ function InvestorOverview(props: any) {
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">
               Investor portal
             </p>
-            <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
+            <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
               Grow your money with clarity.
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
@@ -1187,8 +1194,8 @@ function InvestorOverview(props: any) {
         </div>
 
         <div className="grid gap-5 lg:grid-cols-[1.25fr_.75fr]">
-          <section className="velo-card overflow-hidden p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><h2 className="section-heading">Portfolio performance</h2><p className="section-subheading">Capital and expected earnings across your investments.</p></div><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">{activeCount} active</span></div><div className="mt-6 grid grid-cols-3 gap-3"><div><p className="text-xs text-slate-500">Capital</p><p className="mt-1 text-base font-bold text-velo-900 dark:text-white">{money.format(totalCapital)}</p></div><div><p className="text-xs text-slate-500">Expected return</p><p className="mt-1 text-base font-bold text-emerald-600">{money.format(returns)}</p></div><div><p className="text-xs text-slate-500">Return ratio</p><p className="mt-1 text-base font-bold text-velo-900 dark:text-white">{returnRate}%</p></div></div><svg className="mt-6 h-24 w-full" viewBox="0 0 520 96" role="img" aria-label="Investment performance chart"><defs><linearGradient id="investor-chart-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#10b981" stopOpacity=".3"/><stop offset="1" stopColor="#10b981" stopOpacity="0"/></linearGradient></defs><path d="M0 80 C80 72 120 67 170 60 S250 66 310 42 S420 46 520 14 V96 H0Z" fill="url(#investor-chart-fill)"/><path d="M0 80 C80 72 120 67 170 60 S250 66 310 42 S420 46 520 14" fill="none" stroke="#10b981" strokeWidth="3" strokeLinecap="round"/></svg></section>
-          <section className="velo-card p-4 sm:p-5 lg:p-6"><h2 className="section-heading">Capital allocation</h2><p className="section-subheading">Where your money sits today.</p><div className="mx-auto mt-6 flex h-36 w-36 items-center justify-center rounded-full" style={{ background: `conic-gradient(#2196f3 0 38%, #10b981 38% 82%, #f59e0b 82% 100%)` }}><div className="flex h-24 w-24 flex-col items-center justify-center rounded-full bg-white dark:bg-slate-900"><span className="text-lg font-bold text-velo-900 dark:text-white">{money.format(totalCapital)}</span><span className="text-[10px] text-slate-500">total value</span></div></div><div className="mt-5 space-y-2 text-xs"><Legend color="bg-sky-500" label="Available wallet" value={money.format(available)} /><Legend color="bg-emerald-500" label="Locked investments" value={money.format(locked)} /><Legend color="bg-amber-500" label="Expected earnings" value={money.format(returns)} /></div></section>
+          <section className="velo-card overflow-hidden p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><h2 className="section-heading">Portfolio performance</h2><p className="section-subheading">Capital and expected earnings across your investments.</p></div><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">{activeCount} active</span></div><div className="mt-6 grid grid-cols-3 gap-3"><div><p className="text-xs text-slate-500">Capital</p><p className="mt-1 text-base font-semibold text-velo-900 dark:text-white">{money.format(totalCapital)}</p></div><div><p className="text-xs text-slate-500">Expected return</p><p className="mt-1 text-base font-semibold text-emerald-600">{money.format(returns)}</p></div><div><p className="text-xs text-slate-500">Return ratio</p><p className="mt-1 text-base font-semibold text-velo-900 dark:text-white">{returnRate}%</p></div></div><svg className="mt-6 h-24 w-full" viewBox="0 0 520 96" role="img" aria-label="Investment performance chart"><defs><linearGradient id="investor-chart-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#10b981" stopOpacity=".3"/><stop offset="1" stopColor="#10b981" stopOpacity="0"/></linearGradient></defs><path d="M0 80 C80 72 120 67 170 60 S250 66 310 42 S420 46 520 14 V96 H0Z" fill="url(#investor-chart-fill)"/><path d="M0 80 C80 72 120 67 170 60 S250 66 310 42 S420 46 520 14" fill="none" stroke="#10b981" strokeWidth="3" strokeLinecap="round"/></svg></section>
+          <section className="velo-card p-4 sm:p-5 lg:p-6"><h2 className="section-heading">Capital allocation</h2><p className="section-subheading">Where your money sits today.</p><div className="mx-auto mt-6 flex h-36 w-36 items-center justify-center rounded-full" style={{ background: `conic-gradient(#2196f3 0 38%, #10b981 38% 82%, #f59e0b 82% 100%)` }}><div className="flex h-24 w-24 flex-col items-center justify-center rounded-full bg-white dark:bg-slate-900"><span className="text-lg font-semibold text-velo-900 dark:text-white">{money.format(totalCapital)}</span><span className="text-[10px] text-slate-500">total value</span></div></div><div className="mt-5 space-y-2 text-xs"><Legend color="bg-sky-500" label="Available wallet" value={money.format(available)} /><Legend color="bg-emerald-500" label="Locked investments" value={money.format(locked)} /><Legend color="bg-amber-500" label="Expected earnings" value={money.format(returns)} /></div></section>
         </div>
 
         <div className="grid gap-5 lg:grid-cols-[1.3fr_.7fr]">
@@ -1356,8 +1363,8 @@ function InvestorOverview(props: any) {
               {plans.map((plan: Plan) => (
                 <div key={plan.id} className="rounded-2xl border border-slate-100 dark:border-slate-800 p-4 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50 hover:shadow-lg transition-shadow">
                   <div className="flex items-start justify-between">
-                    <div className="text-sm font-bold text-velo-900 dark:text-white">{plan.name}</div>
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">{plan.annualRatePercent}% p.a.</span>
+                    <div className="text-sm font-semibold text-velo-900 dark:text-white">{plan.name}</div>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">{plan.annualRatePercent}% p.a.</span>
                   </div>
                   <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                     <div><p className="text-slate-500 dark:text-slate-400">Tenor</p><p className="font-semibold dark:text-white">{plan.tenureDays}d</p></div>
@@ -1382,7 +1389,7 @@ function InvestorWallet(props: any) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Wallet</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Manage your funds</h1>
+          <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Manage your funds</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">Fund your wallet and track your balances.</p>
         </div>
         <button type="button" className="btn-primary" onClick={openFundModal}>
@@ -1405,11 +1412,11 @@ function InvestorWallet(props: any) {
         <div className="absolute -top-10 -right-10 w-36 h-36 rounded-full bg-white/5 blur-xl pointer-events-none"></div>
         <div className="relative flex flex-col sm:flex-row sm:items-end sm:justify-between gap-5">
           <div className="max-w-md">
-            <div className="text-[11px] uppercase tracking-wider font-bold text-emerald-100/80">Wallet balance</div>
-            <div className="mt-2 text-4xl font-black tracking-tight">{money.format(available)}</div>
+            <div className="text-[11px] uppercase tracking-wider font-semibold text-emerald-100/80">Wallet balance</div>
+            <div className="mt-2 text-4xl font-bold tracking-tight">{money.format(available)}</div>
             <div className="mt-2 text-sm text-emerald-100/80">Fund your wallet to start earning returns on verified investment plans.</div>
           </div>
-          <button type="button" onClick={openFundModal} className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-white text-emerald-700 font-bold shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all whitespace-nowrap">
+          <button type="button" onClick={openFundModal} className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-white text-emerald-700 font-semibold shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all whitespace-nowrap">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <path d="M3 3v18h18M7 14l4-4 4 4 5-5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
@@ -1429,7 +1436,7 @@ function InvestorInvestments(props: any) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Investments</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Your investments</h1>
+          <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Your investments</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">Plans and active positions.</p>
         </div>
       </div>
@@ -1448,10 +1455,10 @@ function InvestorInvestments(props: any) {
               <div key={plan.id} className="rounded-2xl border border-slate-100 dark:border-slate-800 p-4 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50 hover:shadow-lg transition-shadow">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-sm font-bold text-velo-900 dark:text-white">{plan.name}</div>
+                    <div className="text-sm font-semibold text-velo-900 dark:text-white">{plan.name}</div>
                     <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{plan.tenureDays}-day tenor</div>
                   </div>
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">{plan.annualRatePercent}% p.a.</span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">{plan.annualRatePercent}% p.a.</span>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <div><p className="text-slate-500 dark:text-slate-400">Min</p><p className="font-semibold dark:text-white">₦{Number(plan.minAmountNaira).toLocaleString()}</p></div>
@@ -1471,7 +1478,7 @@ function InvestorInvestments(props: any) {
             {investments.map((inv: any, idx: number) => (
               <div key={inv.id || idx} className="rounded-xl border border-slate-100 dark:border-slate-800 p-4 flex flex-wrap justify-between gap-3">
                 <div><div className="text-sm font-semibold text-velo-900 dark:text-white">{inv.planSnapshot?.name || `Investment ${idx + 1}`}</div><div className="text-xs text-slate-500 mt-0.5">Status: {inv.status || "UNKNOWN"} · Started: {inv.startsAt ? new Date(inv.startsAt).toLocaleDateString() : "—"}</div><div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-amber-700 dark:text-amber-300"><Icon name="lock" size={13} />Locked until {inv.maturesAt ? new Date(inv.maturesAt).toLocaleDateString() : "maturity"} · {inv.accrual?.remainingDays ?? inv.tenureDays ?? 0} days remaining</div></div>
-                <div className="text-right"><div className="font-bold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div><div className="text-xs text-emerald-600">Accrued: +{money.format(Number(inv.accrual?.accruedEarningsNaira ?? 0))}</div><div className="text-[11px] text-slate-500">Maturity interest: {money.format(Number(inv.expectedEarningsNaira ?? 0))}</div></div>
+                <div className="text-right"><div className="font-semibold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div><div className="text-xs text-emerald-600">Accrued: +{money.format(Number(inv.accrual?.accruedEarningsNaira ?? 0))}</div><div className="text-[11px] text-slate-500">Maturity interest: {money.format(Number(inv.expectedEarningsNaira ?? 0))}</div></div>
               </div>
             ))}
           </div>
@@ -1551,7 +1558,7 @@ function InvestorKyc(props: any) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Verification</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Complete your KYC</h1>
+          <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Complete your KYC</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">Verify BVN, NIN, liveness, and proof of address.</p>
         </div>
       </div>
@@ -1579,7 +1586,7 @@ function InvestorKyc(props: any) {
             const result = kyc?.categoryResults?.[key];
             const current = result?.status || (checklist[key] ? 'VERIFIED' : 'NOT_STARTED');
             const rejected = current === 'REJECTED';
-            return <div key={key} className={`rounded-xl border p-3 ${rejected ? 'border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-900/15' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/30'}`}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span><span className={`text-[10px] font-bold uppercase ${rejected ? 'text-red-700 dark:text-red-300' : current === 'VERIFIED' ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500'}`}>{String(current).replace(/_/g, ' ')}</span></div>{rejected && <p className="mt-2 text-xs leading-5 text-red-700 dark:text-red-300">{result?.reason || kyc?.rejectionReason || 'Verification was not successful.'}</p>}</div>;
+            return <div key={key} className={`rounded-xl border p-3 ${rejected ? 'border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-900/15' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/30'}`}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span><span className={`text-[10px] font-semibold uppercase ${rejected ? 'text-red-700 dark:text-red-300' : current === 'VERIFIED' ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-500'}`}>{String(current).replace(/_/g, ' ')}</span></div>{rejected && <p className="mt-2 text-xs leading-5 text-red-700 dark:text-red-300">{result?.reason || kyc?.rejectionReason || 'Verification was not successful.'}</p>}</div>;
           })}
         </div>
         {kyc?.rejectionReason && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/15 dark:text-red-300"><strong>Review note:</strong> {kyc.rejectionReason}</div>}
@@ -1593,7 +1600,7 @@ function InvestorKyc(props: any) {
                   <>
                     <div className="mt-1 velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
                       <div className="flex items-center gap-2">
-                        <span className="font-bold tracking-wider font-mono text-slate-900 dark:text-white">{bvnDisplay}</span>
+                        <span className="font-semibold tracking-wider font-mono text-slate-900 dark:text-white">{bvnDisplay}</span>
                         <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded dark:bg-emerald-900/40 dark:border-emerald-800 dark:text-emerald-300">Verified</span>
                       </div>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
@@ -1619,7 +1626,7 @@ function InvestorKyc(props: any) {
                   <>
                     <div className="mt-1 velo-input flex items-center justify-between cursor-not-allowed bg-slate-50/80 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
                       <div className="flex items-center gap-2">
-                        <span className="font-bold tracking-wider font-mono text-slate-900 dark:text-white">{ninDisplay}</span>
+                        <span className="font-semibold tracking-wider font-mono text-slate-900 dark:text-white">{ninDisplay}</span>
                         <span className="text-[10px] uppercase font-semibold text-emerald-700 bg-emerald-100/70 border border-emerald-200 px-1.5 py-0.5 rounded dark:bg-emerald-900/40 dark:border-emerald-800 dark:text-emerald-300">Verified</span>
                       </div>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-slate-400">
@@ -1648,7 +1655,7 @@ function InvestorKyc(props: any) {
                     <path d="M12 12c2.7 0 5-2.3 5-5S14.7 2 12 2 7 4.3 7 7s2.3 5 5 5z" stroke="currentColor" strokeWidth="1.8"/>
                     <path d="M4 22c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
                   </svg>
-                  <h3 className="text-sm font-bold text-sky-900 dark:text-sky-200">Identity Information <span className="text-xs font-medium text-sky-700 dark:text-sky-400">(Retrieved from records · Locked)</span></h3>
+                  <h3 className="text-sm font-semibold text-sky-900 dark:text-sky-200">Identity Information <span className="text-xs font-medium text-sky-700 dark:text-sky-400">(Retrieved from records · Locked)</span></h3>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-4">
                   {identityInfo.fullName && (
@@ -1709,7 +1716,7 @@ function InvestorKyc(props: any) {
                   <div className="bg-gradient-to-r from-sky-500 to-velo-500 px-5 py-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="text-white">
-                        <h3 className="text-base font-bold">Confirm {activeOtpChallenge.idType} ownership</h3>
+                        <h3 className="text-base font-semibold">Confirm {activeOtpChallenge.idType} ownership</h3>
                         <p className="mt-1 text-xs text-sky-100">
                           Sent via <span className="font-semibold">{activeOtpChallenge.challenge.channel}</span> to ···{activeOtpChallenge.challenge.phoneLastFour}
                         </p>
@@ -1719,15 +1726,15 @@ function InvestorKyc(props: any) {
                   </div>
                   <div className="p-5 space-y-4">
                     <label className="velo-label block">
-                      <span className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">One-time code (6 digits)</span>
-                      <input className="velo-input mt-2 tracking-[0.6em] text-center font-bold text-2xl" inputMode="numeric" maxLength={6} autoFocus value={activeOtpChallenge.otpCode} onChange={(event) => setActiveOtpChallenge((c: any) => c ? { ...c, otpCode: event.target.value.replace(/\D/g, ""), error: undefined } : c)} placeholder="• • • • • •" />
+                      <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">One-time code (6 digits)</span>
+                      <input className="velo-input mt-2 tracking-[0.6em] text-center font-semibold text-2xl" inputMode="numeric" maxLength={6} autoFocus value={activeOtpChallenge.otpCode} onChange={(event) => setActiveOtpChallenge((c: any) => c ? { ...c, otpCode: event.target.value.replace(/\D/g, ""), error: undefined } : c)} placeholder="• • • • • •" />
                     </label>
                     {activeOtpChallenge.error && <p className="text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 rounded-lg px-3 py-2">{activeOtpChallenge.error}</p>}
                     <div className="flex flex-wrap items-center gap-2">
                       <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-sky-200 bg-white px-3 py-2.5 text-sm font-semibold text-sky-800 hover:bg-sky-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-sky-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("SMS")}>{activeOtpChallenge.cooldown > 0 ? `Resend SMS (${activeOtpChallenge.cooldown}s)` : "Resend via SMS"}</button>
                       <button type="button" className="flex-1 min-w-[120px] rounded-xl border border-emerald-200 bg-white px-3 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30" disabled={activeOtpChallenge.cooldown > 0 || activeOtpChallenge.busy} onClick={() => void resendActiveKycOtp("WHATSAPP")}>{activeOtpChallenge.cooldown > 0 ? `Resend WA (${activeOtpChallenge.cooldown}s)` : "Resend via WhatsApp"}</button>
                     </div>
-                    <button type="button" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50 min-h-[48px] text-base font-bold" disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
+                    <button type="button" className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-50 min-h-[48px] text-base font-semibold" disabled={activeOtpChallenge.otpCode.length !== 6 || activeOtpChallenge.busy} onClick={() => void submitActiveKycOtp()}>{activeOtpChallenge.busy ? "Verifying…" : "Confirm ownership"}</button>
                   </div>
                 </div>
               </div>
@@ -1736,7 +1743,7 @@ function InvestorKyc(props: any) {
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                 <h3 className={`text-sm font-semibold ${livenessLocked ? "text-emerald-800 dark:text-emerald-300" : "text-slate-800 dark:text-slate-200"}`}>Liveness verification <span className="text-red-500">*</span></h3>
                 {livenessLocked && (
-                  <span className="text-xs inline-flex items-center gap-1 text-emerald-700 bg-white dark:bg-slate-900/80 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded-md font-bold shadow-sm dark:text-emerald-300">
+                  <span className="text-xs inline-flex items-center gap-1 text-emerald-700 bg-white dark:bg-slate-900/80 border border-emerald-200 dark:border-emerald-800 px-2 py-1 rounded-md font-semibold shadow-sm dark:text-emerald-300">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     Verified &amp; Locked
                   </span>
@@ -1747,14 +1754,14 @@ function InvestorKyc(props: any) {
                 <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2.5 dark:border-amber-800/60 dark:bg-amber-900/15">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   <div className="min-w-0">
-                    <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">Live Scan Still Required</div>
-                    <p className="mt-0.5 text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/80">The government-ID portrait shown below is a record photo only — it is <span className="font-bold">NOT proof of liveness</span>. You must still run a live selfie scan for us to match your face to the ID.</p>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">Live Scan Still Required</div>
+                    <p className="mt-0.5 text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/80">The government-ID portrait shown below is a record photo only — it is <span className="font-semibold">NOT proof of liveness</span>. You must still run a live selfie scan for us to match your face to the ID.</p>
                   </div>
                 </div>
               )}
               <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="flex flex-col gap-2">
-                  <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-[0.12em] border ${livenessLocked ? "bg-slate-100 border-slate-200 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300" : "bg-amber-100 border-amber-200 text-amber-700 dark:bg-amber-900/30 dark:border-amber-800/60 dark:text-amber-300"}`}>
+                  <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-semibold uppercase tracking-[0.12em] border ${livenessLocked ? "bg-slate-100 border-slate-200 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300" : "bg-amber-100 border-amber-200 text-amber-700 dark:bg-amber-900/30 dark:border-amber-800/60 dark:text-amber-300"}`}>
                     {livenessLocked ? <>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2"/><path d="M8 12h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
                       Reference — Government ID portrait
@@ -1776,7 +1783,7 @@ function InvestorKyc(props: any) {
                   <div className="text-[10px] leading-relaxed text-slate-500 dark:text-slate-400 break-words">Portrait pulled from your verified {bvnLocked ? "BVN" : ninLocked ? "NIN" : "government ID"} records. Used as the matching reference for your live selfie.</div>
                 </div>
                 <div className="flex flex-col gap-2">
-                  <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-[0.12em] border ${liveSelfie ? "bg-emerald-100 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-800/60 dark:text-emerald-300" : "bg-slate-100 border-slate-200 text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400"}`}>
+                  <div className={`inline-flex items-center gap-1 self-start px-2 py-1 rounded-md text-[10px] font-semibold uppercase tracking-[0.12em] border ${liveSelfie ? "bg-emerald-100 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-800/60 dark:text-emerald-300" : "bg-slate-100 border-slate-200 text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400"}`}>
                     {liveSelfie ? <>
                       <Icon name="check" size={10} strokeWidth={2.5} />
                       Your Live Selfie — Liveness Verified
@@ -1815,7 +1822,7 @@ function InvestorKyc(props: any) {
                 ) : (
                   <>
                     <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} verifiedDetails={kyc?.verifiedDetails ?? null} onResult={onPremblyLivenessResult} />
-                    <label className={`relative inline-flex min-h-[44px] items-center justify-center gap-2 px-5 py-3 text-sm font-bold rounded-xl border transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${kycBusy === "LIVENESS_SELFIE" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : "border-slate-300 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/60"}`}>
+                    <label className={`relative inline-flex min-h-[44px] items-center justify-center gap-2 px-5 py-3 text-sm font-semibold rounded-xl border transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${kycBusy === "LIVENESS_SELFIE" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : "border-slate-300 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/60"}`}>
                       <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed" type="file" accept="image/jpeg,image/png,image/webp" disabled={kycBusy === "LIVENESS_SELFIE" || !(bvn && /^\d{11}$/.test(bvn) || nin && /^\d{11}$/.test(nin))} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSelfieFallback(file); }} />
                       {kycBusy === "LIVENESS_SELFIE" ? (
                         <>
@@ -1845,7 +1852,7 @@ function InvestorKyc(props: any) {
                   </div>
                 </label>
                 {checklist.signature && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800/50 px-2.5 py-1 rounded-lg dark:text-emerald-300 shadow-sm">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800/50 px-2.5 py-1 rounded-lg dark:text-emerald-300 shadow-sm">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     Uploaded
                   </span>
@@ -1875,7 +1882,7 @@ function InvestorKyc(props: any) {
                   </div>
                 </label>
                 {checklist.proofOfAddress && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800/50 px-2.5 py-1 rounded-lg dark:text-emerald-300 shadow-sm">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800/50 px-2.5 py-1 rounded-lg dark:text-emerald-300 shadow-sm">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     Uploaded
                   </span>
@@ -1933,8 +1940,8 @@ function InvestorKyc(props: any) {
           <div className="w-full max-w-md overflow-hidden rounded-none sm:rounded-2xl bg-transparent sm:bg-transparent border-t-2 sm:border-2 border-white/0 sm:border-white/0 shadow-2xl animate-slide-in-up">
             <div className="bg-gradient-to-br from-velo-500 via-sky-500 to-sky-600 px-5 py-4 flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/75">Ownership Check</div>
-                <h3 className="mt-0.5 text-lg font-bold text-white break-words">Verify {otpMethodPickerFor} ownership</h3>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/75">Ownership Check</div>
+                <h3 className="mt-0.5 text-lg font-semibold text-white break-words">Verify {otpMethodPickerFor} ownership</h3>
                 <p className="mt-0.5 text-xs text-white/80 break-words">Send a one-time code to the phone number registered with your {otpMethodPickerFor}.</p>
               </div>
               <button
@@ -1957,7 +1964,7 @@ function InvestorKyc(props: any) {
                     </svg>
                   </div>
                   <div>
-                    <div className="text-sm font-bold text-slate-900 dark:text-white">Sending via {otpPickerState.channel || "secure channel"}…</div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-white">Sending via {otpPickerState.channel || "secure channel"}…</div>
                     <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">Please wait while we contact the identity provider.</div>
                   </div>
                   {otpPickerState.message && <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 italic">{otpPickerState.message}</div>}
@@ -1968,7 +1975,7 @@ function InvestorKyc(props: any) {
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </div>
                   <div>
-                    <div className="text-sm font-bold text-slate-900 dark:text-white">Ownership confirmed automatically</div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-white">Ownership confirmed automatically</div>
                     <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{otpPickerState.message || "Phone on file already matches your account. No code required."}</div>
                   </div>
                 </div>
@@ -1977,7 +1984,7 @@ function InvestorKyc(props: any) {
                   <div className="rounded-xl border border-red-200 bg-red-50 dark:border-red-800/60 dark:bg-red-900/15 px-4 py-3 flex items-start gap-3">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="mt-0.5 shrink-0 text-red-600 dark:text-red-400"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     <div className="min-w-0 flex-1">
-                      <div className="text-sm font-bold text-red-800 dark:text-red-200">Verification didn't go through</div>
+                      <div className="text-sm font-semibold text-red-800 dark:text-red-200">Verification didn't go through</div>
                       <div className="mt-0.5 text-xs leading-relaxed text-red-700/90 dark:text-red-300/80 break-words">{otpPickerState.message || "There was a temporary issue reaching the identity provider. Try a different channel or try again shortly."}</div>
                     </div>
                   </div>
@@ -2096,7 +2103,15 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
       raw: p,
     });
   });
-  return out.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  // React silently drops list rows whose keys collide — and collisions DO occur
+  // when legacy rows lack an id and share the (createdAt, amount) fallback.
+  // Guarantee unique ids so no transaction can ever silently vanish.
+  const seenIds = new Set<string>();
+  for (const row of out) {
+    if (seenIds.has(row.id)) row.id = `${row.id}~${seenIds.size}`;
+    seenIds.add(row.id);
+  }
+  return out.sort((a, b) => safeTxTime(b.createdAt) - safeTxTime(a.createdAt));
 }
 
 type InvestorTransactionsProps = { transactions: TransactionData | null; selectedTx: UnifiedTx | null; setSelectedTx: (t: UnifiedTx | null) => void };
@@ -2126,14 +2141,14 @@ const InvestorTransactionRow = memo(function InvestorTransactionRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="font-bold text-sm text-velo-900 dark:text-white truncate">{tx.label}</div>
+            <div className="font-semibold text-sm text-velo-900 dark:text-white truncate">{tx.label}</div>
             {tx.status && (
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold whitespace-nowrap ${TX_TONE_CLASS[txStatusTone(tx.status)]}`}>
+              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${TX_TONE_CLASS[txStatusTone(tx.status)]}`}>
                 {tx.status}
               </span>
             )}
           </div>
-          <div className={`font-black text-sm whitespace-nowrap ${tx.direction === "CREDIT" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+          <div className={`font-bold text-sm whitespace-nowrap ${tx.direction === "CREDIT" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
             {tx.direction === "CREDIT" ? "+" : "-"}₦{Math.round(tx.amountMinor / 100).toLocaleString("en-NG")}
           </div>
         </div>
@@ -2175,7 +2190,7 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Transactions</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Transactions &amp; history</h1>
+          <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Transactions &amp; history</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">All wallet credits, debits, investments, and payouts.</p>
         </div>
       </div>
@@ -2247,7 +2262,7 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
           <div className="velo-card w-full max-w-lg p-6 shadow-2xl animate-slide-in-left max-h-[90vh] overflow-y-auto">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-lg font-bold text-velo-900 dark:text-white">Transaction details</h3>
+                <h3 className="text-lg font-semibold text-velo-900 dark:text-white">Transaction details</h3>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Reference · {selectedTx.referenceId || selectedTx.id.slice(0, 10)}</p>
               </div>
               <button type="button" className="no-print rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => setSelectedTx(null)} aria-label="Close">
@@ -2257,30 +2272,30 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
             <div className={`mt-5 rounded-2xl p-5 ${selectedTx.direction === "CREDIT" ? "bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-900/30 border border-emerald-100 dark:border-emerald-900/30" : "bg-red-50 dark:bg-red-900/20 dark:border-red-900/30 border border-red-100 dark:border-red-900/30"}`}>
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">
+                  <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
                     {selectedTx.direction === "CREDIT" ? "Wallet credit" : "Wallet debit"}
                   </div>
-                  <div className="mt-1 text-2xl font-black text-velo-900 dark:text-white">{selectedTx.label}</div>
+                  <div className="mt-1 text-2xl font-bold text-velo-900 dark:text-white">{selectedTx.label}</div>
                 </div>
-                <div className={`text-3xl font-black ${selectedTx.direction === "CREDIT" ? "text-emerald-600" : "text-red-600"}`}>
+                <div className={`text-3xl font-bold ${selectedTx.direction === "CREDIT" ? "text-emerald-600" : "text-red-600"}`}>
                   {selectedTx.direction === "CREDIT" ? "+" : "-"}₦{Math.round(selectedTx.amountMinor / 100).toLocaleString("en-NG")}
                 </div>
               </div>
             </div>
             <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
-                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Date &amp; time</div>
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Date &amp; time</div>
                 <div className="mt-1 font-semibold text-velo-900 dark:text-white">{new Date(selectedTx.createdAt).toLocaleString()}</div>
               </div>
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
-                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Type</div>
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Type</div>
                 <div className="mt-1 font-semibold text-velo-900 dark:text-white">{selectedTx.kind.replace(/_/g, " ")}</div>
               </div>
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
-                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Status</div>
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Status</div>
                 <div className="mt-1">
                   {selectedTx.status ? (
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${TX_TONE_CLASS[txStatusTone(selectedTx.status)]}`}>
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${TX_TONE_CLASS[txStatusTone(selectedTx.status)]}`}>
                       {selectedTx.status}
                     </span>
                   ) : (
@@ -2289,16 +2304,16 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
                 </div>
               </div>
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
-                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Reference ID</div>
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Reference ID</div>
                 <div className="mt-1 font-mono text-xs font-semibold text-velo-900 dark:text-white break-all">{selectedTx.referenceId || "—"}</div>
               </div>
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
-                <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Wallet balance after</div>
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Wallet balance after</div>
                 <div className="mt-1 font-semibold text-velo-900 dark:text-white">{selectedTx.balanceAfterMinor != null ? money.format(selectedTx.balanceAfterMinor / 100) : "—"}</div>
               </div>
               {selectedTx.narration && (
                 <div className="sm:col-span-2 rounded-xl bg-slate-50 dark:bg-slate-800/50 p-4">
-                  <div className="text-[11px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">Narration</div>
+                  <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">Narration</div>
                   <div className="mt-1 font-semibold text-velo-900 dark:text-white">{selectedTx.narration}</div>
                 </div>
               )}
@@ -2441,7 +2456,7 @@ function InvestorPayoutSection(props: any) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Payout account</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Bank payout setup</h1>
+          <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Bank payout setup</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">Add a Nigerian bank account for payouts. Subsequent edits require admin approval.</p>
         </div>
       </div>
@@ -2539,7 +2554,7 @@ function InvestorProfile(props: any) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Profile</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Personal information</h1>
+          <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Personal information</h1>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
             Review and edit your account details, email and phone below.
           </p>
@@ -2566,7 +2581,7 @@ function Metric(props: any) {
   return (
     <div className="velo-card p-4 sm:p-5">
       <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</p>
-      <p className="mt-2 text-2xl font-bold text-velo-900 dark:text-white break-words">{value}</p>
+      <p className="mt-2 text-2xl font-semibold text-velo-900 dark:text-white break-words">{value}</p>
       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{detail}</p>
     </div>
   );

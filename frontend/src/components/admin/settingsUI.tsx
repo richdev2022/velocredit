@@ -32,7 +32,7 @@ export function Pill({
     info: "bg-velo-50 text-velo-700 border-velo-200 dark:bg-velo-900/40 dark:text-velo-300 dark:border-velo-800",
   };
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${tones[tone]}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${tones[tone]}`}>
       {children}
     </span>
   );
@@ -83,7 +83,7 @@ export function Toggle({
         className="inline-flex cursor-pointer select-none items-center gap-2 focus:outline-none focus-visible:ring-4 focus-visible:ring-velo-200 disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-velo-800"
       >
         {track}
-        <span className="text-xs font-bold text-slate-600 dark:text-slate-300">{label}</span>
+        <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">{label}</span>
       </button>
     );
   }
@@ -124,7 +124,7 @@ export function SettingRow({
     return (
       <div className={`py-4 ${last ? "" : "border-b border-slate-100 dark:border-slate-800"}`}>
         <div className="mb-3">
-          <div className="text-sm font-bold text-velo-900 dark:text-white">{label}</div>
+          <div className="text-sm font-semibold text-velo-900 dark:text-white">{label}</div>
           {description && <div className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{description}</div>}
         </div>
         {children}
@@ -134,7 +134,7 @@ export function SettingRow({
   return (
     <div className={`flex flex-col gap-2 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6 ${last ? "" : "border-b border-slate-100 dark:border-slate-800"}`}>
       <div className="min-w-0 sm:max-w-md">
-        <div className="text-sm font-bold text-velo-900 dark:text-white">{label}</div>
+        <div className="text-sm font-semibold text-velo-900 dark:text-white">{label}</div>
         {description && <div className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{description}</div>}
       </div>
       <div className="w-full shrink-0 sm:max-w-[15rem]">{children}</div>
@@ -161,9 +161,9 @@ export function NairaField({
 }) {
   return (
     <label className="block">
-      {label && <span className={`mb-1.5 block font-bold text-velo-900 dark:text-white ${compact ? "text-[11px]" : "text-xs"}`}>{label}</span>}
+      {label && <span className={`mb-1.5 block font-semibold text-velo-900 dark:text-white ${compact ? "text-[11px]" : "text-xs"}`}>{label}</span>}
       <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400 select-none">₦</span>
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">₦</span>
         <input
           type="text"
           inputMode="numeric"
@@ -172,7 +172,7 @@ export function NairaField({
             const n = Number(e.target.value.replace(/[^0-9]/g, ""));
             onChange(Number.isFinite(n) ? n : 0);
           }}
-          className="velo-input !pl-9 text-sm font-bold"
+          className="velo-input !pl-9 text-sm font-semibold"
         />
       </div>
       {helpText && <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">{helpText}</div>}
@@ -202,7 +202,7 @@ export function Segmented<T extends string>({
           key={opt.value}
           type="button"
           onClick={() => onChange(opt.value)}
-          className={`rounded-lg font-bold transition-all duration-150 ${size === "sm" ? "px-2 py-1 text-[10px]" : "px-2.5 py-1.5 text-xs"} ${
+          className={`rounded-lg font-semibold transition-all duration-150 ${size === "sm" ? "px-2 py-1 text-[10px]" : "px-2.5 py-1.5 text-xs"} ${
             value === opt.value
               ? "bg-white text-velo-700 shadow-sm dark:bg-slate-900 dark:text-velo-300"
               : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
@@ -283,11 +283,11 @@ export function FeeEditor({
     <div className={`rounded-2xl border p-4 transition-all duration-200 ${changed ? "border-velo-200 bg-velo-50/40 dark:border-velo-800 dark:bg-velo-900/20" : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"}`}>
       <div className="mb-3 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-xs font-extrabold text-velo-900 dark:text-white">{label}</div>
+          <div className="text-xs font-bold text-velo-900 dark:text-white">{label}</div>
           {description && <div className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{description}</div>}
         </div>
         {baselineLabel && (
-          <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">vs {baselineLabel}</span>
+          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">vs {baselineLabel}</span>
         )}
       </div>
 
@@ -305,9 +305,9 @@ export function FeeEditor({
         </div>
         <div className="relative min-w-0 flex-1">
           {isPercent ? (
-            <span className="absolute right-9 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400 select-none">%</span>
+            <span className="absolute right-9 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">%</span>
           ) : (
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400 select-none">₦</span>
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">₦</span>
           )}
           <input
             type="text"
@@ -319,7 +319,7 @@ export function FeeEditor({
               else setDraft(formatDecimal(parseDecimal(draft)));
             }}
             placeholder="0"
-            className={`velo-input !py-2 text-sm font-bold ${isPercent ? "!pr-8" : "!pl-9"}`}
+            className={`velo-input !py-2 text-sm font-semibold ${isPercent ? "!pr-8" : "!pl-9"}`}
           />
         </div>
       </div>
@@ -359,7 +359,7 @@ export function Chip({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full border-2 px-4 py-2 text-xs font-bold transition-all duration-150 ${
+      className={`rounded-full border-2 px-4 py-2 text-xs font-semibold transition-all duration-150 ${
         selected
           ? "border-velo-500 bg-velo-500 text-white shadow-sm"
           : "border-slate-200 bg-white text-slate-600 hover:border-velo-300 hover:text-velo-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-velo-700"
@@ -403,7 +403,7 @@ export function PanelCard({
           <div className="flex min-w-0 items-start gap-3">
             {icon && <span className={`mt-0.5 shrink-0 ${tones[tone]}`}>{icon}</span>}
             <div className="min-w-0">
-              <h3 className="text-sm font-extrabold text-velo-900 dark:text-white">{title}</h3>
+              <h3 className="text-sm font-bold text-velo-900 dark:text-white">{title}</h3>
               {description && <p className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{description}</p>}
             </div>
           </div>

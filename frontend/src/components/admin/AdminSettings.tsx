@@ -654,7 +654,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09A1.65 1.65 0 00-1.51 1z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </div>
                 <div className="min-w-0">
-                  <h2 className="text-lg font-black tracking-tight sm:text-xl">Platform Settings</h2>
+                  <h2 className="text-lg font-bold tracking-tight sm:text-xl">Platform Settings</h2>
                   <p className="mt-0.5 text-xs leading-5 text-white/70 sm:max-w-xl sm:text-[13px]">
                     Configure loan programs, limits, fees, branding and access — saved for every user on the platform.
                   </p>
@@ -668,7 +668,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   <Pill tone="success" ><span className="flex h-3 w-3 items-center justify-center"><svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"/></svg></span>Saved</Pill>
                 )}
                 {!saving && !saved && (
-                  <span className="hidden items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-bold text-white/70 sm:inline-flex">
+                  <span className="hidden items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-white/70 sm:inline-flex">
                     <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />Live for all users
                   </span>
                 )}
@@ -676,17 +676,17 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   <button
                     type="button"
                     onClick={() => setResetConfirm(true)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-white/20 disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-white/20 disabled:opacity-50"
                     disabled={saving}
                   >
                     Restore defaults
                   </button>
                 ) : (
                   <span className="inline-flex items-center gap-1.5">
-                    <button type="button" onClick={handleReset} disabled={saving} className="inline-flex items-center gap-1.5 rounded-xl bg-red-500 px-3.5 py-2 text-xs font-black text-white shadow transition hover:bg-red-600 disabled:opacity-50">
+                    <button type="button" onClick={handleReset} disabled={saving} className="inline-flex items-center gap-1.5 rounded-xl bg-red-500 px-3.5 py-2 text-xs font-bold text-white shadow transition hover:bg-red-600 disabled:opacity-50">
                       Yes, reset all
                     </button>
-                    <button type="button" onClick={() => setResetConfirm(false)} className="rounded-xl px-3 py-2 text-xs font-bold text-white/80 transition hover:bg-white/10">
+                    <button type="button" onClick={() => setResetConfirm(false)} className="rounded-xl px-3 py-2 text-xs font-semibold text-white/80 transition hover:bg-white/10">
                       Cancel
                     </button>
                   </span>
@@ -695,7 +695,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   type="button"
                   onClick={handleSave}
                   disabled={saveDisabled}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-xs font-black text-velo-800 shadow-lg transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-xs font-bold text-velo-800 shadow-lg transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {saving ? (
                     <><span className="h-3 w-3 animate-spin rounded-full border-2 border-velo-600 border-t-transparent" />Saving…</>
@@ -716,14 +716,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           )}
           {formErrors.length > 0 && (
             <div className={`rounded-2xl border p-4 ${formErrors.some(e => e.severity === "error") ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/40" : "border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/40"}`}>
-              <div className={`mb-1.5 flex items-center gap-2 text-sm font-black ${formErrors.some(e => e.severity === "error") ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
+              <div className={`mb-1.5 flex items-center gap-2 text-sm font-bold ${formErrors.some(e => e.severity === "error") ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
                 <Icon name="alert" size={15} />{formErrors.some(e => e.severity === "error") ? "Fix these before saving" : "Review these warnings"}
               </div>
               <ul className="space-y-1 text-xs">
                 {formErrors.map((e, i) => (
                   <li key={i} className="flex items-start gap-2 text-slate-700 dark:text-slate-300">
                     <span className="mt-0.5 text-slate-400">•</span>
-                    <span><strong className="font-bold">{e.key}:</strong> {e.message}</span>
+                    <span><strong className="font-semibold">{e.key}:</strong> {e.message}</span>
                   </li>
                 ))}
               </ul>
@@ -742,7 +742,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     aria-selected={active}
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
-                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition-all duration-150 ${
+                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition-all duration-150 ${
                       active
                         ? "bg-velo-500 text-white shadow-sm"
                         : "text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
@@ -851,7 +851,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                               <div className="flex items-center gap-3">
                                 <Toggle size="sm" checked={state.enabled} onChange={(on) => setTenureFees({ ...tenureFeesSynced, [t.value]: { ...state, enabled: on } })} />
                                 <div>
-                                  <div className="text-sm font-extrabold text-velo-900 dark:text-white">{t.value} days</div>
+                                  <div className="text-sm font-bold text-velo-900 dark:text-white">{t.value} days</div>
                                   <div className="text-[11px] text-slate-500 dark:text-slate-400">
                                     {state.enabled ? "Custom fees active for this tenure" : "Using global fees (inherited)"}
                                   </div>
@@ -969,10 +969,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     ].map(([name, category]) => (
                       <div key={name} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3.5 py-3 dark:border-slate-700">
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-bold text-velo-900 dark:text-white">{name}</div>
+                          <div className="truncate text-sm font-semibold text-velo-900 dark:text-white">{name}</div>
                           <div className="text-[11px] text-slate-500 dark:text-slate-400">{category}</div>
                         </div>
-                        <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                        <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
                           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />Backend
                         </span>
                       </div>
@@ -991,10 +991,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 p-5 text-white shadow-elevated">
                   <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-velo-300/20 blur-2xl" />
                   <div className="relative">
-                    <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] font-black tracking-wider">
+                    <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] font-bold tracking-wider">
                       <Icon name="sparkles" size={11} />LIVE PREVIEW
                     </span>
-                    <h3 className="mb-0.5 text-sm font-extrabold">Sample calculation</h3>
+                    <h3 className="mb-0.5 text-sm font-bold">Sample calculation</h3>
                     <p className="mb-4 text-[11px] text-white/70">Default amount × middle tenure, using global fees.</p>
                     <div className="mb-3 space-y-1">
                       <PreviewRow label="Principal" value={formatNaira(previewCalc.loanAmount)} />
@@ -1005,8 +1005,8 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     </div>
                     <div className="border-t border-white/15 pt-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-black tracking-wider text-white/80">TOTAL REPAYMENT</span>
-                        <span key={previewCalc.totalRepayment} className="animate-bounce-subtle text-xl font-black tracking-tight sm:text-2xl">
+                        <span className="text-[11px] font-bold tracking-wider text-white/80">TOTAL REPAYMENT</span>
+                        <span key={previewCalc.totalRepayment} className="animate-bounce-subtle text-xl font-bold tracking-tight sm:text-2xl">
                           {formatNaira(previewCalc.totalRepayment)}
                         </span>
                       </div>
@@ -1054,7 +1054,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     "Restore defaults returns to the deployed baseline configuration.",
                   ].map((line, i) => (
                     <li key={line} className="flex gap-2.5">
-                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-velo-100 text-[10px] font-black text-velo-700 dark:bg-velo-900 dark:text-velo-300">{i + 1}</span>
+                      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-velo-100 text-[10px] font-bold text-velo-700 dark:bg-velo-900 dark:text-velo-300">{i + 1}</span>
                       {line}
                     </li>
                   ))}
@@ -1076,18 +1076,18 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 icon={<Icon name="briefcase" size={18} />}
                 tone="emerald"
                 action={
-                  <button onClick={handleSavePlatformSettings} disabled={platformLoading} className="btn-primary !py-2 !px-4 text-xs !font-extrabold">
+                  <button onClick={handleSavePlatformSettings} disabled={platformLoading} className="btn-primary !py-2 !px-4 text-xs !font-bold">
                     {platformLoading ? "Saving…" : <><Icon name="save" size={14} />Save platform settings</>}
                   </button>
                 }
               >
                 {platformMessage && (
-                  <div className="mb-1 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-bold text-emerald-700 animate-fade-in dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+                  <div className="mb-1 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-semibold text-emerald-700 animate-fade-in dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
                     <Icon name="check" size={14} />{platformMessage}
                   </div>
                 )}
                 {platformError && (
-                  <div className="mb-1 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-bold text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+                  <div className="mb-1 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
                     <Icon name="alert" size={14} />{platformError}
                   </div>
                 )}
@@ -1102,11 +1102,11 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                       step="0.1"
                       min="0"
                       max="100"
-                      className="velo-input pr-8 text-sm font-bold"
+                      className="velo-input pr-8 text-sm font-semibold"
                       value={withdrawalFeePercent}
                       onChange={(e) => setWithdrawalFeePercent(Number(e.target.value))}
                     />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">%</span>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
                   </div>
                 </SettingRow>
               </PanelCard>
@@ -1120,19 +1120,19 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 >
                   <div className="py-2">
                     <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">₦</span>
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">₦</span>
                       <input
                         type="number"
                         min="0"
                         step="100"
-                        className="velo-input !pl-9 text-sm font-bold"
+                        className="velo-input !pl-9 text-sm font-semibold"
                         value={withdrawalFeeFlatNaira}
                         onChange={(e) => setWithdrawalFeeFlatNaira(Number(e.target.value))}
                       />
                     </div>
                     <div className="mt-3 flex justify-between border-t border-slate-100 pt-3 text-[11px] dark:border-slate-800">
                       <span className="text-slate-500">Currently saved</span>
-                      <span className="font-black text-emerald-600 dark:text-emerald-400">
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
                         ₦{Math.round((platformSettings?.investorWithdrawalFeeFlatMinor ?? 0) / 100).toLocaleString("en-NG")}
                       </span>
                     </div>
@@ -1152,15 +1152,15 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                         step="0.25"
                         min="0"
                         max="100"
-                        className="velo-input pr-8 text-sm font-bold"
+                        className="velo-input pr-8 text-sm font-semibold"
                         value={defaultAnnualRate}
                         onChange={(e) => setDefaultAnnualRate(Number(e.target.value))}
                       />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">%</span>
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
                     </div>
                     <div className="mt-3 flex justify-between border-t border-slate-100 pt-3 text-[11px] dark:border-slate-800">
                       <span className="text-slate-500">Currently saved</span>
-                      <span className="font-black text-emerald-600 dark:text-emerald-400">{platformSettings?.defaultInvestmentAnnualRatePercent ?? 0}%</span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">{platformSettings?.defaultInvestmentAnnualRatePercent ?? 0}%</span>
                     </div>
                   </div>
                 </PanelCard>
@@ -1184,13 +1184,13 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                         step="0.25"
                         min="0"
                         max="100"
-                        className="velo-input pr-8 text-sm font-bold"
+                        className="velo-input pr-8 text-sm font-semibold"
                         value={earningRatePercent}
                         onChange={(e) => setEarningRatePercent(Number(e.target.value))}
                       />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">%</span>
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
                     </div>
-                    <button onClick={handleSaveEarningRate} disabled={earningRateSaving} className="btn-primary w-full !py-2.5 !font-extrabold text-sm">
+                    <button onClick={handleSaveEarningRate} disabled={earningRateSaving} className="btn-primary w-full !py-2.5 !font-bold text-sm">
                       {earningRateSaving ? "Saving…" : <><Icon name="check" size={14} />Save earning rate</>}
                     </button>
                     {earningRateMsg && <InlineMessage message={earningRateMsg} />}
@@ -1212,8 +1212,8 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     </select>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="relative">
-                        <span className="absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm font-black text-slate-400">₦</span>
-                        <input type="number" min="100" className="velo-input !pl-9 text-sm font-bold" value={creditAmountNaira} onChange={(e) => setCreditAmountNaira(e.target.value)} />
+                        <span className="absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm font-bold text-slate-400">₦</span>
+                        <input type="number" min="100" className="velo-input !pl-9 text-sm font-semibold" value={creditAmountNaira} onChange={(e) => setCreditAmountNaira(e.target.value)} />
                       </div>
                       <select className="velo-input text-sm" value={creditReason} onChange={(e) => setCreditReason(e.target.value as any)}>
                         <option value="MANUAL_CREDIT">Manual Credit</option>
@@ -1226,7 +1226,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     <button
                       onClick={handleCreditInvestor}
                       disabled={creditSaving}
-                      className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 px-5 py-2.5 text-sm font-extrabold text-white shadow transition hover:from-emerald-600 hover:to-emerald-700 disabled:opacity-50"
+                      className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow transition hover:from-emerald-600 hover:to-emerald-700 disabled:opacity-50"
                     >
                       {creditSaving ? "Processing…" : <><Icon name="check" size={14} />Credit investor wallet</>}
                     </button>
@@ -1256,25 +1256,25 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                     <table className="w-full min-w-[640px] text-sm">
                       <thead className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
                         <tr className="border-b border-slate-200 dark:border-slate-700">
-                          <th className="p-3 text-left font-black">Investor</th>
-                          <th className="p-3 text-right font-black">Amount</th>
-                          <th className="p-3 text-right font-black">Fee</th>
-                          <th className="p-3 text-right font-black">Net</th>
-                          <th className="p-3 text-left font-black">Bank</th>
-                          <th className="p-3 text-left font-black">Status</th>
-                          <th className="p-3 text-right font-black">Action</th>
+                          <th className="p-3 text-left font-bold">Investor</th>
+                          <th className="p-3 text-right font-bold">Amount</th>
+                          <th className="p-3 text-right font-bold">Fee</th>
+                          <th className="p-3 text-right font-bold">Net</th>
+                          <th className="p-3 text-left font-bold">Bank</th>
+                          <th className="p-3 text-left font-bold">Status</th>
+                          <th className="p-3 text-right font-bold">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                         {withdrawals.slice(0, 20).map((w) => (
                           <tr key={w.id} className="transition hover:bg-slate-50 dark:hover:bg-slate-800/40">
                             <td className="p-3">
-                              <div className="font-bold text-velo-900 dark:text-white">{investors.find(i => i.id === w.investorId)?.fullName || w.investorId.slice(0, 8)}</div>
+                              <div className="font-semibold text-velo-900 dark:text-white">{investors.find(i => i.id === w.investorId)?.fullName || w.investorId.slice(0, 8)}</div>
                               <div className="text-[10px] text-slate-500 dark:text-slate-400">{new Date(w.createdAt).toLocaleDateString()}</div>
                             </td>
-                            <td className="p-3 text-right font-bold dark:text-slate-200">₦{Number(w.amountNaira).toLocaleString("en-NG")}</td>
+                            <td className="p-3 text-right font-semibold dark:text-slate-200">₦{Number(w.amountNaira).toLocaleString("en-NG")}</td>
                             <td className="p-3 text-right font-semibold text-red-600 dark:text-red-400">-₦{Number(w.feeNaira).toLocaleString("en-NG")}</td>
-                            <td className="p-3 text-right font-black text-emerald-700 dark:text-emerald-400">₦{Number(w.netNaira).toLocaleString("en-NG")}</td>
+                            <td className="p-3 text-right font-bold text-emerald-700 dark:text-emerald-400">₦{Number(w.netNaira).toLocaleString("en-NG")}</td>
                             <td className="p-3 dark:text-slate-200">
                               <div className="font-semibold">{w.bankName}</div>
                               <div className="text-[11px] text-slate-500 dark:text-slate-400">••••{w.accountNumber.slice(-4)}</div>
@@ -1289,7 +1289,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                                 <button
                                   onClick={() => handleRetryWithdrawal(w.id)}
                                   disabled={withdrawalActioning === w.id}
-                                  className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-amber-600"
+                                  className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-amber-600"
                                 >
                                   <Icon name="history" size={13} />{withdrawalActioning === w.id ? "Retrying…" : "Retry"}
                                 </button>
@@ -1312,21 +1312,21 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 <div className="pointer-events-none absolute -right-10 -top-10 h-36 w-36 rounded-full bg-white/5 blur-xl" />
                 <div className="relative">
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-100/80">Admin ledger balance</span>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-100/80">Admin ledger balance</span>
                     <Pill tone="success">Synced</Pill>
                   </div>
-                  <div className="mt-1 text-3xl font-black tracking-tight sm:text-4xl">
+                  <div className="mt-1 text-3xl font-bold tracking-tight sm:text-4xl">
                     {adminLedgerBalance !== null ? "₦" + Math.round(adminLedgerBalance / 100).toLocaleString("en-NG") : "—"}
                   </div>
                   <div className="mt-1 text-[11px] text-emerald-100/70">Funds available for investor funding &amp; payouts</div>
                   <div className="mt-4 grid grid-cols-2 gap-3 border-t border-white/10 pt-4">
                     <div>
-                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-100/70">Debits today</div>
-                      <div className="text-lg font-extrabold">₦0.00</div>
+                      <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-100/70">Debits today</div>
+                      <div className="text-lg font-bold">₦0.00</div>
                     </div>
                     <div>
-                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-100/70">Last updated</div>
-                      <div className="text-sm font-bold">{platformSettings?.updatedAt ? new Date(platformSettings.updatedAt).toLocaleDateString() : "—"}</div>
+                      <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-100/70">Last updated</div>
+                      <div className="text-sm font-semibold">{platformSettings?.updatedAt ? new Date(platformSettings.updatedAt).toLocaleDateString() : "—"}</div>
                     </div>
                   </div>
                 </div>
@@ -1340,7 +1340,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   <select
                     value={ledgerFilter}
                     onChange={(e) => setLedgerFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-600 focus:outline-none focus:ring-1 focus:ring-velo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-600 focus:outline-none focus:ring-1 focus:ring-velo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
                   >
                     <option value="">All</option>
                     <option value="INVESTOR_FUNDING">Investor Funding</option>
@@ -1368,8 +1368,8 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className="flex items-start justify-between gap-2">
-                              <span className="truncate text-xs font-bold text-velo-900 dark:text-white">{String(e.entryType).replace(/_/g, " ")}</span>
-                              <span className={`whitespace-nowrap text-xs font-black ${e.direction === "DEBIT" ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                              <span className="truncate text-xs font-semibold text-velo-900 dark:text-white">{String(e.entryType).replace(/_/g, " ")}</span>
+                              <span className={`whitespace-nowrap text-xs font-bold ${e.direction === "DEBIT" ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}>
                                 {e.direction === "DEBIT" ? "-" : "+"}₦{Math.round(e.amountMinor / 100).toLocaleString("en-NG")}
                               </span>
                             </span>
@@ -1388,7 +1388,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
                 {!ledgerLoading && ledgerTotal > 0 && (
                   <div className="flex items-center justify-between gap-2 border-t border-slate-100 py-3 dark:border-slate-800">
-                    <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
                       Showing {ledgerOffset + 1}–{Math.min(ledgerOffset + LEDGER_LIMIT, ledgerTotal)} of {ledgerTotal} entries
                     </div>
                     <div className="flex items-center gap-1.5">
@@ -1400,7 +1400,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                           void reloadLedger(next, ledgerFilter);
                         }}
                         disabled={ledgerOffset === 0}
-                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                       >
                         <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={12} />Prev</span>
                       </button>
@@ -1412,7 +1412,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                           void reloadLedger(next, ledgerFilter);
                         }}
                         disabled={ledgerOffset + LEDGER_LIMIT >= ledgerTotal}
-                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                       >
                         <span className="inline-flex items-center gap-1">Next<Icon name="arrowRight" size={12} /></span>
                       </button>
@@ -1432,14 +1432,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                       <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md ${selectedLedgerEntry.direction === "DEBIT" ? "bg-red-50 text-red-600 dark:bg-red-900/30" : "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30"}`}>
                         <Icon name={selectedLedgerEntry.direction === "DEBIT" ? "arrowDown" : "arrowUp"} size={14} />
                       </span>
-                      <h3 className="text-base font-black text-velo-900 dark:text-white">Ledger entry details</h3>
+                      <h3 className="text-base font-bold text-velo-900 dark:text-white">Ledger entry details</h3>
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">Full transaction breakdown and metadata</p>
                   </div>
                   <button
                     type="button"
                     onClick={() => setSelectedLedgerEntry(null)}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg font-bold text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg font-semibold text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
                   >
                     <Icon name="x" size={16} />
                   </button>
@@ -1448,20 +1448,20 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 <div className="space-y-4 p-5">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-800/60">
-                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Entry type</div>
-                      <div className="text-sm font-black text-velo-900 dark:text-white">{String(selectedLedgerEntry.entryType).replace(/_/g, " ")}</div>
+                      <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Entry type</div>
+                      <div className="text-sm font-bold text-velo-900 dark:text-white">{String(selectedLedgerEntry.entryType).replace(/_/g, " ")}</div>
                     </div>
                     <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-800/60">
-                      <div className="mb-0.5 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Direction</div>
-                      <div className={`text-sm font-black ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-600" : "text-emerald-600"}`}>{selectedLedgerEntry.direction}</div>
+                      <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Direction</div>
+                      <div className={`text-sm font-bold ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-600" : "text-emerald-600"}`}>{selectedLedgerEntry.direction}</div>
                     </div>
                   </div>
 
                   <div className={`rounded-2xl border p-4 ${selectedLedgerEntry.direction === "DEBIT" ? "border-red-100 bg-red-50 dark:border-red-900/50 dark:bg-red-950/40" : "border-emerald-100 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/40"}`}>
-                    <div className="mb-1 text-[10px] font-black uppercase tracking-wider opacity-70" style={{ color: selectedLedgerEntry.direction === "DEBIT" ? "#991b1b" : "#065f46" }}>
+                    <div className="mb-1 text-[10px] font-bold uppercase tracking-wider opacity-70" style={{ color: selectedLedgerEntry.direction === "DEBIT" ? "#991b1b" : "#065f46" }}>
                       Transaction amount
                     </div>
-                    <div className={`text-2xl font-black ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-700 dark:text-red-400" : "text-emerald-700 dark:text-emerald-400"}`}>
+                    <div className={`text-2xl font-bold ${selectedLedgerEntry.direction === "DEBIT" ? "text-red-700 dark:text-red-400" : "text-emerald-700 dark:text-emerald-400"}`}>
                       {selectedLedgerEntry.direction === "DEBIT" ? "-" : "+"}₦{Math.round(selectedLedgerEntry.amountMinor / 100).toLocaleString("en-NG")}
                     </div>
                   </div>
@@ -1477,15 +1477,15 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                       ["Description", selectedLedgerEntry.description || "—", false],
                     ] as Array<[string, string, boolean]>).map(([label, value, mono]) => (
                       <div key={label} className="flex items-start justify-between gap-3 border-b border-slate-100 py-2 last:border-0 dark:border-slate-800">
-                        <span className="w-28 shrink-0 text-[11px] font-bold text-slate-500 dark:text-slate-400">{label}</span>
-                        <span className={`break-all text-right text-[11px] font-bold text-velo-900 dark:text-white ${mono ? "font-mono" : ""}`}>{value}</span>
+                        <span className="w-28 shrink-0 text-[11px] font-semibold text-slate-500 dark:text-slate-400">{label}</span>
+                        <span className={`break-all text-right text-[11px] font-semibold text-velo-900 dark:text-white ${mono ? "font-mono" : ""}`}>{value}</span>
                       </div>
                     ))}
                   </div>
 
                   {selectedLedgerEntry.metadata && Object.keys(selectedLedgerEntry.metadata).length > 0 && (
                     <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
-                      <div className="mb-2 text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Metadata</div>
+                      <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Metadata</div>
                       <pre className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900 p-3 font-mono text-[10px] leading-relaxed text-emerald-400 dark:bg-slate-950">
                         {JSON.stringify(selectedLedgerEntry.metadata, null, 2)}
                       </pre>
@@ -1494,7 +1494,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 </div>
 
                 <div className="sticky bottom-0 rounded-b-2xl border-t border-slate-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-                  <button type="button" onClick={() => setSelectedLedgerEntry(null)} className="btn-primary w-full !py-2.5 text-xs !font-extrabold">
+                  <button type="button" onClick={() => setSelectedLedgerEntry(null)} className="btn-primary w-full !py-2.5 text-xs !font-bold">
                     Close details
                   </button>
                 </div>
@@ -1510,14 +1510,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           <div className="velo-card flex items-center gap-2 rounded-2xl border-0 p-3 shadow-elevated dark:bg-slate-900 dark:border-slate-800">
             <div className="min-w-0 flex-1">
               {saved ? (
-                <div className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 dark:text-emerald-400"><Icon name="check" size={13} />Settings saved</div>
+                <div className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400"><Icon name="check" size={13} />Settings saved</div>
               ) : saving ? (
-                <div className="text-xs font-bold text-velo-600 dark:text-velo-400">Saving…</div>
+                <div className="text-xs font-semibold text-velo-600 dark:text-velo-400">Saving…</div>
               ) : (
                 <div className="text-xs text-slate-500 dark:text-slate-400">Tap save to persist changes</div>
               )}
             </div>
-            <button type="button" onClick={handleSave} disabled={saveDisabled} className="btn-primary shrink-0 !py-2 !px-4 text-xs !font-extrabold">
+            <button type="button" onClick={handleSave} disabled={saveDisabled} className="btn-primary shrink-0 !py-2 !px-4 text-xs !font-bold">
               {saving ? "Saving…" : "Save"}
             </button>
           </div>
@@ -1534,7 +1534,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 function InlineMessage({ message }: { message: string }) {
   const isError = message.startsWith("Error:");
   return (
-    <div className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold ${
+    <div className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
       isError
         ? "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300"
         : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
@@ -1548,7 +1548,7 @@ function PreviewRow({ label, value, muted }: { label: string; value: string; mut
   return (
     <div className={`flex items-center justify-between py-0.5 ${muted ? "opacity-50" : ""}`}>
       <span className="text-[11px] text-white/75">{label}</span>
-      <span className="text-sm font-bold">{value}</span>
+      <span className="text-sm font-semibold">{value}</span>
     </div>
   );
 }

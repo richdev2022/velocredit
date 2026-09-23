@@ -136,7 +136,7 @@ function buildPayload(draft: ProductDraft) {
 function PercentField({ label, value, onChange, helpText }: { label: string; value: string; onChange: (next: string) => void; helpText?: string }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-[11px] font-bold text-velo-900 dark:text-white">{label}</span>
+      <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">{label}</span>
       <div className="relative">
         <input
           type="text"
@@ -155,9 +155,9 @@ function PercentField({ label, value, onChange, helpText }: { label: string; val
             onChange(Number.isFinite(n) && value !== "" ? String(Math.round(n * 100) / 100) : "0");
           }}
           placeholder="0"
-          className="velo-input !pr-8 text-sm font-bold"
+          className="velo-input !pr-8 text-sm font-semibold"
         />
-        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400 select-none">%</span>
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">%</span>
       </div>
       {helpText && <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">{helpText}</div>}
     </label>
@@ -172,7 +172,7 @@ function SegmentedOptions<T extends string>({ value, options, onChange }: { valu
           key={opt.value}
           type="button"
           onClick={() => onChange(opt.value)}
-          className={`rounded-lg px-2 py-1.5 text-[11px] font-bold transition-all duration-150 ${
+          className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all duration-150 ${
             value === opt.value
               ? "bg-white text-velo-700 shadow-sm dark:bg-slate-900 dark:text-velo-300"
               : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
@@ -200,18 +200,18 @@ function ProductEditor({
       {/* Identity */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="block">
-          <span className="mb-1.5 block text-[11px] font-bold text-velo-900 dark:text-white">Product name</span>
+          <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Product name</span>
           <input
             type="text"
             value={draft.name}
             onChange={(e) => onDraftChange({ name: e.target.value })}
             placeholder="e.g. Personal Loan"
-            className={`velo-input text-sm font-bold ${errors.name ? "velo-input-error" : ""}`}
+            className={`velo-input text-sm font-semibold ${errors.name ? "velo-input-error" : ""}`}
           />
           {errors.name && <p className="velo-error-text">{errors.name}</p>}
         </label>
         <label className="block">
-          <span className="mb-1.5 block text-[11px] font-bold text-velo-900 dark:text-white">Description (optional)</span>
+          <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Description (optional)</span>
           <input
             type="text"
             value={draft.description}
@@ -224,7 +224,7 @@ function ProductEditor({
 
       {/* Amounts */}
       <div>
-        <div className="mb-2 text-[11px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">Amount limits</div>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Amount limits</div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
             <NairaField compact label="Minimum" value={draft.minAmountNaira} onChange={(n) => onDraftChange({ minAmountNaira: n })} />
@@ -245,7 +245,7 @@ function ProductEditor({
               key={days}
               type="button"
               onClick={() => onDraftChange({ defaultTenureDays: days })}
-              className={`rounded-full border px-2.5 py-1 text-[10px] font-bold transition ${
+              className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
                 Number(draft.defaultTenureDays) === days
                   ? "border-velo-500 bg-velo-500 text-white"
                   : "border-slate-200 bg-white text-slate-500 hover:border-velo-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
@@ -259,11 +259,11 @@ function ProductEditor({
 
       {/* Interest */}
       <div>
-        <div className="mb-2 text-[11px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">Interest</div>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Interest</div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <PercentField label="Interest rate" value={draft.interestRatePercent} onChange={(v) => onDraftChange({ interestRatePercent: v })} />
           <div>
-            <span className="mb-1.5 block text-[11px] font-bold text-velo-900 dark:text-white">Interest type</span>
+            <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Interest type</span>
             <SegmentedOptions value={draft.interestType} options={INTEREST_TYPE_OPTIONS.map(({ value, label }) => ({ value, label }))} onChange={(v) => onDraftChange({ interestType: v })} />
             {interestHint && <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">{interestHint}</div>}
           </div>
@@ -273,7 +273,7 @@ function ProductEditor({
 
       {/* Fees */}
       <div>
-        <div className="mb-2 text-[11px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500">Fees</div>
+        <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Fees</div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
             <PercentField label="Processing fee" value={draft.processingFeePercent} onChange={(v) => onDraftChange({ processingFeePercent: v })} />
@@ -284,7 +284,7 @@ function ProductEditor({
             {errors.lateFeePercent && <p className="velo-error-text">{errors.lateFeePercent}</p>}
           </div>
           <div>
-            <span className="mb-1.5 block text-[11px] font-bold text-velo-900 dark:text-white">Late fee type</span>
+            <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Late fee type</span>
             <SegmentedOptions value={draft.lateFeeType} options={LATE_FEE_TYPE_OPTIONS} onChange={(v) => onDraftChange({ lateFeeType: v })} />
           </div>
         </div>
@@ -430,7 +430,7 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
             type="button"
             onClick={startCreate}
             disabled={editingId === "new"}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-velo-500 px-3 py-2 text-[11px] font-black text-white shadow transition hover:bg-velo-600 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-velo-500 px-3 py-2 text-[11px] font-bold text-white shadow transition hover:bg-velo-600 disabled:opacity-50"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="3" strokeLinecap="round" /></svg>
             Add product
@@ -449,14 +449,14 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
         {allInactive && editingId !== "new" && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-700/60 dark:bg-amber-900/20">
             <div className="min-w-0">
-              <p className="text-sm font-bold text-amber-800 dark:text-amber-200">No active loan products</p>
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">No active loan products</p>
               <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300/80">Borrowers cannot see or select any loan product right now. Activate at least one product to reopen applications.</p>
             </div>
             <button
               type="button"
               onClick={() => void activateAll()}
               disabled={activatingAll}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-[11px] font-black text-white shadow transition hover:bg-amber-600 disabled:opacity-60"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-[11px] font-bold text-white shadow transition hover:bg-amber-600 disabled:opacity-60"
             >
               {activatingAll ? <><span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />Activating…</> : "Activate all"}
             </button>
@@ -467,19 +467,19 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
         {editingId === "new" && (
           <div className="rounded-xl border-2 border-dashed border-velo-300 bg-white p-4 dark:border-velo-700 dark:bg-slate-900">
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-sm font-black text-velo-900 dark:text-white">New loan product</p>
+              <p className="text-sm font-bold text-velo-900 dark:text-white">New loan product</p>
               <Pill tone="info">Draft</Pill>
             </div>
             <ProductEditor draft={draft} onDraftChange={(patch) => setDraft((d) => ({ ...d, ...patch }))} errors={draftErrors} />
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={cancelEdit} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">
+              <button type="button" onClick={cancelEdit} className="rounded-xl px-4 py-2 text-xs font-semibold text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={saveEdit}
                 disabled={savingId !== null}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-velo-500 px-4 py-2 text-xs font-black text-white shadow transition hover:bg-velo-600 disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-velo-500 px-4 py-2 text-xs font-bold text-white shadow transition hover:bg-velo-600 disabled:opacity-60"
               >
                 {savingId !== null ? <><span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />Creating…</> : "Create product"}
               </button>
@@ -504,7 +504,7 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-bold text-slate-900 dark:text-white">{product.name}</p>
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white">{product.name}</p>
                       <Pill tone={product.isActive ? "success" : "warning"}>{product.isActive ? "Active" : "Inactive"}</Pill>
                       <Pill tone="neutral">v{product.version}</Pill>
                     </div>
@@ -517,7 +517,7 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                       <button
                         type="button"
                         onClick={() => startEdit(product)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black text-velo-700 transition hover:border-velo-300 hover:bg-velo-50 dark:border-slate-700 dark:bg-slate-900 dark:text-velo-300 dark:hover:border-velo-700 dark:hover:bg-slate-800"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-velo-700 transition hover:border-velo-300 hover:bg-velo-50 dark:border-slate-700 dark:bg-slate-900 dark:text-velo-300 dark:hover:border-velo-700 dark:hover:bg-slate-800"
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
                         Edit
@@ -551,14 +551,14 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                         Current range {formatNaira(product.minAmountNaira)} – {formatNaira(product.maxAmountNaira)} · v{product.version}
                       </p>
                       <div className="flex gap-2">
-                        <button type="button" onClick={cancelEdit} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">
+                        <button type="button" onClick={cancelEdit} className="rounded-xl px-4 py-2 text-xs font-semibold text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800">
                           Cancel
                         </button>
                         <button
                           type="button"
                           onClick={saveEdit}
                           disabled={savingId !== null}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-velo-500 px-4 py-2 text-xs font-black text-white shadow transition hover:bg-velo-600 disabled:opacity-60"
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-velo-500 px-4 py-2 text-xs font-bold text-white shadow transition hover:bg-velo-600 disabled:opacity-60"
                         >
                           {savingId !== null ? <><span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />Saving…</> : "Save changes"}
                         </button>

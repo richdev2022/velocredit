@@ -136,7 +136,12 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
   };
 }
 export async function adminUpdateStatus(id: string, decision: "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED") { const response = await request<{ application: { status: string } }>(`/api/v1/admin/loans/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }); return { ok: true, status: response.application.status }; }
-export async function adminDisburseLoan(id: string): Promise<{ ok: true; loan: any; disbursement: LoanDisbursement }> { return request(`/api/v1/admin/loans/${encodeURIComponent(id)}/disburse`, { method: "POST", body: JSON.stringify({}) }); }
+// The disburse/retry routes WAIT for Flutterwave's real final answer:
+//   ok: true  + final: true  -> transfer SUCCESSFUL
+//   ok: false + final: true  -> transfer FAILED (error = the provider's reason)
+//   ok: true  + final: false -> still processing (reconciler converges it)
+export interface AdminDisbursementActionResponse { ok: boolean; final?: boolean; loan: any; disbursement: LoanDisbursement; message?: string; error?: string; }
+export async function adminDisburseLoan(id: string): Promise<AdminDisbursementActionResponse> { return request(`/api/v1/admin/loans/${encodeURIComponent(id)}/disburse`, { method: "POST", body: JSON.stringify({}) }); }
 export async function adminListStats(): Promise<AdminStats> {
   const response = await request<{ totals: Record<string, number> }>("/api/v1/admin/summary");
   const t = response.totals || {};
@@ -352,7 +357,7 @@ export async function adminListDisbursements(opts: { borrowerId?: string; status
     : "/api/v1/admin/disbursements";
   return request(`${basePath}?${params.toString()}`);
 }
-export async function adminRetryDisbursement(disbursementId: string): Promise<{ ok: true; disbursement: LoanDisbursement; providerResponse?: unknown }> {
+export async function adminRetryDisbursement(disbursementId: string): Promise<AdminDisbursementActionResponse> {
   return request(`/api/v1/admin/disbursements/${encodeURIComponent(disbursementId)}/retry`, { method: "POST" });
 }
 export interface AccountChangeRequest {

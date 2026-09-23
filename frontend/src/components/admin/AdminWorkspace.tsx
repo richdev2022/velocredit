@@ -68,7 +68,7 @@ function KycResetButtons({ user, busyPrefix, actionBusy, onReset }: { user: any;
             title={hint}
             disabled={busy}
             onClick={() => void onReset(user, cat)}
-            className={`inline-flex px-2 py-1 rounded-lg border text-[10.5px] font-bold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+            className={`inline-flex px-2 py-1 rounded-lg border text-[10.5px] font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed ${
               tone === "danger"
                 ? "border-red-200 bg-red-50 hover:bg-red-100 text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-900/40"
                 : "border-slate-200 bg-white hover:bg-amber-50 text-slate-700 hover:text-amber-800 hover:border-amber-300 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-amber-950/30 dark:hover:border-amber-700 dark:hover:text-amber-200"
@@ -166,7 +166,7 @@ function Overview() {
         {kpis.map((k) => (
           <div key={k.label} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/50">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{k.label}</div>
-            <div className="mt-1.5 text-2xl font-bold text-velo-900 dark:text-white">{k.value}</div>
+            <div className="mt-1.5 text-2xl font-semibold text-velo-900 dark:text-white">{k.value}</div>
             {k.sub && <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{k.sub}</div>}
           </div>
         ))}
@@ -177,7 +177,7 @@ function Overview() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className={`inline-block h-2 w-2 rounded-full ${totalAlerts > 0 ? "bg-amber-500" : "bg-emerald-500"}`} />
-            <h3 className="text-sm font-bold text-velo-900 dark:text-white">
+            <h3 className="text-sm font-semibold text-velo-900 dark:text-white">
               {totalAlerts > 0 ? `${totalAlerts} item${totalAlerts === 1 ? "" : "s"} need attention` : "All clear — no pending alerts"}
             </h3>
           </div>
@@ -310,7 +310,7 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
 
   function RoleChips({ roles }: { roles?: string[] }) {
     if (!roles || !roles.length) return <span className="text-slate-400 text-xs">—</span>;
-    return <div className="flex flex-wrap gap-1">{roles.map((r) => <span key={r} className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${r === "INVESTOR" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : r === "BORROWER" ? "bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-400" : "bg-slate-100 text-slate-600"}`}>{r}</span>)}</div>;
+    return <div className="flex flex-wrap gap-1">{roles.map((r) => <span key={r} className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${r === "INVESTOR" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : r === "BORROWER" ? "bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-400" : "bg-slate-100 text-slate-600"}`}>{r}</span>)}</div>;
   }
 
   return (
@@ -320,7 +320,7 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
         action={
           <div className="flex items-center gap-3">
             <span className="text-xs text-slate-500 dark:text-slate-400">{total} records</span>
-            <button type="button" onClick={() => { setCreateOpen(true); setFormError(""); }} className="btn-primary !py-2 !px-3 text-xs font-extrabold">
+            <button type="button" onClick={() => { setCreateOpen(true); setFormError(""); }} className="btn-primary !py-2 !px-3 text-xs font-bold">
               + Create User
             </button>
           </div>
@@ -335,12 +335,12 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
                 <td className="px-3 py-3 text-slate-600 dark:text-slate-300 text-xs">{user.phone || "—"}</td>
                 <td className="px-3 py-3"><RoleChips roles={user.roles} /></td>
                 <td className="px-3 py-3"><span className="badge bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">{user.kycStatus || "NOT_STARTED"}</span></td>
-                <td className="px-3 py-3"><span className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-bold ${user.isActive === false ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400" : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"}`}>{user.isActive === false ? "Inactive" : "Active"}</span></td>
+                <td className="px-3 py-3"><span className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-semibold ${user.isActive === false ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400" : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"}`}>{user.isActive === false ? "Inactive" : "Active"}</span></td>
                 <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "—"}</td>
                 <td className="px-3 py-3">
                   <div className="flex gap-2">
-                    {onSelect && <button type="button" onClick={() => onSelect(user)} className="px-2.5 py-1 rounded-lg bg-velo-500 text-[11px] font-bold text-white hover:bg-velo-600">View</button>}
-                    <button type="button" onClick={() => openEdit(user)} className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300">Edit</button>
+                    {onSelect && <button type="button" onClick={() => onSelect(user)} className="px-2.5 py-1 rounded-lg bg-velo-500 text-[11px] font-semibold text-white hover:bg-velo-600">View</button>}
+                    <button type="button" onClick={() => openEdit(user)} className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300">Edit</button>
                   </div>
                 </td>
               </tr>
@@ -355,7 +355,7 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in">
           <div className="velo-card rounded-2xl w-full max-w-lg p-5 sm:p-6 animate-slide-in-left">
             <div className="flex items-center justify-between mb-1">
-              <h3 className="font-bold text-velo-900 dark:text-white text-lg">Create new user</h3>
+              <h3 className="font-semibold text-velo-900 dark:text-white text-lg">Create new user</h3>
               <button type="button" onClick={() => { setCreateOpen(false); setFormError(""); }} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xl leading-none">×</button>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">A wallet is automatically created for the new user.</p>
@@ -371,7 +371,7 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
                   {(["INVESTOR", "BORROWER"] as const).map((r) => {
                     const checked = newRoles.includes(r);
                     return (
-                      <label key={r} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs font-bold transition ${checked ? "border-velo-400 bg-velo-50 text-velo-800 dark:border-velo-600/50 dark:bg-velo-900/20 dark:text-velo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"}`}>
+                      <label key={r} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs font-semibold transition ${checked ? "border-velo-400 bg-velo-50 text-velo-800 dark:border-velo-600/50 dark:bg-velo-900/20 dark:text-velo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"}`}>
                         <input type="checkbox" checked={checked} onChange={() => setNewRoles(checked ? newRoles.filter((x) => x !== r) : [...newRoles, r])} className="accent-velo-600" />
                         {r}
                       </label>
@@ -394,7 +394,7 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-fade-in">
           <div className="velo-card rounded-2xl w-full max-w-lg p-5 sm:p-6 animate-slide-in-left">
             <div className="flex items-center justify-between mb-1">
-              <h3 className="font-bold text-velo-900 dark:text-white text-lg">Edit user</h3>
+              <h3 className="font-semibold text-velo-900 dark:text-white text-lg">Edit user</h3>
               <button type="button" onClick={() => { setEditFor(null); setFormError(""); }} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xl leading-none">×</button>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">Update basic info and access roles for {editFor.fullName || editFor.email}.</p>
@@ -408,7 +408,7 @@ function Users({ role, title, onSelect }: { role: "BORROWER" | undefined; title:
                   {(["INVESTOR", "BORROWER"] as const).map((r) => {
                     const checked = editRoles.includes(r);
                     return (
-                      <label key={r} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs font-bold transition ${checked ? "border-velo-400 bg-velo-50 text-velo-800 dark:border-velo-600/50 dark:bg-velo-900/20 dark:text-velo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"}`}>
+                      <label key={r} className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs font-semibold transition ${checked ? "border-velo-400 bg-velo-50 text-velo-800 dark:border-velo-600/50 dark:bg-velo-900/20 dark:text-velo-300" : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-400"}`}>
                         <input type="checkbox" checked={checked} onChange={() => setEditRoles(checked ? editRoles.filter((x) => x !== r) : [...editRoles, r])} className="accent-velo-600" />
                         {r}
                       </label>
@@ -546,7 +546,7 @@ function Kyc() {
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="text-xl font-bold text-velo-900 dark:text-white">{userShim.fullName}</h1>
+                  <h1 className="text-xl font-semibold text-velo-900 dark:text-white">{userShim.fullName}</h1>
                   <span className="badge bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">{selected.status}</span>
                 </div>
                 <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{userShim.email}</p>
@@ -569,7 +569,7 @@ function Kyc() {
                   {checklistItems.map(([label, key]) => {
                     const complete = Boolean(selected.checklist?.[key]);
                     const busyKey = `requirement-${selected.id}-${key}`;
-                    return <div key={key} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-4 py-3 ${complete ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50"}`}><span className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span><div className="flex items-center gap-2"><span className={`text-xs font-bold ${complete ? "text-emerald-700 dark:text-emerald-300" : "text-slate-400"}`}>{complete ? "Approved" : "Pending"}</span><button type="button" className="rounded-lg border border-emerald-200 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800 dark:hover:bg-emerald-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, true)}>Approve</button><button type="button" className="rounded-lg border border-red-200 px-2 py-1 text-[10px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:hover:bg-red-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, false)}>Reject</button></div></div>;
+                    return <div key={key} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-4 py-3 ${complete ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50"}`}><span className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span><div className="flex items-center gap-2"><span className={`text-xs font-semibold ${complete ? "text-emerald-700 dark:text-emerald-300" : "text-slate-400"}`}>{complete ? "Approved" : "Pending"}</span><button type="button" className="rounded-lg border border-emerald-200 px-2 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800 dark:hover:bg-emerald-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, true)}>Approve</button><button type="button" className="rounded-lg border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:hover:bg-red-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, false)}>Reject</button></div></div>;
                   })}
                 </div>
               </div>
@@ -595,8 +595,8 @@ function Kyc() {
                       return (
                         <div key={doc.id} className={`group rounded-xl border p-3 flex flex-col gap-2 transition hover:shadow-md hover:border-velo-300 dark:hover:border-velo-500 ${statusCls}`}>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200"><DocumentTypeIcon />{meta.label}</span>
-                            {doc.status && <span className={`text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded ${doc.status === "VERIFIED" || doc.status === "APPROVED" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : doc.status === "REJECTED" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"}`}>{doc.status}</span>}
+                            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200"><DocumentTypeIcon />{meta.label}</span>
+                            {doc.status && <span className={`text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded ${doc.status === "VERIFIED" || doc.status === "APPROVED" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : doc.status === "REJECTED" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"}`}>{doc.status}</span>}
                           </div>
                           <div className="aspect-video w-full rounded-lg border border-slate-100 dark:border-slate-700 overflow-hidden bg-slate-50 dark:bg-slate-900/60">
                             {previewable ? (
@@ -612,7 +612,7 @@ function Kyc() {
                             <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 truncate" title={doc.fileName}>{doc.fileName || "View document"}</div>
                             <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">{doc.sizeBytes ? `${Math.round(Number(doc.sizeBytes) / 1024)} KB · ` : ""}{doc.createdAt ? new Date(doc.createdAt).toLocaleDateString() : ""}</div>
                           </div>
-                          <div className="flex items-center gap-3 text-[10px] font-bold">
+                          <div className="flex items-center gap-3 text-[10px] font-semibold">
                             {previewUrl && <a href={previewUrl} target="_blank" rel="noopener noreferrer" className="text-velo-600 dark:text-velo-400 hover:underline">Preview</a>}
                             {downloadUrl && <a href={downloadUrl} download={doc.fileName} className="text-slate-600 dark:text-slate-300 hover:underline">Download</a>}
                             {!url && <span className="text-slate-400">File link unavailable</span>}
@@ -629,13 +629,13 @@ function Kyc() {
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     {selected.identityPhoto && (
                       <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-800/40">
-                        <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Government ID portrait</div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Government ID portrait</div>
                         <img src={selected.identityPhoto} alt="Government ID portrait" className="w-full aspect-[4/5] object-cover rounded-lg border border-slate-100 dark:border-slate-700" />
                       </div>
                     )}
                     {selected.selfieImageData && (
                       <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 p-3 bg-emerald-50/50 dark:bg-emerald-900/10">
-                        <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-2">Liveness selfie</div>
+                        <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-2">Liveness selfie</div>
                         <img src={selected.selfieImageData} alt="Live captured selfie" className="w-full aspect-[4/5] object-cover rounded-lg border border-emerald-200 dark:border-emerald-800/60" />
                       </div>
                     )}
@@ -679,6 +679,7 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
   const size = 20;
   const loadDisbursements = () => adminListDisbursements({ limit: 500 }).then((r) => setDisbursements(r.disbursements)).catch(() => setDisbursements([]));
   useEffect(() => {
@@ -695,11 +696,19 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   async function disburseLoan(applicationId: string) {
     setBusy(applicationId);
     setActionError("");
+    setActionNotice("");
     try {
+      // The route now WAITS for Flutterwave's real final answer, so this
+      // response carries the actual provider outcome (SUCCESSFUL / FAILED /
+      // still-processing). The button stays disabled for the whole wait.
       const response = await adminDisburseLoan(applicationId);
-      // Optimistically update the loan record so the button state reflects the
-      // in-flight disbursement immediately (polling keeps it fresh afterwards).
+      const transferStatus = String((response.disbursement as { status?: string } | undefined)?.status || "");
       setLoanRecords((current) => [...current.filter((loan) => loan.id !== (response.loan as any).id), response.loan]);
+      if (response.ok === false) {
+        setActionError(String(response.error || response.message || "Disbursement failed — see the provider response on the transfer card."));
+      } else if (transferStatus === "SUCCESSFUL") {
+        setActionNotice(String(response.message || "Disbursement successful."));
+      }
       await loadDisbursements();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Unable to initiate disbursement");
@@ -741,6 +750,12 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
       <div className="mx-3 mt-3 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
         <span>{actionError}</span>
         <button type="button" className="text-xs font-semibold underline" onClick={() => setActionError("")}>Dismiss</button>
+      </div>
+    )}
+    {actionNotice && (
+      <div className="mx-3 mt-3 flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
+        <span>{actionNotice}</span>
+        <button type="button" className="text-xs font-semibold underline" onClick={() => setActionNotice("")}>Dismiss</button>
       </div>
     )}
     {rows.length ? <Table headers={["Application / Loan", "Borrower", "Principal", "Application status", "Disbursements", "Actions", "Created"]}>{rows.map((loanApp) => {
@@ -786,7 +801,7 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
                       )}
                       {t.status === "PROCESSING" && (
                         <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
-                          Transfer is being processed by the provider. The final status is confirmed automatically — this row updates within seconds.
+                          Transfer is being processed by the provider. The final status is confirmed automatically — this row updates within a minute or two.
                         </div>
                       )}
                     </div>
@@ -795,8 +810,8 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
               : <span className="text-xs text-slate-400 dark:text-slate-500">No disbursement records</span>}
           </td>
           <td className="px-3 py-3">
-            {action.kind === "ready" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Disburse"}</button>}
-            {action.kind === "failed" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Retry disbursement"}</button>}
+            {action.kind === "ready" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Disbursing…" : "Disburse"}</button>}
+            {action.kind === "failed" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Disbursing…" : "Retry disbursement"}</button>}
             {action.kind === "inFlight" && (
               <span className="inline-flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
                 <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" aria-hidden="true"></span>
@@ -816,5 +831,5 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
     );
   })}</Table> : <Empty />}{!error && <Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} />}</>}</Panel>;
 }
-function Reconciliation() { const [data, setData] = useState<any>(null); const [error, setError] = useState(""); useEffect(() => { adminGetReconciliation().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load reconciliation")); }, []); const keys = ["providerEvents", "unverifiedDeposits", "unverifiedRepayments", "pendingPayouts", "pendingWithdrawals"]; return <Panel title="Reconciliation center">{error ? <ErrorBox message={error} /> : data ? <div className="space-y-5"><div className="rounded-xl border border-velo-100 dark:border-velo-900/40 bg-velo-50/60 dark:bg-velo-900/20 p-4"><h3 className="font-semibold text-velo-900 dark:text-velo-100">What is matched</h3><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Each queue is matched against the provider reference, internal record ID, user, amount, currency, and current status before it is marked resolved.</p><div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300">{Object.entries(data.guide || {}).map(([key, value]) => <div key={key}><strong className="text-slate-900 dark:text-white">{key.replace(/([A-Z])/g, " $1")}:</strong> {String(value)}</div>)}</div></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{keys.map((key) => <div key={key} className="rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{key.replace(/([A-Z])/g, " $1")}</div><div className="mt-2 text-2xl font-bold text-velo-900 dark:text-white">{data[key]?.length || 0}</div></div>)}</div></div> : <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading reconciliation…</div>}</Panel>; }
+function Reconciliation() { const [data, setData] = useState<any>(null); const [error, setError] = useState(""); useEffect(() => { adminGetReconciliation().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load reconciliation")); }, []); const keys = ["providerEvents", "unverifiedDeposits", "unverifiedRepayments", "pendingPayouts", "pendingWithdrawals"]; return <Panel title="Reconciliation center">{error ? <ErrorBox message={error} /> : data ? <div className="space-y-5"><div className="rounded-xl border border-velo-100 dark:border-velo-900/40 bg-velo-50/60 dark:bg-velo-900/20 p-4"><h3 className="font-semibold text-velo-900 dark:text-velo-100">What is matched</h3><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Each queue is matched against the provider reference, internal record ID, user, amount, currency, and current status before it is marked resolved.</p><div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300">{Object.entries(data.guide || {}).map(([key, value]) => <div key={key}><strong className="text-slate-900 dark:text-white">{key.replace(/([A-Z])/g, " $1")}:</strong> {String(value)}</div>)}</div></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{keys.map((key) => <div key={key} className="rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{key.replace(/([A-Z])/g, " $1")}</div><div className="mt-2 text-2xl font-semibold text-velo-900 dark:text-white">{data[key]?.length || 0}</div></div>)}</div></div> : <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading reconciliation…</div>}</Panel>; }
 function Audit() { const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const size = 20; useEffect(() => { adminListAuditLogs({ limit: size, offset: page * size }).then((body) => { setRows(body.logs || []); setTotal(body.meta?.total || 0); }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load audit logs")); }, [page]); return <Panel title="Audit log" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} events</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <><Table headers={["Date", "User / actor", "Action", "Details", "Network"]}>{rows.map((row) => <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40"><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{new Date(row.createdAt).toLocaleString()}</td><td className="px-3 py-3 text-xs text-slate-700 dark:text-slate-200">{row.actor?.fullName || "System"}<br /><span className="text-slate-400">{row.actor?.email || "Automated process"}</span></td><td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{row.action}</td><td className="max-w-xs px-3 py-3 text-xs text-slate-600 dark:text-slate-300">{row.targetUser ? `${row.targetUser.fullName} (${row.targetUser.email})` : ""}{row.resourceType ? ` · ${row.resourceType} ${row.resourceId || ""}` : ""}<pre className="mt-1 whitespace-pre-wrap text-[10px] text-slate-400">{row.metadata ? JSON.stringify(row.metadata) : ""}</pre></td><td className="px-3 py-3 text-[10px] text-slate-500 dark:text-slate-400">{row.ipAddress || "—"}<br />{row.userAgent || "—"}</td></tr>)}</Table><Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} /></> : <Empty />}</Panel>; }

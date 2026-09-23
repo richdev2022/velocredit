@@ -587,7 +587,13 @@ export async function adminDecideLoan(id: string, input: LoanDecisionInput): Pro
 }
 
 export interface DisbursementInput { note?: string; }
-export async function adminDisburseLoan(id: string, input?: DisbursementInput): Promise<{ ok: true; loan: unknown; disbursement: unknown; }> {
+// The disburse/retry routes now WAIT for Flutterwave's real final answer, so
+// the response carries the actual provider outcome:
+//   ok: true  + final: true   -> transfer SUCCESSFUL (message confirms it)
+//   ok: false + final: true   -> transfer FAILED (error = the provider's reason)
+//   ok: true  + final: false  -> still processing (202; reconciler converges it)
+export interface AdminDisbursementActionResponse { ok: boolean; final?: boolean; loan: unknown; disbursement?: { id?: string; status?: string; error?: string | null } | unknown; message?: string; error?: string; }
+export async function adminDisburseLoan(id: string, input?: DisbursementInput): Promise<AdminDisbursementActionResponse> {
   return request(`/api/v1/admin/loans/${encodeURIComponent(id)}/disburse`, { method: "POST", body: JSON.stringify(input ?? {}) });
 }
 

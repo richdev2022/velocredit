@@ -166,7 +166,11 @@ async function main(): Promise<void> {
     .post(`/api/v1/admin/loans/${application.id}/disburse`)
     .set(adminHeaders)
     .send({});
-  check("disbursement initiated using application account (202)", disburseRes.status === 202, { status: disburseRes.status, body: disburseRes.body });
+  // The disburse route now WAITS for the provider's final answer; without a
+  // Flutterwave key in the smoke run the attempt terminates synchronously as
+  // FAILED ("Flutterwave is not configured") — the account fields still prove
+  // the application account was picked up.
+  check("disbursement attempt answered synchronously (200 final)", disburseRes.status === 200 && disburseRes.body?.final === true, { status: disburseRes.status, final: disburseRes.body?.final });
   check("disbursement used application accountNumber", disburseRes.body?.disbursement?.accountNumber === "0123456789", disburseRes.body?.disbursement);
   check("disbursement used application bankCode 058", disburseRes.body?.disbursement?.bankCode === "058", disburseRes.body?.disbursement);
   const savedAfter = disbursementAccounts.find((a: any) => a.borrowerId === b1);

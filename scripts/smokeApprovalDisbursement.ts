@@ -162,16 +162,21 @@ async function main(): Promise<void> {
     check("loanRecords contains the approved loan", Boolean(matchingRecord), listLoanRecords);
     check("loanRecords entry carries status + projection fields", Boolean(matchingRecord && matchingRecord.status && "disbursedAt" in matchingRecord && "id" in matchingRecord), matchingRecord);
 
-    // --- 5. disbursement initiation: 202 + PROCESSING + DISBURSEMENT_PENDING ---
+    // --- 5. disbursement initiation: SYNCHRONOUS final provider answer ---
+    // (No FLUTTERWAVE_SECRET_KEY in the smoke run, so the attempt fails
+    // immediately with "Flutterwave is not configured". The route now WAITS
+    // for the provider and answers with the FINAL result — ok:false + FAILED
+    // + the provider reason — instead of an optimistic 202 PROCESSING.)
     const disburseRes = await request(app)
       .post(`/api/v1/admin/loans/${application.id}/disburse`)
       .set(adminHeaders)
       .send({});
-    check("disbursement initiated (202)", disburseRes.status === 202, { status: disburseRes.status, body: disburseRes.body });
-    check("disbursement created PROCESSING", disburseRes.body?.disbursement?.status === "PROCESSING", disburseRes.body?.disbursement?.status);
-    check("loan record DISBURSEMENT_PENDING after initiation", disburseRes.body?.loan?.status === "DISBURSEMENT_PENDING", disburseRes.body?.loan?.status);
+    check("disbursement answered synchronously (200, not 202)", disburseRes.status === 200, { status: disburseRes.status, body: disburseRes.body });
+    check("disbursement carries the FINAL outcome flag", disburseRes.body?.final === true, disburseRes.body?.final);
+    check("unconfigured provider -> terminal FAILED response", disburseRes.body?.ok === false && disburseRes.body?.disbursement?.status === "FAILED", { ok: disburseRes.body?.ok, status: disburseRes.body?.disbursement?.status });
+    check("provider reason surfaced in the response error", typeof disburseRes.body?.error === "string" && disburseRes.body.error.length > 0, disburseRes.body?.error);
     const firstDisbursement = disburseRes.body?.disbursement;
-    check("transfer reference is unique per attempt (loan + disbursement id)", typeof firstDisbursement?.id === "string", firstDisbursement?.id);
+    check("attempt reference is unique per attempt (loan + disbursement id)", typeof firstDisbursement?.id === "string", firstDisbursement?.id);
 
     // --- 6. concurrent disburse is rejected while one is in flight ---
     // Deterministic guard check: simulate an in-flight transfer for this loan
@@ -208,10 +213,7 @@ async function main(): Promise<void> {
     if (syntheticIdx >= 0) loanDisbursements.splice(syntheticIdx, 1);
 
     // --- 7. provider failure path: FAILED status + error stored + loan rolled back ---
-    // (No FLUTTERWAVE_SECRET_KEY in the smoke run, so the background transfer
-    // throws "Flutterwave is not configured" — the same failure path as a
-    // provider rejection.)
-    await sleep(250);
+    // (Already terminal — the route waits for the provider, no polling needed.)
     const failedRecord = loanDisbursements.find((d: any) => d.id === firstDisbursement?.id);
     check("disbursement marked FAILED after provider error", failedRecord?.status === "FAILED", failedRecord?.status);
     check("provider error stored on the disbursement record", typeof failedRecord?.error === "string" && failedRecord.error.length > 0, failedRecord?.error);
@@ -225,19 +227,17 @@ async function main(): Promise<void> {
     const listedFailed = (disbursementsListRes.body as any)?.disbursements?.find((d: any) => d.id === firstDisbursement?.id);
     check("admin disbursements list exposes the FAILED record", Boolean(listedFailed) && listedFailed.status === "FAILED", listedFailed?.status);
 
-    // --- 8. re-disburse after failure creates a NEW attempt ---
+    // --- 8. re-disburse after failure creates a NEW attempt (synchronous) ---
     const redisburseRes = await request(app)
       .post(`/api/v1/admin/loans/${application.id}/disburse`)
       .set(adminHeaders)
       .send({});
-    check("re-disbursement after failure accepted (202)", redisburseRes.status === 202, { status: redisburseRes.status, body: redisburseRes.body });
+    check("re-disbursement after failure answered (200 final)", redisburseRes.status === 200 && redisburseRes.body?.final === true, { status: redisburseRes.status, final: redisburseRes.body?.final });
     const secondDisbursement = redisburseRes.body?.disbursement;
     check("second attempt is a NEW disbursement row", secondDisbursement?.id !== firstDisbursement?.id, { first: firstDisbursement?.id, second: secondDisbursement?.id });
-    await sleep(250);
     check("second attempt also reaches terminal state without blocking", ["FAILED", "PROCESSING", "PENDING", "SUCCESSFUL"].includes(loanDisbursements.find((d: any) => d.id === secondDisbursement?.id)?.status), loanDisbursements.find((d: any) => d.id === secondDisbursement?.id)?.status);
 
-    // --- 9. dedicated retry endpoint: new attempt with retryOfId + retryCount ---
-    await sleep(250);
+    // --- 9. dedicated retry endpoint: synchronous final answer with retryOfId + retryCount ---
     const latestFailed = loanDisbursements
       .filter((d: any) => d.loanId === loanAfterFailure?.id && d.status === "FAILED")
       .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       .post(`/api/v1/admin/disbursements/${latestFailed?.id}/retry`)
       .set(adminHeaders)
       .send({});
-    check("retry endpoint accepted (202)", retryRes.status === 202, { status: retryRes.status, body: retryRes.body });
+    check("retry endpoint answered synchronously (200 final)", retryRes.status === 200 && retryRes.body?.final === true, { status: retryRes.status, final: retryRes.body?.final });
     const retryRecord = retryRes.body?.disbursement;
     check("retry links to the failed attempt (retryOfId)", retryRecord?.retryOfId === latestFailed?.id, retryRecord);
     check("retryCount incremented", Number(retryRecord?.retryCount ?? 0) === Number(latestFailed?.retryCount ?? 0) + 1, { retryCount: retryRecord?.retryCount, prev: latestFailed?.retryCount });

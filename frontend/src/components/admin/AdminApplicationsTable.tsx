@@ -167,7 +167,7 @@ export default function AdminApplicationsTable({ onSelect }: { onSelect: (id: st
                       <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">{a.applicationId}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider ${badgeClass(a.status)}`}>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wider ${badgeClass(a.status)}`}>
                         {formatStatusLabel(a.status)}
                       </span>
                     </td>
@@ -199,7 +199,7 @@ function Card({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-slate-100 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900/50">
       <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{label}</div>
-      <div className="text-lg font-bold text-velo-900 dark:text-white mt-1">{value}</div>
+      <div className="text-lg font-semibold text-velo-900 dark:text-white mt-1">{value}</div>
     </div>
   );
 }

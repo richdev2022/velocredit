@@ -95,10 +95,13 @@ import {
   createInvestorPayout,
   initializeWalletFunding,
   verifyTransaction,
+  verifyTransactionByReference,
   verifyTransactionWithRetry,
   verifyTransferWithRetry,
+  pollTransferUntilTerminal,
   resolveBankAccount,
   listBanks,
+  FlutterwaveError,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
 import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail } from "./email.js";
@@ -2557,7 +2560,67 @@ router.get("/investor/withdrawals/status", requireAuth, requireRole("INVESTOR"),
   res.json({ ok: true, withdrawals: refreshed, wallet: findWallet(req.user!.id) });
 });
 
+// Converge wallet deposits stuck in PENDING/PENDING_PROVIDER_CONFIRMATION:
+// their redirect verification or webhook was missed, so money the investor
+// actually paid never settled and the transaction history showed "PENDING
+// PROVIDER CONFIRMATION" instead of SUCCESSFUL. Re-verified by tx_ref at most
+// once every 5 minutes per row; on confirmation the wallet is credited and the
+// history flips to SUCCESSFUL, on a definitive provider failure the row is
+// marked FAILED and the pending-hold released.
+const DEPOSIT_RECONCILE_MIN_AGE_MS = 90_000;
+const depositReconcileAttempts = new Map<string, number>();
+async function reconcileStalePendingDeposits(): Promise<void> {
+  if (!env.FLUTTERWAVE_SECRET_KEY) return;
+  const nowMs = Date.now();
+  const stale = walletTransactions.filter((t) => {
+    if (t.type !== "DEPOSIT") return false;
+    if (!["PENDING", "PENDING_PROVIDER_CONFIRMATION", "PROVIDER_NOT_CONFIGURED"].includes(String(t.status))) return false;
+    const createdAtMs = new Date(t.createdAt as unknown as string).getTime();
+    if (!Number.isFinite(createdAtMs) || nowMs - createdAtMs <= DEPOSIT_RECONCILE_MIN_AGE_MS) return false;
+    return nowMs - (depositReconcileAttempts.get(t.id) ?? 0) > 5 * 60_000;
+  });
+  for (const tx of stale) {
+    depositReconcileAttempts.set(tx.id, nowMs);
+    if (!tx.txRef) continue;
+    try {
+      const result = await verifyTransactionByReference(tx.txRef);
+      const data = (result?.data ?? {}) as Record<string, unknown>;
+      const providerStatus = String(data.status ?? result?.status ?? "").toLowerCase();
+      const currency = String(data.currency ?? "NGN").toUpperCase();
+      const amountMatches = Math.round(Number(data.amount ?? 0) * 100) === Number(tx.amountMinor);
+      if ((providerStatus === "successful" || providerStatus === "success") && currency === "NGN" && amountMatches) {
+        const settled = settleWalletDeposit({
+          txRef: tx.txRef,
+          providerReference: String(data.id ?? data.flw_ref ?? tx.txRef),
+          providerTransactionId: String(data.id ?? ""),
+        });
+        if (settled.ok) {
+          tx.updatedAt = new Date().toISOString();
+          console.info(`[routes] deposit ${tx.id} settled via reconciliation sweep (txRef=${tx.txRef})`);
+          schedulePersist();
+        }
+      } else if (["failed", "cancelled", "canceled", "reversed"].includes(providerStatus)) {
+        tx.status = "FAILED";
+        tx.metadata = { ...(tx.metadata ?? {}), reconcileNote: `Provider reported payment status=${providerStatus}` };
+        tx.updatedAt = new Date().toISOString();
+        const wallet = findWallet(tx.userId);
+        wallet.pendingDepositMinor = Math.max(0, wallet.pendingDepositMinor - tx.amountMinor);
+        schedulePersist();
+      }
+    } catch (_error) {
+      // Provider hiccup or a genuinely never-paid intent — the next sweep
+      // window retries; unpaid intents simply keep PENDING forever.
+    }
+  }
+}
+
 router.get("/investor/transactions", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  // Self-healing for the transaction history: deposits whose redirect
+  // verification or webhook was missed stay PENDING forever, so the history
+  // keeps showing "PENDING PROVIDER CONFIRMATION" for payments the investor
+  // actually made. Re-verify stuck deposits against the provider (by tx_ref)
+  // and settle/FAIL them; fire-and-forget so the listing never blocks.
+  void reconcileStalePendingDeposits().catch((err) => console.error("[routes] deposit reconciliation sweep failed:", err));
   const wallet = findWallet(req.user!.id);
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
   const offset = Math.max(0, Number(req.query.offset) || 0);
@@ -4672,6 +4735,259 @@ export function guessBankCodeFromName(bankName: string): string | undefined {
   return undefined;
 }
 
+// ============================================================================
+// Loan disbursement execution (shared by POST /admin/loans/:id/disburse and
+// POST /admin/disbursements/:id/retry).
+//
+// The admin's click now WAITS for Flutterwave's real final answer instead of
+// receiving an optimistic 202 "submitted and being processed":
+//   1. Pre-flight account resolution — a definitive 4xx rejection fails the
+//      attempt IMMEDIATELY with the provider's reason (e.g. "Account resolve
+//      failed") and no junk transfer is created at Flutterwave. 5xx/network/
+//      timeout never block: the provider repeats account resolution during
+//      transfer creation anyway.
+//   2. Transfer creation (awaited).
+//   3. Poll the transfer until a TERMINAL status (up to ~30s) — SUCCESSFUL
+//      settles the loan (ACTIVE + ledger + credit history + email), FAILED
+//      rolls the loan back to APPROVED for retry, and a budget timeout leaves
+//      the row PENDING for the background reconciler to converge.
+// ============================================================================
+type DisbursementAttemptOutcome = { outcome: "SUCCESSFUL" | "FAILED" | "PENDING"; message: string; error?: string };
+type DisbursementAccountView = { accountName?: string; accountNumber?: string; bankCode?: string; bankName?: string };
+
+function describeTransferProviderFailure(error: unknown): { message: string; providerResponse: Record<string, unknown> | null } {
+  if (error instanceof FlutterwaveError) {
+    const payload = error.providerResponse as { message?: string; data?: { complete_message?: string; processor_message?: string } };
+    const complete = payload?.data?.complete_message || payload?.data?.processor_message || "";
+    const message = `${error.message}${error.httpStatus ? ` (HTTP ${error.httpStatus})` : ""}${complete ? `: ${complete}` : ""}`;
+    return { message, providerResponse: error.providerResponse };
+  }
+  const message = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
+  return { message, providerResponse: null };
+}
+
+function providerRefsFromResponse(payload: Record<string, unknown> | null): { reference?: string; id?: string } {
+  const data = (payload as { data?: { reference?: string; id?: number | string } } | null)?.data;
+  if (!data) return {};
+  return {
+    reference: data.reference ? String(data.reference) : undefined,
+    id: data.id !== undefined && data.id !== null ? String(data.id) : undefined,
+  };
+}
+
+function finalizeFailedLoanDisbursement(params: {
+  req: AuthRequest;
+  loan: (typeof loans)[number];
+  application?: (typeof loanApplications)[number] | null;
+  disbursement: (typeof loanDisbursements)[number];
+  message: string;
+  providerResponse: Record<string, unknown> | null;
+}): DisbursementAttemptOutcome {
+  const { req, loan, application, disbursement, message, providerResponse } = params;
+  const now = new Date().toISOString();
+  disbursement.status = "FAILED";
+  disbursement.error = message;
+  if (providerResponse) {
+    disbursement.providerTransfer = providerResponse;
+    // The provider sometimes registers the transfer even when creation is
+    // rejected (HTTP 400 + a FAILED transfer object) — keep its reference for
+    // reconciliation so a later retry never collides with it.
+    const refs = providerRefsFromResponse(providerResponse);
+    if (!disbursement.providerReference) disbursement.providerReference = refs.reference ?? refs.id;
+  }
+  disbursement.processedAt = now;
+  disbursement.updatedAt = now;
+  // Give the loan back to the admin so the disbursement can be retried.
+  if (loan.status === "DISBURSEMENT_PENDING") {
+    loan.status = "APPROVED";
+    loan.updatedAt = now;
+  }
+  recordAdminAudit(req, "LOAN_DISBURSEMENT_FAILED", "LOAN", loan.id, { applicationId: application?.applicationId, disbursementId: disbursement.id, retryCount: Number(disbursement.retryCount ?? 0), error: message });
+  schedulePersist();
+  return { outcome: "FAILED", message, error: message };
+}
+
+async function executeLoanTransferAttempt(params: {
+  req: AuthRequest;
+  loan: (typeof loans)[number];
+  application?: (typeof loanApplications)[number] | null;
+  disbursement: (typeof loanDisbursements)[number];
+  account: DisbursementAccountView;
+  narration: string;
+  txRef: string;
+}): Promise<DisbursementAttemptOutcome> {
+  const { req, loan, application, disbursement, narration, txRef } = params;
+  const account = params.account;
+  const amountNaira = Number(disbursement.amountNaira ?? loan.principalNaira);
+  const accountLabel = `${account.bankName || account.bankCode || "bank"} · ${account.accountNumber ? `••••${String(account.accountNumber).slice(-4)}` : "—"}`;
+
+  // ---- Step 1: pre-flight beneficiary account resolution (fail fast).
+  try {
+    await resolveBankAccount(String(account.accountNumber ?? ""), String(account.bankCode ?? ""));
+  } catch (resolveError) {
+    const httpStatus = (resolveError as { httpStatus?: number }).httpStatus;
+    const providerResponse = (resolveError as { providerResponse?: Record<string, unknown> }).providerResponse ?? null;
+    const providerMsg = resolveError instanceof Error ? resolveError.message : "Account resolve failed";
+    const definitive = typeof httpStatus === "number" && httpStatus >= 400 && httpStatus < 500;
+    if (definitive) {
+      const message = `Flutterwave could not verify the borrower's bank account (${accountLabel}): ${providerMsg}. Confirm the account number and bank, then retry the disbursement.`;
+      console.error(`[routes] disbursement ${disbursement.id} pre-resolve rejected: ${message}`);
+      return finalizeFailedLoanDisbursement({ req, loan, application, disbursement, message, providerResponse: providerResponse ?? { message: providerMsg } });
+    }
+    console.warn(`[routes] disbursement ${disbursement.id} pre-resolve unavailable (HTTP ${httpStatus ?? "network"}); proceeding — Flutterwave validates the account during transfer creation.`);
+  }
+
+  // ---- Step 2: create the transfer (awaited — the admin is waiting).
+  try {
+    const transfer = await createLoanDisbursement({
+      txRef,
+      amountNaira,
+      accountNumber: String(account.accountNumber ?? ""),
+      accountBank: String(account.bankCode ?? ""),
+      beneficiaryName: account.accountName ?? "Borrower",
+      narration,
+    });
+    if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
+      throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the disbursement transfer");
+    }
+    appendAdminLedger({
+      entryType: "LOAN_DISBURSEMENT",
+      referenceId: disbursement.id,
+      borrowerId: loan.borrowerId,
+      loanId: loan.id,
+      amountMinor: Math.round(amountNaira * 100),
+      direction: "DEBIT",
+      description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
+      metadata: { provider: "flutterwave", applicationId: application?.applicationId, accountBank: account.bankCode, retryOfId: disbursement.retryOfId ?? null },
+    });
+    const providerTransfer = transfer as unknown as Record<string, unknown>;
+    const createdRefs = providerRefsFromResponse(providerTransfer);
+    disbursement.providerTransfer = providerTransfer;
+    disbursement.providerReference = createdRefs.reference ?? createdRefs.id ?? disbursement.id;
+    disbursement.status = "PENDING";
+    disbursement.processedAt = new Date().toISOString();
+    disbursement.updatedAt = disbursement.processedAt;
+    loan.providerTransfer = providerTransfer;
+    loan.updatedAt = new Date().toISOString();
+    schedulePersist();
+
+    // ---- Step 3: wait for the provider's FINAL answer (up to ~30s).
+    const verification = await pollTransferUntilTerminal(
+      createdRefs.id ?? "",
+      String(disbursement.providerReference ?? ""),
+      amountNaira,
+      { budgetMs: 30_000, intervalMs: 3_000 }
+    );
+    if (verification.settled) {
+      const settledAt = new Date().toISOString();
+      loan.status = "ACTIVE";
+      loan.disbursedAt = settledAt;
+      loan.updatedAt = settledAt;
+      if (application) {
+        // Canonical post-disbursement lifecycle status is ACTIVE (not DISBURSED).
+        application.status = "ACTIVE";
+        application.updatedAt = settledAt;
+      }
+      loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);
+      disbursement.status = "SUCCESSFUL";
+      disbursement.processedAt = settledAt;
+      disbursement.updatedAt = settledAt;
+      creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
+      recordAdminAudit(req, "LOAN_DISBURSED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: amountNaira, providerReference: loan.providerReference, disbursementId: disbursement.id, retryCount: Number(disbursement.retryCount ?? 0) });
+      const borrower = users.find((user) => user.id === loan.borrowerId);
+      if (borrower) {
+        const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.id, amountNaira });
+        void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+      }
+      schedulePersist();
+      return { outcome: "SUCCESSFUL", message: `Disbursement successful. ₦${amountNaira.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} sent to ${account.accountName ?? "the borrower"} (${accountLabel}).` };
+    }
+    if (verification.failed) {
+      const complete = String(verification.data?.complete_message || verification.data?.processor_message || verification.status || "transfer failed");
+      const message = `Flutterwave could not complete the transfer: ${complete}. Review the provider response, confirm the borrower's account details, then retry the disbursement.`;
+      console.error(`[routes] disbursement ${disbursement.id} failed at provider: ${complete}`);
+      return finalizeFailedLoanDisbursement({ req, loan, application, disbursement, message, providerResponse: (verification.raw as Record<string, unknown>) ?? { message: complete } });
+    }
+    // Budget exhausted — the provider is still moving. The row stays PENDING;
+    // the background reconciler converges it and the admin UI reflects it.
+    schedulePersist();
+    return { outcome: "PENDING", message: "Disbursement submitted to Flutterwave and is still being processed. The final status is confirmed automatically and this loan updates within a few minutes." };
+  } catch (error) {
+    const { message, providerResponse } = describeTransferProviderFailure(error);
+    console.error(`[routes] disbursement ${disbursement.id} creation failed: ${message}`);
+    return finalizeFailedLoanDisbursement({ req, loan, application, disbursement, message, providerResponse });
+  }
+}
+
+// Converge disbursement rows that never reached a terminal state (e.g. the
+// server restarted mid-poll, or verification kept timing out). Runs as a
+// fire-and-forget sweep on the admin disbursements listing — at most once per
+// ~90s per row — so the admin UI self-heals without a manual reconcile.
+const DISBURSEMENT_RECONCILE_MIN_AGE_MS = 90_000;
+const disbursementReconcileAttempts = new Map<string, number>();
+async function reconcileStaleDisbursements(): Promise<void> {
+  const nowMs = Date.now();
+  const stale = loanDisbursements.filter((d) => {
+    if (!["PROCESSING", "PENDING"].includes(d.status)) return false;
+    const ageMs = nowMs - new Date(d.updatedAt ?? d.createdAt ?? nowMs).getTime();
+    if (ageMs <= DISBURSEMENT_RECONCILE_MIN_AGE_MS) return false;
+    return nowMs - (disbursementReconcileAttempts.get(d.id) ?? 0) > DISBURSEMENT_RECONCILE_MIN_AGE_MS;
+  });
+  for (const row of stale) {
+    disbursementReconcileAttempts.set(row.id, nowMs);
+    const loan = loans.find((l) => l.id === row.loanId);
+    if (!loan) continue;
+    const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+    const payload = row.providerTransfer as { data?: { id?: number | string } } | null | undefined;
+    const providerId = String(payload?.data?.id ?? "");
+    const reference = String(row.providerReference ?? "");
+    if (!providerId && !reference) {
+      // The transfer was never submitted (the process died between row creation
+      // and provider call) — after a grace period, fail it so the loan can be
+      // retried instead of being stuck in DISBURSEMENT_PENDING forever.
+      const ageMs = nowMs - new Date(row.createdAt ?? nowMs).getTime();
+      if (ageMs > 10 * 60_000) {
+        finalizeFailedLoanDisbursement({
+          req: { user: { id: "system", role: "ADMIN" } } as unknown as AuthRequest,
+          loan, application, disbursement: row,
+          message: "This transfer was never submitted to Flutterwave (the server restarted mid-disbursement). Retry the disbursement.",
+          providerResponse: null,
+        });
+      }
+      continue;
+    }
+    const verification = await pollTransferUntilTerminal(providerId, reference, Number(row.amountNaira), { budgetMs: 8_000, intervalMs: 2_000 });
+    if (verification.settled) {
+      const settledAt = new Date().toISOString();
+      loan.status = "ACTIVE";
+      loan.disbursedAt = loan.disbursedAt ?? settledAt;
+      loan.updatedAt = settledAt;
+      if (application) {
+        application.status = "ACTIVE";
+        application.updatedAt = settledAt;
+      }
+      row.status = "SUCCESSFUL";
+      row.error = null;
+      row.processedAt = settledAt;
+      row.updatedAt = settledAt;
+      creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave reconciliation (${reference || providerId})`, occurredAt: settledAt, createdAt: settledAt });
+      schedulePersist();
+    } else if (verification.failed) {
+      const complete = String(verification.data?.complete_message || verification.data?.processor_message || verification.status || "transfer failed");
+      finalizeFailedLoanDisbursement({
+        req: { user: { id: "system", role: "ADMIN" } } as unknown as AuthRequest,
+        loan, application, disbursement: row,
+        message: `Flutterwave could not complete the transfer: ${complete} (confirmed during reconciliation).`,
+        providerResponse: (verification.raw as Record<string, unknown>) ?? { message: complete },
+      });
+    } else {
+      // Still moving — touch updatedAt so the sweep waits another window.
+      row.updatedAt = new Date().toISOString();
+      schedulePersist();
+    }
+  }
+}
+
 router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
   const loan = loans.find((l) => l.applicationId === req.params.loanId || l.applicationId === application?.id || l.id === req.params.loanId);
@@ -4754,7 +5070,6 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     return;
   }
   try {
-    const amountMinor = Math.round(Number(loan.principalNaira) * 100);
     const now = new Date().toISOString();
     const disbursement: (typeof import("./store.js").loanDisbursements)[number] = {
       id: randomUUID(),
@@ -4780,97 +5095,37 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     loanDisbursements.push(disbursement);
     loan.status = "DISBURSEMENT_PENDING";
     loan.updatedAt = now;
-    // Respond immediately with PROCESSING state. The Flutterwave transfer and
-    // its confirmation run in the background; admin/borrower views pick up the
-    // final status on their next fetch. Previously this route blocked on the
-    // provider AND a full-store persist, so disbursement took 30s+ or failed.
     schedulePersist();
     recordAdminAudit(req, "LOAN_DISBURSEMENT_INITIATED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), disbursementId: disbursement.id });
-    res.status(202).json({ ok: true, loan, disbursement, message: "Disbursement submitted to Flutterwave and is being processed. Final status will be confirmed shortly." });
-    void (async () => {
-      try {
-        // Reference must be UNIQUE per attempt: reusing a fixed loan-scoped
-        // reference made every retry fail with Flutterwave's duplicate-
-        // reference error once the provider had registered it.
-        const transfer = await createLoanDisbursement({
-          txRef: `VELO-DISBURSE-${loan.id}-${disbursement.id.slice(0, 8)}`,
-          amountNaira: Number(loan.principalNaira),
-          accountNumber: account.accountNumber,
-          accountBank: account.bankCode,
-          beneficiaryName: account.accountName ?? snapshot.fullName ?? "Borrower",
-          narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
-        });
-        if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
-          throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the disbursement transfer");
-        }
-        appendAdminLedger({
-          entryType: "LOAN_DISBURSEMENT",
-          referenceId: loan.id,
-          borrowerId: loan.borrowerId,
-          loanId: loan.id,
-          amountMinor,
-          direction: "DEBIT",
-          description: `Admin ledger debit for loan disbursement - loan ${loan.id} / application ${application?.applicationId ?? loan.id}`,
-          metadata: { provider: "flutterwave", applicationId: application?.applicationId, accountBank: account.bankCode },
-        });
-        disbursement.providerTransfer = transfer as unknown as Record<string, unknown>;
-        disbursement.providerReference = (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ?? String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? disbursement.id);
-        disbursement.status = "PENDING";
-        disbursement.processedAt = new Date().toISOString();
-        disbursement.updatedAt = new Date().toISOString();
-        loan.providerTransfer = transfer;
-        loan.updatedAt = new Date().toISOString();
-        const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
-        const verification = await verifyTransferWithRetry(transferId, disbursement.providerReference, 2, 500, Number(loan.principalNaira));
-        if (verification.settled) {
-          const settledAt = new Date().toISOString();
-          loan.status = "ACTIVE";
-          loan.disbursedAt = settledAt;
-          loan.updatedAt = settledAt;
-          if (application) {
-            // Use "ACTIVE" for the application status so the borrower and admin
-            // UIs reflect that the loan has been disbursed and is now in its
-            // repayment lifecycle. (Previously this was "DISBURSED" but the
-            // canonical post-disbursement lifecycle status is "ACTIVE".)
-            application.status = "ACTIVE";
-            application.updatedAt = settledAt;
-          }
-          loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? disbursement.providerReference);
-          disbursement.status = "SUCCESSFUL";
-          disbursement.processedAt = settledAt;
-          disbursement.updatedAt = settledAt;
-          creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
-          recordAdminAudit(req, "LOAN_DISBURSED", "LOAN", loan.id, { applicationId: application?.applicationId, principalNaira: Number(loan.principalNaira), providerReference: loan.providerReference, disbursementId: disbursement.id });
-          const borrower = users.find((user) => user.id === loan.borrowerId);
-          if (borrower) {
-            const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.id, amountNaira: Number(loan.principalNaira) });
-            void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
-          }
-        }
-        schedulePersist();
-      } catch (error) {
-        const fwResponse = (error as { providerResponse?: Record<string, unknown> })?.providerResponse;
-        const fwStatus = (error as { httpStatus?: number })?.httpStatus;
-        const baseMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
-        // Surface the provider's real reason: "Transfer creation failed" alone
-        // gives the admin nothing to act on; attach HTTP status + provider
-        // payload and persist both on the disbursement record.
-        const errMsg = fwResponse
-          ? `${baseMsg}${fwStatus ? ` (HTTP ${fwStatus})` : ""}${(fwResponse as { code?: string }).code ? ` [code: ${(fwResponse as { code?: string }).code}]` : ""}`
-          : baseMsg;
-        console.error(`[routes] disbursement for loan ${loan.id} failed:`, errMsg);
-        disbursement.status = "FAILED";
-        disbursement.error = errMsg;
-        if (fwResponse) disbursement.providerTransfer = fwResponse;
-        disbursement.updatedAt = new Date().toISOString();
-        // Give the loan back to the admin so the disbursement can be retried.
-        if (loan.status === "DISBURSEMENT_PENDING") {
-          loan.status = "APPROVED";
-          loan.updatedAt = new Date().toISOString();
-        }
-        schedulePersist();
-      }
-    })();
+
+    // SYNCHRONOUS execution: the admin's click waits for Flutterwave's real
+    // final answer (pre-resolve -> create transfer -> poll to terminal, up to
+    // ~30s) and THIS response carries the actual provider outcome — no more
+    // optimistic "submitted and being processed" when the transfer in fact
+    // failed. A second click meanwhile 409s on the PROCESSING/PENDING guard
+    // above, so the loan can never be double-disbursed.
+    const result = await executeLoanTransferAttempt({
+      req,
+      loan,
+      application,
+      disbursement,
+      account: {
+        accountName: account.accountName ?? snapshot.fullName,
+        accountNumber: account.accountNumber,
+        bankCode: account.bankCode,
+        bankName: account.bankName ?? account.bankCode,
+      },
+      narration: `Velo loan disbursement ${application?.applicationId ?? loan.id}`,
+      txRef: `VELO-DISBURSE-${loan.id}-${disbursement.id.slice(0, 8)}`,
+    });
+
+    if (result.outcome === "FAILED") {
+      res.status(200).json({ ok: false, final: true, loan, disbursement, error: result.error, message: result.message });
+    } else if (result.outcome === "PENDING") {
+      res.status(202).json({ ok: true, final: false, loan, disbursement, message: result.message });
+    } else {
+      res.status(200).json({ ok: true, final: true, loan, disbursement, message: result.message });
+    }
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : "Unable to initiate disbursement";
     res.status(503).json({
@@ -6252,6 +6507,11 @@ router.put("/admin/account-requests/:requestId/reject", requireAuth, requireRole
 });
 
 router.get("/admin/disbursements", requireAuth, requireRole("ADMIN"), (req, res) => {
+  // Self-healing: converge rows stuck in PROCESSING/PENDING (server restart
+  // mid-transfer, verification timeouts, …) against the provider. Fire-and-
+  // forget so the listing never blocks; the admin UI's 3s poller picks up the
+  // converged status on its next fetch.
+  void reconcileStaleDisbursements().catch((err) => console.error("[routes] disbursement reconciliation sweep failed:", err));
   const statusFilter = typeof req.query.status === "string" ? req.query.status : undefined;
   const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? 100)));
   const offset = Math.max(0, Number(req.query.offset ?? 0));
@@ -6331,94 +6591,34 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
   loanDisbursements.push(retry);
   loan.status = "DISBURSEMENT_PENDING";
   loan.updatedAt = now;
-  // Respond immediately with PROCESSING state — same contract as the initiate
-  // route. The retry used to block on the Flutterwave call and answer 503 with
-  // "Flutterwave is not configured"-style errors, which kept the admin HTTP
-  // request hanging for up to 15s and made the retry row invisible until the
-  // provider answered. The transfer + verification now run in the background;
-  // admin/borrower views pick up the final status on their next fetch.
   schedulePersist();
   recordAdminAudit(req, "LOAN_DISBURSEMENT_RETRY_INITIATED", "LOAN", loan.id, { applicationId: prev.applicationId, retryOfId: prev.id, retryCount, disbursementId: retry.id });
-  res.status(202).json({ ok: true, loan, disbursement: retry, message: "Disbursement retry submitted to Flutterwave and is being processed. Final status will be confirmed shortly." });
-  void (async () => {
-    try {
-      // Reference must be UNIQUE per attempt (the attempt id guarantees it) so
-      // a registered reference can never block a later retry.
-      const transfer = await createLoanDisbursement({
-        txRef: `VELO-DISBURSE-${loan.id}-${retry.id.slice(0, 8)}`,
-        amountNaira: Number(prev.amountNaira),
-        accountNumber: retryAccountNumber,
-        accountBank: retryBankCode,
-        beneficiaryName: prev.accountName ?? "Borrower",
-        narration: retry.narration ?? `Velo loan disbursement retry ${loan.id}`,
-      });
-      if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
-        throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the retry transfer");
-      }
-      appendAdminLedger({
-        entryType: "LOAN_DISBURSEMENT",
-        referenceId: retry.id,
-        borrowerId: loan.borrowerId,
-        loanId: loan.id,
-        amountMinor: Math.round(Number(prev.amountNaira) * 100),
-        direction: "DEBIT",
-        description: `Admin ledger debit for loan disbursement retry - loan ${loan.id}`,
-        metadata: { provider: "flutterwave", retryOfId: prev.id, accountBank: prev.bankCode },
-      });
-      retry.providerTransfer = transfer as unknown as Record<string, unknown>;
-      retry.providerReference =
-        (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ??
-        String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? retry.id);
-      retry.status = "PENDING";
-      retry.processedAt = new Date().toISOString();
-      retry.updatedAt = retry.processedAt;
-      loan.providerTransfer = transfer;
-      loan.updatedAt = new Date().toISOString();
-      const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
-      const verification = await verifyTransferWithRetry(transferId, retry.providerReference, 3, 500, Number(loan.principalNaira));
-      if (verification.settled) {
-        const settledAt = new Date().toISOString();
-        const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
-        loan.status = "ACTIVE";
-        loan.disbursedAt = settledAt;
-        loan.updatedAt = settledAt;
-        if (application) {
-          application.status = "ACTIVE";
-          application.updatedAt = settledAt;
-        }
-        loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? retry.providerReference);
-        retry.status = "SUCCESSFUL";
-        retry.processedAt = settledAt;
-        retry.updatedAt = settledAt;
-        creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
-        recordAdminAudit(req, "LOAN_DISBURSED", "LOAN", loan.id, { applicationId: application?.applicationId, retryOfId: prev.id, disbursementId: retry.id, providerReference: loan.providerReference });
-        const borrower = users.find((user) => user.id === loan.borrowerId);
-        if (borrower) {
-          const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.applicationId, amountNaira: Number(loan.principalNaira) });
-          void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
-        }
-      }
-      schedulePersist();
-    } catch (error) {
-      const fwResponse = (error as { providerResponse?: Record<string, unknown> })?.providerResponse;
-      const fwStatus = (error as { httpStatus?: number })?.httpStatus;
-      const baseMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
-      const errMsg = fwResponse
-        ? `${baseMsg}${fwStatus ? ` (HTTP ${fwStatus})` : ""}${(fwResponse as { code?: string }).code ? ` [code: ${(fwResponse as { code?: string }).code}]` : ""}`
-        : baseMsg;
-      console.error(`[routes] disbursement retry for loan ${loan.id} failed:`, errMsg);
-      retry.status = "FAILED";
-      retry.error = errMsg;
-      if (fwResponse) retry.providerTransfer = fwResponse;
-      retry.updatedAt = new Date().toISOString();
-      // Give the loan back to the admin so the disbursement can be retried.
-      if (loan.status === "DISBURSEMENT_PENDING") {
-        loan.status = "APPROVED";
-        loan.updatedAt = new Date().toISOString();
-      }
-      schedulePersist();
-    }
-  })();
+
+  // SYNCHRONOUS retry — identical contract to the initiate route: this response
+  // carries Flutterwave's REAL final answer (or a still-processing 202 if the
+  // provider needs longer than the ~30s budget).
+  const retryLoanApp = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+  const result = await executeLoanTransferAttempt({
+    req,
+    loan,
+    application: retryLoanApp,
+    disbursement: retry,
+    account: {
+      accountName: prev.accountName,
+      accountNumber: retryAccountNumber,
+      bankCode: retryBankCode,
+      bankName: prev.bankName,
+    },
+    narration: retry.narration ?? `Velo loan disbursement retry ${loan.id}`,
+    txRef: `VELO-DISBURSE-${loan.id}-${retry.id.slice(0, 8)}`,
+  });
+  if (result.outcome === "FAILED") {
+    res.status(200).json({ ok: false, final: true, loan, disbursement: retry, error: result.error, message: result.message });
+  } else if (result.outcome === "PENDING") {
+    res.status(202).json({ ok: true, final: false, loan, disbursement: retry, message: result.message });
+  } else {
+    res.status(200).json({ ok: true, final: true, loan, disbursement: retry, message: result.message });
+  }
 });
 
 export default router;

@@ -375,11 +375,11 @@ export default function BorrowerDashboard() {
             <div className="absolute bottom-0 left-0 w-32 h-32 rounded-full bg-velo-400/10 blur-3xl pointer-events-none" />
             <div className="relative overflow-y-auto lg:overflow-y-auto lg:max-h-full max-h-screen pb-20 lg:pb-4 pr-1">
               <div className="flex items-center gap-3 p-3 rounded-2xl bg-white/60 dark:bg-slate-800/60 border border-indigo-100/70 dark:border-slate-700/60 backdrop-blur">
-                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-velo-500 to-indigo-600 text-white font-black text-lg shadow-md shadow-indigo-500/30">
+                <div className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-velo-500 to-indigo-600 text-white font-bold text-lg shadow-md shadow-indigo-500/30">
                   {user?.fullName?.charAt(0)?.toUpperCase() || "V"}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-bold text-velo-900 dark:text-white truncate">
+                  <div className="text-sm font-semibold text-velo-900 dark:text-white truncate">
                     {user?.fullName || "Borrower"}
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
@@ -411,7 +411,7 @@ export default function BorrowerDashboard() {
                         <MenuIcon name={item.icon} />
                       </span>
                       <div className="flex-1 min-w-0">
-                        <div className={`text-sm font-bold ${isActive ? "" : "group-hover:font-extrabold"}`}>
+                        <div className={`text-sm font-semibold ${isActive ? "" : "group-hover:font-bold"}`}>
                           {item.label}
                         </div>
                         {item.hint && (
@@ -450,10 +450,10 @@ export default function BorrowerDashboard() {
 
               <div className="mt-6 sm:mt-8 pt-4 sm:pt-5 border-t border-indigo-100/80 dark:border-slate-800">
                 <div className="rounded-2xl bg-gradient-to-br from-velo-600 via-velo-700 to-indigo-700 text-white p-4 shadow-lg shadow-velo-600/20">
-                  <div className="text-[11px] uppercase tracking-wider font-bold text-indigo-100/85">
+                  <div className="text-[11px] uppercase tracking-wider font-semibold text-indigo-100/85">
                     Account status
                   </div>
-                  <div className="mt-1 inline-flex items-center gap-2 text-lg font-black">
+                  <div className="mt-1 inline-flex items-center gap-2 text-lg font-bold">
                     {hasSubmittedApplication ? <><Icon name="history" size={18} />Application started</> : user?.kycStatus === "VERIFIED" ? <><Icon name="check" size={18} />Verified — apply now</> : <><Icon name="lock" size={18} />Complete KYC first</>}
                   </div>
                   <div className="mt-1 text-[11px] text-indigo-100/80">
@@ -488,7 +488,7 @@ export default function BorrowerDashboard() {
             </button>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-semibold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">Borrower dashboard</div>
-              <div className="text-base font-extrabold text-velo-900 dark:text-white truncate">
+              <div className="text-base font-bold text-velo-900 dark:text-white truncate">
                 {borrowerMenu.find((m) => m.key === view)?.label || "Overview"}
               </div>
             </div>
@@ -644,12 +644,12 @@ export default function BorrowerDashboard() {
                       </span>
                       <div
                         id="repay-modal-title"
-                        className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400"
+                        className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600 dark:text-emerald-400"
                       >
                         Repayment
                       </div>
                     </div>
-                    <h2 className="mt-1.5 text-xl sm:text-2xl font-black text-velo-900 dark:text-white">
+                    <h2 className="mt-1.5 text-xl sm:text-2xl font-bold text-velo-900 dark:text-white">
                       {repayModalLoan.displayTitle || "Make a repayment"}
                     </h2>
                     {repayModalLoan.refNo && (
@@ -672,10 +672,10 @@ export default function BorrowerDashboard() {
                 </div>
 
                 <div className="mt-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/40 bg-gradient-to-br from-emerald-50 via-white to-white dark:from-emerald-900/20 dark:via-slate-900 dark:to-slate-900 p-4 sm:p-5">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-300/90">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700 dark:text-emerald-300/90">
                     Outstanding balance
                   </p>
-                  <div className="mt-1 text-3xl sm:text-4xl font-black text-velo-900 dark:text-white">
+                  <div className="mt-1 text-3xl sm:text-4xl font-bold text-velo-900 dark:text-white">
                     ₦{Number(repayModalLoan.outstandingNaira || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </div>
                   {repayModalLoan.principalNaira ? (
@@ -690,7 +690,7 @@ export default function BorrowerDashboard() {
                 </div>
 
                 <div className="mt-5">
-                  <p className="text-sm font-bold text-velo-900 dark:text-white">How do you want to repay?</p>
+                  <p className="text-sm font-semibold text-velo-900 dark:text-white">How do you want to repay?</p>
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <button
                       type="button"
@@ -712,7 +712,7 @@ export default function BorrowerDashboard() {
                           </svg>
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-extrabold text-velo-900 dark:text-white">Pay in full</div>
+                          <div className="text-sm font-bold text-velo-900 dark:text-white">Pay in full</div>
                           <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 truncate">
                             ₦{Number(repayModalLoan.outstandingNaira || 0).toLocaleString("en-NG")}
                           </div>
@@ -747,7 +747,7 @@ export default function BorrowerDashboard() {
                           </svg>
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-extrabold text-velo-900 dark:text-white">Pay part amount</div>
+                          <div className="text-sm font-bold text-velo-900 dark:text-white">Pay part amount</div>
                           <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 truncate">
                             Min ₦50 · reduces outstanding gradually
                           </div>
@@ -760,11 +760,11 @@ export default function BorrowerDashboard() {
                 {repayMode === "custom" && (
                   <div className="mt-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 p-4 sm:p-5 space-y-4">
                     <div>
-                      <label htmlFor="repay-amount" className="block text-sm font-bold text-velo-900 dark:text-white">
+                      <label htmlFor="repay-amount" className="block text-sm font-semibold text-velo-900 dark:text-white">
                         Enter amount (NGN)
                       </label>
                       <div className="mt-2 relative">
-                        <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-extrabold text-slate-500 dark:text-slate-400 text-lg">
+                        <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-bold text-slate-500 dark:text-slate-400 text-lg">
                           ₦
                         </span>
                         <input
@@ -786,7 +786,7 @@ export default function BorrowerDashboard() {
                             setRepayCustomAmount(formatted.replace(/,/g, ""));
                             setRepayModeMsg("");
                           }}
-                          className="w-full !pl-12 pr-4 py-3.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-velo-900 dark:text-white text-xl font-black outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-60"
+                          className="w-full !pl-12 pr-4 py-3.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-velo-900 dark:text-white text-xl font-bold outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-60"
                         />
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -794,7 +794,7 @@ export default function BorrowerDashboard() {
                           type="button"
                           disabled={repaySubmitting}
                           onClick={() => setRepayCustomAmount(String(Math.round(Number(repayModalLoan?.outstandingNaira || 0) / 2)))}
-                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
+                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
                         >
                           ½ of balance
                         </button>
@@ -802,7 +802,7 @@ export default function BorrowerDashboard() {
                           type="button"
                           disabled={repaySubmitting}
                           onClick={() => setRepayCustomAmount(String(Math.round(Number(repayModalLoan?.outstandingNaira || 0) / 4)))}
-                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
+                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
                         >
                           ¼ of balance
                         </button>
@@ -810,7 +810,7 @@ export default function BorrowerDashboard() {
                           type="button"
                           disabled={repaySubmitting}
                           onClick={() => setRepayCustomAmount("10000")}
-                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
+                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
                         >
                           ₦10,000
                         </button>
@@ -818,7 +818,7 @@ export default function BorrowerDashboard() {
                           type="button"
                           disabled={repaySubmitting}
                           onClick={() => setRepayCustomAmount("50000")}
-                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
+                          className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 transition"
                         >
                           ₦50,000
                         </button>
@@ -851,7 +851,7 @@ export default function BorrowerDashboard() {
                     type="button"
                     onClick={closeRepayModal}
                     disabled={repaySubmitting}
-                    className="sm:flex-1 inline-flex items-center justify-center px-5 py-3.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-sm font-bold hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-50 transition"
+                    className="sm:flex-1 inline-flex items-center justify-center px-5 py-3.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-sm font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-50 transition"
                   >
                     Cancel
                   </button>
@@ -859,7 +859,7 @@ export default function BorrowerDashboard() {
                     type="button"
                     onClick={handleSubmitRepayment}
                     disabled={repaySubmitting}
-                    className="sm:flex-[1.4] inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-extrabold shadow-lg shadow-emerald-500/25 hover:shadow-xl hover:shadow-emerald-500/30 hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
+                    className="sm:flex-[1.4] inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-bold shadow-lg shadow-emerald-500/25 hover:shadow-xl hover:shadow-emerald-500/30 hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
                   >
                     {repaySubmitting ? (
                       <>
@@ -911,27 +911,27 @@ function RepayBreakdown(props: any) {
     <dl className="space-y-2.5 text-sm">
       <div className="flex items-center justify-between gap-3">
         <dt className="font-semibold text-slate-600 dark:text-slate-300">Amount to pay</dt>
-        <dd className="font-black text-velo-900 dark:text-white">
+        <dd className="font-bold text-velo-900 dark:text-white">
           ₦{raw.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </dd>
       </div>
       <div className="flex items-center justify-between gap-3">
         <dt className="font-semibold text-slate-600 dark:text-slate-300">Estimated principal portion</dt>
-        <dd className="font-bold text-emerald-700 dark:text-emerald-400">
+        <dd className="font-semibold text-emerald-700 dark:text-emerald-400">
           ₦{estimatedPrincipal.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </dd>
       </div>
       <div className="flex items-center justify-between gap-3">
         <dt className="font-semibold text-slate-600 dark:text-slate-300">Estimated interest portion</dt>
-        <dd className="font-bold text-velo-600 dark:text-velo-400">
+        <dd className="font-semibold text-velo-600 dark:text-velo-400">
           ₦{estimatedInterest.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </dd>
       </div>
       <div className="pt-2.5 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
-        <dt className="font-bold text-slate-700 dark:text-slate-200">
+        <dt className="font-semibold text-slate-700 dark:text-slate-200">
           {isFull ? "Loan status after payment" : "Outstanding after this payment"}
         </dt>
-        <dd className={`font-black ${isFull ? "text-emerald-600 dark:text-emerald-400" : "text-velo-900 dark:text-white"}`}>
+        <dd className={`font-bold ${isFull ? "text-emerald-600 dark:text-emerald-400" : "text-velo-900 dark:text-white"}`}>
           {isFull ? "✅ Fully repaid" : `₦${remainingAfter.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
         </dd>
       </div>
@@ -978,7 +978,7 @@ function BorrowerOverview(props: any) {
               </svg>
             </div>
             <div>
-              <div className="text-sm font-bold text-velo-900 dark:text-white">Borrower Dashboard</div>
+              <div className="text-sm font-semibold text-velo-900 dark:text-white">Borrower Dashboard</div>
               {user.roles.includes("INVESTOR") ? (
                 <div className="text-xs text-slate-500 dark:text-slate-400">
                   You also have investor access. Switch dashboards anytime — one KYC, all features.
@@ -1064,7 +1064,7 @@ function BorrowerOverview(props: any) {
 
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Borrower portal</p>
-        <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
+        <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
           Your loan, in one place.
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
@@ -1082,7 +1082,7 @@ function BorrowerOverview(props: any) {
               </svg>
             </div>
             <div>
-              <h2 className="text-sm font-bold text-velo-900 dark:text-white">See what you need before applying</h2>
+              <h2 className="text-sm font-semibold text-velo-900 dark:text-white">See what you need before applying</h2>
               <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400">Review all requirements for personal and business loans before you start.</p>
             </div>
           </div>
@@ -1096,7 +1096,7 @@ function BorrowerOverview(props: any) {
           <div className="relative flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-amber-100 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                <span className="rounded-full bg-amber-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
                   Outstanding loan
                 </span>
                 {active.status && (
@@ -1105,7 +1105,7 @@ function BorrowerOverview(props: any) {
                   </span>
                 )}
               </div>
-              <h3 className="mt-3 text-xl sm:text-2xl font-black text-velo-900 dark:text-white">
+              <h3 className="mt-3 text-xl sm:text-2xl font-bold text-velo-900 dark:text-white">
                 ₦{Number(active.outstandingNaira ?? 0).toLocaleString("en-NG")}
               </h3>
               <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
@@ -1133,7 +1133,7 @@ function BorrowerOverview(props: any) {
                   )
                 }
                 disabled={!active.id || !active.outstandingNaira}
-                className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-bold shadow-lg shadow-emerald-500/25 hover:shadow-xl hover:shadow-emerald-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
+                className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-semibold shadow-lg shadow-emerald-500/25 hover:shadow-xl hover:shadow-emerald-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
               >
                 {repayBusy === String(active.id) ? (
                   <>
@@ -1201,13 +1201,13 @@ function BorrowerOverview(props: any) {
           <div className="mt-4 grid grid-cols-2 gap-4">
             <div>
               <p className="text-xs text-slate-500">Paid to date</p>
-              <p className="mt-1 text-lg font-bold text-velo-900 dark:text-white">
+              <p className="mt-1 text-lg font-semibold text-velo-900 dark:text-white">
                 ₦{paidRepayments.toLocaleString("en-NG")}
               </p>
             </div>
             <div>
               <p className="text-xs text-slate-500">Recorded schedule</p>
-              <p className="mt-1 text-lg font-bold text-velo-900 dark:text-white">
+              <p className="mt-1 text-lg font-semibold text-velo-900 dark:text-white">
                 ₦{scheduledRepayments.toLocaleString("en-NG")}
               </p>
             </div>
@@ -1252,7 +1252,7 @@ function BorrowerOverview(props: any) {
                 )}%, #e8eef5 0)`,
               }}
             >
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-xl font-bold text-velo-900 dark:bg-slate-900 dark:text-white">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-xl font-semibold text-velo-900 dark:bg-slate-900 dark:text-white">
                 {credit?.score?.score ?? "—"}
               </div>
             </div>
@@ -1442,7 +1442,7 @@ function BorrowerApplications(props: any) {
     <div className="space-y-6">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Loan applications</p>
-        <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
+        <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
           {apps.length ? `${apps.length} application${apps.length > 1 ? "s" : ""}` : "No applications yet"}
         </h1>
         <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
@@ -1479,7 +1479,7 @@ function BorrowerApplications(props: any) {
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-lg font-bold text-velo-900 dark:text-white">
+                    <h3 className="text-lg font-semibold text-velo-900 dark:text-white">
                       {app.productName ?? "Loan application"}
                     </h3>
                     <span className={`badge ${["REJECTED", "DEFAULTED", "WRITTEN_OFF"].includes(String(app.status)) ? "badge-rejected" : ["DISBURSED", "ACTIVE", "REPAID"].includes(String(app.status)) ? "badge-completed" : "badge-pending"}`}>
@@ -1493,7 +1493,7 @@ function BorrowerApplications(props: any) {
                   </p>
                 </div>
                 <div className="text-right">
-                  <div className="text-xl font-black text-velo-900 dark:text-white">
+                  <div className="text-xl font-bold text-velo-900 dark:text-white">
                     ₦{Number(app.amountNaira ?? 0).toLocaleString("en-NG")}
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
@@ -1507,7 +1507,7 @@ function BorrowerApplications(props: any) {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-xs text-slate-500 dark:text-slate-400">Outstanding balance</p>
-                      <p className="text-sm font-bold text-amber-700 dark:text-amber-400">
+                      <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
                         ₦{Number(app.outstandingNaira).toLocaleString("en-NG")}
                       </p>
                     </div>
@@ -1548,7 +1548,7 @@ function BorrowerRepayments(props: any) {
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Repayments</p>
-          <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
+          <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
             Schedules & history
           </h1>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
@@ -1568,7 +1568,7 @@ function BorrowerRepayments(props: any) {
               )
             }
             disabled={!active.id || !active.outstandingNaira}
-            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-bold shadow-lg shadow-emerald-500/25 hover:shadow-xl hover:shadow-emerald-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
+            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 text-white text-sm font-semibold shadow-lg shadow-emerald-500/25 hover:shadow-xl hover:shadow-emerald-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
           >
             {repayBusy === String(active.id) ? (
               <>
@@ -1615,13 +1615,13 @@ function BorrowerRepayments(props: any) {
         <div className="mt-4 grid grid-cols-2 gap-4">
           <div>
             <p className="text-xs text-slate-500">Paid</p>
-            <p className="mt-1 text-lg font-bold text-velo-900 dark:text-white">
+            <p className="mt-1 text-lg font-semibold text-velo-900 dark:text-white">
               ₦{paidRepayments.toLocaleString("en-NG")}
             </p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Scheduled</p>
-            <p className="mt-1 text-lg font-bold text-velo-900 dark:text-white">
+            <p className="mt-1 text-lg font-semibold text-velo-900 dark:text-white">
               ₦{scheduledRepayments.toLocaleString("en-NG")}
             </p>
           </div>
@@ -1663,7 +1663,7 @@ function BorrowerRepayments(props: any) {
                     <td className="px-5 sm:px-6 py-4 font-mono text-xs text-slate-600 dark:text-slate-400">
                       {r.loanId ? <Link to={`/borrower/loans/${encodeURIComponent(r.loanId)}`} className="text-velo-600 hover:underline">{r.loanId.slice(0, 10)}</Link> : "—"}
                     </td>
-                    <td className="px-5 sm:px-6 py-4 text-right font-bold text-velo-900 dark:text-white">
+                    <td className="px-5 sm:px-6 py-4 text-right font-semibold text-velo-900 dark:text-white">
                       ₦{Number(r.amountNaira ?? 0).toLocaleString("en-NG")}
                     </td>
                     <td className="px-5 sm:px-6 py-4 text-right">
@@ -1705,7 +1705,7 @@ function BorrowerCredit(props: any) { const { credit, history } = props;
     <div className="space-y-6">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Credit</p>
-        <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
+        <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">
           Credit score & history
         </h1>
         <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
@@ -1725,7 +1725,7 @@ function BorrowerCredit(props: any) { const { credit, history } = props;
             }}
           >
             <div className="flex h-28 w-28 flex-col items-center justify-center rounded-full bg-white dark:bg-slate-900">
-              <div className="text-3xl font-black text-velo-900 dark:text-white">
+              <div className="text-3xl font-bold text-velo-900 dark:text-white">
                 {credit?.score?.score ?? "—"}
               </div>
               <div className="text-[10px] uppercase tracking-wider text-slate-500">Score</div>
@@ -1761,7 +1761,7 @@ function BorrowerCredit(props: any) { const { credit, history } = props;
                     <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{f.detail}</div>
                   </div>
                   <span
-                    className={`shrink-0 text-xs font-bold px-2 py-1 rounded-md ${
+                    className={`shrink-0 text-xs font-semibold px-2 py-1 rounded-md ${
                       f.impact > 0
                         ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
                         : f.impact < 0
@@ -1801,7 +1801,7 @@ function BorrowerCredit(props: any) { const { credit, history } = props;
                   <div className="text-right shrink-0">
                     {e.impact != null && (
                       <div
-                        className={`text-xs font-bold ${
+                        className={`text-xs font-semibold ${
                           e.impact > 0 ? "text-emerald-600" : e.impact < 0 ? "text-red-600" : "text-slate-500"
                         }`}
                       >
@@ -1864,7 +1864,7 @@ function BorrowerKyc(props: any) {
     <div className="space-y-6">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Verification</p>
-        <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Identity & KYC</h1>
+        <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Identity & KYC</h1>
         <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
           Complete your verification to unlock loan and investing features.
         </p>
@@ -1908,7 +1908,7 @@ function BorrowerKyc(props: any) {
             const result = categoryResults[key];
             const current = categoryStatus(key);
             const rejected = current === "REJECTED";
-            return <div key={key} className={`rounded-xl border p-3 ${rejected ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/30"}`}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span><span className={`text-[10px] font-bold uppercase ${rejected ? "text-red-700 dark:text-red-300" : current === "VERIFIED" ? "text-emerald-700 dark:text-emerald-300" : "text-slate-500"}`}>{current.replace(/_/g, " ")}</span></div>{rejected && <p className="mt-2 text-xs leading-5 text-red-700 dark:text-red-300">{result?.reason || kyc?.rejectionReason || "Verification was not successful."}</p>}</div>;
+            return <div key={key} className={`rounded-xl border p-3 ${rejected ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/30"}`}><div className="flex items-center justify-between gap-2"><span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{label}</span><span className={`text-[10px] font-semibold uppercase ${rejected ? "text-red-700 dark:text-red-300" : current === "VERIFIED" ? "text-emerald-700 dark:text-emerald-300" : "text-slate-500"}`}>{current.replace(/_/g, " ")}</span></div>{rejected && <p className="mt-2 text-xs leading-5 text-red-700 dark:text-red-300">{result?.reason || kyc?.rejectionReason || "Verification was not successful."}</p>}</div>;
           })}
         </div>
         {kyc?.rejectionReason && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/15 dark:text-red-300"><strong>Review note:</strong> {kyc.rejectionReason}</div>}
@@ -1981,7 +1981,7 @@ function BorrowerProfile(props: any) {
     <div className="space-y-6">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-velo-600">Profile</p>
-        <h1 className="mt-2 text-xl font-bold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Personal information</h1>
+        <h1 className="mt-2 text-xl font-semibold text-velo-900 sm:text-2xl md:text-3xl dark:text-white">Personal information</h1>
         <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
           Your account details, access roles and edit controls.
         </p>
@@ -1989,11 +1989,11 @@ function BorrowerProfile(props: any) {
 
       <section className="velo-card p-4 sm:p-5 lg:p-6">
         <div className="flex items-center gap-4">
-          <div className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-velo-500 to-indigo-600 text-white font-black text-2xl shadow-md shadow-indigo-500/30">
+          <div className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-velo-500 to-indigo-600 text-white font-bold text-2xl shadow-md shadow-indigo-500/30">
             {u?.fullName?.charAt(0)?.toUpperCase() || "V"}
           </div>
           <div className="min-w-0">
-            <h2 className="text-xl font-black text-velo-900 dark:text-white truncate">
+            <h2 className="text-xl font-bold text-velo-900 dark:text-white truncate">
               {u?.fullName ?? "—"}
             </h2>
             <p className="text-sm text-slate-500 dark:text-slate-400 truncate">{u?.email}</p>
@@ -2017,7 +2017,7 @@ function BorrowerProfile(props: any) {
               {(u?.roles ?? []).map((r: string) => (
                 <span
                   key={r}
-                  className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-300"
+                  className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-300"
                 >
                   {r}
                 </span>
@@ -2036,7 +2036,7 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   return (
     <div className="velo-card p-4 sm:p-5">
       <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{label}</p>
-      <p className="mt-2 text-2xl font-bold text-velo-900 dark:text-white break-words">{value}</p>
+      <p className="mt-2 text-2xl font-semibold text-velo-900 dark:text-white break-words">{value}</p>
       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{detail}</p>
     </div>
   );

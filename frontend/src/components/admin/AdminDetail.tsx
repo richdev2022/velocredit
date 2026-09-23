@@ -95,15 +95,20 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     setSaving(true);
     setSaveMsg(null);
     try {
+      // The route WAITS for Flutterwave's real final answer — show the actual
+      // provider outcome instead of a generic "submitted" note.
       const response = await adminDisburseLoan(app.applicationId);
       const nextStatus = (response.loan as { status?: string } | undefined)?.status;
       if (nextStatus) setApp((current) => current ? { ...current, status: nextStatus, loan: { ...current.loan, ...(response.loan as object) } } : current);
-      setSaveMsg(nextStatus === "DISBURSED" ? "Loan disbursed successfully." : "Disbursement submitted to Flutterwave for confirmation.");
+      const transferStatus = String((response.disbursement as { status?: string } | undefined)?.status || "");
+      if (response.ok === false) setSaveMsg(response.error || response.message || "Disbursement failed — see the provider response for details.");
+      else if (transferStatus === "SUCCESSFUL") setSaveMsg(response.message || "Loan disbursed successfully.");
+      else setSaveMsg(response.message || "Disbursement submitted to Flutterwave — the final status will be confirmed automatically.");
     } catch (err: any) {
       setSaveMsg(err?.message || "Unable to initiate disbursement.");
     } finally {
       setSaving(false);
-      setTimeout(() => setSaveMsg(null), 4000);
+      setTimeout(() => setSaveMsg(null), 8000);
     }
   }
 
@@ -203,7 +208,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-velo-900">
+              <h1 className="text-xl font-semibold text-velo-900">
                 {isPersonal ? app.personalInfo.fullName : app.businessInfo.businessName}
               </h1>
               <span className={`badge ${isPersonal ? "bg-velo-50 text-velo-700" : "bg-violet-50 text-violet-700"}`}>
@@ -355,7 +360,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
                 <span className="badge bg-velo-50 text-velo-700">{app.creditReportSnapshot.internal.band}</span>
               )}
             </div>
-            <div className="text-3xl font-bold text-velo-900 mb-2">
+            <div className="text-3xl font-semibold text-velo-900 mb-2">
               {app.creditReportSnapshot?.internal?.score ?? "—"}
             </div>
             <div className="text-xs text-slate-500 mb-3">
@@ -393,7 +398,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
                 {app.creditReportSnapshot?.external?.status || "NOT_REQUESTED"}
               </span>
             </div>
-            <div className="text-3xl font-bold text-emerald-900 mb-2">
+            <div className="text-3xl font-semibold text-emerald-900 mb-2">
               {app.creditReportSnapshot?.external?.score ?? "—"}
             </div>
             <div className="text-xs text-slate-500 mb-3">
@@ -566,7 +571,7 @@ function DraftProgressPanel({ draft }: { draft: AdminApplicationDraftDetail }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-bold text-velo-900 dark:text-white">Borrower's saved progress</h3>
+            <h3 className="text-sm font-semibold text-velo-900 dark:text-white">Borrower's saved progress</h3>
             <span className="badge bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">{draft.status.replace(/_/g, " ")}</span>
           </div>
           <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
@@ -578,7 +583,7 @@ function DraftProgressPanel({ draft }: { draft: AdminApplicationDraftDetail }) {
           </p>
         </div>
         <div className="text-right">
-          <div className="text-2xl font-bold text-velo-900 dark:text-white">{draft.progressPercent}%</div>
+          <div className="text-2xl font-semibold text-velo-900 dark:text-white">{draft.progressPercent}%</div>
           <div className="text-[11px] text-slate-500 dark:text-slate-400">complete</div>
         </div>
       </div>
@@ -621,7 +626,7 @@ function DraftDetailView({ draft, onBack }: { draft: AdminApplicationDraftDetail
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl font-bold text-velo-900 dark:text-white">
+              <h1 className="text-xl font-semibold text-velo-900 dark:text-white">
                 {draft.applicantType === "PERSONAL" ? personalInfo.fullName : businessInfo.businessName || draft.borrower?.fullName || "Borrower"}
               </h1>
               <span className={`badge ${draft.applicantType === "PERSONAL" ? "bg-velo-50 text-velo-700 dark:bg-velo-900/30 dark:text-velo-300" : "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"}`}>
@@ -749,7 +754,7 @@ function DraftDetailView({ draft, onBack }: { draft: AdminApplicationDraftDetail
 function DetailCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="velo-card p-5">
-      <h3 className="text-sm font-bold text-velo-900 dark:text-white mb-3">{title}</h3>
+      <h3 className="text-sm font-semibold text-velo-900 dark:text-white mb-3">{title}</h3>
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">{children}</dl>
     </div>
   );

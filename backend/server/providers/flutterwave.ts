@@ -184,6 +184,27 @@ export async function verifyTransaction(transactionId: string) {
   return data;
 }
 
+// Verifies a payment by its MERCHANT tx_ref instead of the provider transaction
+// id. Used by the wallet-deposit reconciliation sweep: deposits whose redirect
+// verification or webhook was missed stay PENDING forever because nobody kept
+// the provider transaction id — the tx_ref is always known.
+export async function verifyTransactionByReference(txRef: string) {
+  if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
+  const response = await fetchWithTimeout(
+    `${env.FLUTTERWAVE_BASE_URL}/transactions/verify_by_reference?tx_ref=${encodeURIComponent(txRef)}`,
+    { headers: { Authorization: `Bearer ${env.FLUTTERWAVE_SECRET_KEY}` } }
+  );
+  const text = await response.text();
+  let data: { status?: string; data?: Record<string, unknown>; message?: string };
+  try {
+    data = JSON.parse(text) as { status?: string; data?: Record<string, unknown>; message?: string };
+  } catch (_error) {
+    throw new Error(`Flutterwave verification failed (${response.status}): ${text.slice(0, 200) || response.statusText}`);
+  }
+  if (!response.ok) throw new Error(data.message || `Flutterwave verification failed (${response.status})`);
+  return data;
+}
+
 export async function verifyTransfer(transferIdOrReference: string, byReference = false) {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
   const path = byReference
@@ -267,6 +288,51 @@ export async function verifyTransferWithRetry(
   return { status: lastError instanceof Error ? "error" : "pending", settled: false, raw: lastRaw };
 }
 
+// Polls a transfer until Flutterwave reports a TERMINAL status (successful /
+// failed / reversed) or the time budget runs out. Used by the loan disbursement
+// route so the admin's click can WAIT for the provider's real final answer
+// instead of receiving an optimistic "submitted and being processed" response.
+export async function pollTransferUntilTerminal(
+  transferId: string,
+  reference: string,
+  expectedAmountNaira?: number,
+  opts: { budgetMs?: number; intervalMs?: number } = {}
+): Promise<{ status: string; data?: Record<string, unknown>; settled: boolean; failed: boolean; timedOut: boolean; raw: unknown }> {
+  const budgetMs = opts.budgetMs ?? 30_000;
+  const intervalMs = opts.intervalMs ?? 3_000;
+  const deadline = Date.now() + budgetMs;
+  let lastRaw: unknown = null;
+  let lastStatus = "";
+  while (Date.now() < deadline) {
+    try {
+      const byId = transferId ? await verifyTransfer(transferId, false) : null;
+      const byRef = reference && !byId ? await verifyTransfer(reference, true) : byId;
+      const result = byId ?? byRef;
+      lastRaw = result;
+      const fwData = (result?.data ?? {}) as Record<string, unknown>;
+      const status = String(fwData.status ?? result?.status ?? "").toLowerCase();
+      lastStatus = status;
+      const currency = String(fwData.currency ?? "NGN").toUpperCase();
+      const amountMatches = expectedAmountNaira === undefined || Number(fwData.amount ?? 0) === expectedAmountNaira;
+      if ((status === "successful" || status === "success") && currency === "NGN" && amountMatches) {
+        return { status, data: fwData, settled: true, failed: false, timedOut: false, raw: result };
+      }
+      if (["failed", "reversed", "reverted", "cancelled", "canceled"].includes(status)) {
+        return { status, data: fwData, settled: false, failed: true, timedOut: false, raw: result };
+      }
+    } catch (_error) {
+      // Transient verification hiccup — keep polling until the deadline.
+    }
+    await sleep(Math.max(500, Math.min(intervalMs, deadline - Date.now())));
+  }
+  const lastData = (lastRaw as { data?: Record<string, unknown> } | null)?.data;
+  return { status: lastStatus || "pending", data: lastData, settled: false, failed: false, timedOut: true, raw: lastRaw };
+}
+
+// Throws FlutterwaveError (carrying httpStatus + the raw provider payload) so
+// callers can distinguish a DEFINITIVE account rejection (4xx — the same
+// resolution runs inside transfer creation, so the transfer would fail too)
+// from a transient/infrastructure failure (5xx, network, timeout).
 export async function resolveBankAccount(accountNumber: string, bankCode: string) {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
   const response = await fetchWithTimeout(`${env.FLUTTERWAVE_BASE_URL}/accounts/resolve`, {
@@ -279,14 +345,14 @@ export async function resolveBankAccount(accountNumber: string, bankCode: string
     body: JSON.stringify({ account_number: accountNumber, account_bank: bankCode }),
   });
   const text = await response.text();
-  let data: { status?: string; data?: { account_name?: string; account_number?: string }; message?: string };
+  let data: { status?: string; data?: { account_name?: string; account_number?: string }; message?: string; code?: string };
   try {
-    data = JSON.parse(text) as { status?: string; data?: { account_name?: string; account_number?: string }; message?: string };
+    data = JSON.parse(text) as { status?: string; data?: { account_name?: string; account_number?: string }; message?: string; code?: string };
   } catch (_error) {
-    throw new Error(`Account resolution failed (${response.status}): ${text.slice(0, 200) || response.statusText}`);
+    throw new FlutterwaveError(`Account resolution failed (${response.status}): ${text.slice(0, 200) || response.statusText}`, response.status, { raw: text.slice(0, 2000) || response.statusText });
   }
-  if (!response.ok) throw new Error(data.message || `Account resolution failed (${response.status})`);
-  if (String(data.status || "").toLowerCase() === "error") throw new Error(data.message || "Flutterwave could not resolve this account");
+  if (!response.ok) throw new FlutterwaveError(data.message || `Account resolution failed (${response.status})`, response.status, data);
+  if (String(data.status || "").toLowerCase() === "error") throw new FlutterwaveError(data.message || "Flutterwave could not resolve this account", response.status || 400, data);
   return data;
 }
 

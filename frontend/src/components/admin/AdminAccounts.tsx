@@ -18,7 +18,7 @@ export default function AdminAccounts() {
   }
   return <div className="space-y-5">
     <div className="velo-card max-w-3xl space-y-4 p-5">
-      <div><h2 className="text-lg font-bold text-velo-900">Administrator and staff accounts</h2><p className="mt-1 text-sm text-slate-500">Administrators have full access. Managers receive only the selected permissions.</p></div>
+      <div><h2 className="text-lg font-semibold text-velo-900">Administrator and staff accounts</h2><p className="mt-1 text-sm text-slate-500">Administrators have full access. Managers receive only the selected permissions.</p></div>
       <div className="grid gap-3 sm:grid-cols-2">
         {([["name", "Full name"], ["email", "Email"], ["phone", "Nigerian phone number"]] as const).map(([key, placeholder]) => (
           <input

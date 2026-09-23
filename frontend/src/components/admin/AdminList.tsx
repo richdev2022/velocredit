@@ -230,7 +230,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   return (
     <div className={`rounded-xl border border-slate-100 p-3 bg-gradient-to-br ${colors[accent]}`}>
       <div className="text-xs font-medium uppercase tracking-wider opacity-75">{label}</div>
-      <div className="text-2xl font-bold mt-0.5">{value}</div>
+      <div className="text-2xl font-semibold mt-0.5">{value}</div>
     </div>
   );
 }

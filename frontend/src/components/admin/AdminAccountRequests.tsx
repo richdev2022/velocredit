@@ -83,7 +83,7 @@ export default function AdminAccountRequests() {
       <div className="velo-card rounded-2xl p-4 sm:p-5 lg:p-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <h2 className="font-bold text-velo-900 dark:text-white">Account change queue</h2>
+            <h2 className="font-semibold text-velo-900 dark:text-white">Account change queue</h2>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
               First-time setups are applied immediately. Subsequent edits require admin approval.
             </p>
@@ -138,7 +138,7 @@ export default function AdminAccountRequests() {
                     >
                       {r.status.replace(/_/g, " ")}
                     </span>
-                    <span className="rounded-full bg-slate-100 dark:bg-slate-800 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                    <span className="rounded-full bg-slate-100 dark:bg-slate-800 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
                       {r.type.replace(/_/g, " ")}
                     </span>
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -146,7 +146,7 @@ export default function AdminAccountRequests() {
                     </span>
                   </div>
                   <div>
-                    <div className="text-base font-bold text-velo-900 dark:text-white">
+                    <div className="text-base font-semibold text-velo-900 dark:text-white">
                       {r.user?.fullName || r.userId}
                     </div>
                     <div className="text-xs text-slate-500 dark:text-slate-400">
@@ -157,7 +157,7 @@ export default function AdminAccountRequests() {
                   <div className="grid gap-3 sm:grid-cols-2">
                     {r.existingSnapshot && (
                       <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4">
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
                           Current account
                         </div>
                         <div className="space-y-1 text-sm">
@@ -183,7 +183,7 @@ export default function AdminAccountRequests() {
                       </div>
                     )}
                     <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50/50 dark:bg-emerald-900/10 p-4">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-2">
                         Requested account
                       </div>
                       <div className="space-y-1 text-sm">
