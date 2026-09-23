@@ -23,6 +23,7 @@ function formatLoanStatus(status?: string): string {
     MORE_INFORMATION_REQUIRED: "More information required",
     APPROVED: "Approved — awaiting disbursement",
     DISBURSEMENT_PENDING: "Disbursement processing",
+    REJECTED: "Declined — action required",
     DISBURSED: "Disbursed",
     ACTIVE: "Active",
     PAST_DUE: "Past due",
@@ -34,6 +35,7 @@ function formatLoanStatus(status?: string): string {
 type DashboardData = {
   applications?: Array<{
     id?: string;
+    applicationId?: string;
     status?: string;
     amountNaira?: number;
     outstandingNaira?: number;
@@ -43,6 +45,9 @@ type DashboardData = {
     productName?: string;
     disbursedAt?: string;
     maturityDate?: string;
+    manualNote?: string;
+    disbursementAccount?: Record<string, unknown>;
+    customerSnapshot?: { disbursementAccount?: Record<string, unknown> } | null;
   }>;
   loans?: Array<{
     id?: string;
@@ -222,6 +227,19 @@ export default function BorrowerDashboard() {
       ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED"].includes(String(application.status))
     ) || data?.loans?.some((loan) => !["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(String(loan.status)))
   );
+
+  // The disbursement account attached to the most recent OPEN application —
+  // the account the borrower submitted WITH the application. Settings shows it
+  // read-only while the application is under review (locked ≠ invisible).
+  const openApplicationAccount: Record<string, unknown> | null = (() => {
+    const open = data?.applications?.find((application) =>
+      ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSEMENT_PENDING"].includes(String(application.status))
+    );
+    if (!open) return null;
+    const merged = { ...(open.customerSnapshot?.disbursementAccount ?? {}), ...(open.disbursementAccount ?? {}) };
+    return merged.accountNumber ? merged : null;
+  })();
+  const visibleDisbursementAccount = data?.disbursementAccount ?? openApplicationAccount;
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const repayments = data?.repayments ?? data?.payments ?? [];
@@ -579,12 +597,14 @@ export default function BorrowerDashboard() {
           {view === "account" && (
             <BorrowerDisbursementSection
               userId={user?.id}
-              initial={data?.disbursementAccount ?? null}
-              // Lock ONLY when a saved account already exists (edits require
-              // admin approval). If no account exists anywhere, the borrower
+              initial={visibleDisbursementAccount}
+              // Lock when a submitted application exists AND an account is
+              // attached to it (saved standalone or submitted with the
+              // application) — the account the loan will be paid into must not
+              // change mid-review. If NO account exists anywhere, the borrower
               // MUST be able to add one — even with a submitted application —
               // otherwise disbursement would be impossible.
-              locked={hasSubmittedApplication && Boolean(data?.disbursementAccount)}
+              locked={hasSubmittedApplication && Boolean(visibleDisbursementAccount)}
               onSaved={(acc) => {
                 setData((d) => (d ? { ...d, disbursementAccount: acc } : d));
                 setSuccessMsg(
@@ -1256,8 +1276,34 @@ function BorrowerOverview(props: any) {
             <div className="mt-5 rounded-xl border border-slate-100 p-4 dark:border-slate-700">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm font-semibold text-velo-900 dark:text-white">Latest application</span>
-                <span className="badge badge-pending">{formatLoanStatus(data.applications[0].status)}</span>
+                <span
+                  className={`badge ${
+                    ["REJECTED"].includes(String(data.applications[0].status))
+                      ? "border border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-900/30 dark:text-red-300"
+                      : "badge-pending"
+                  }`}
+                >
+                  {formatLoanStatus(data.applications[0].status)}
+                </span>
               </div>
+              {["REJECTED", "MORE_INFORMATION_REQUIRED"].includes(String(applicationStatus)) && (
+                <div
+                  className={`mt-3 rounded-lg border p-3 text-xs leading-5 ${
+                    String(applicationStatus) === "REJECTED"
+                      ? "border-red-100 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
+                      : "border-amber-100 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300"
+                  }`}
+                >
+                  <span className="font-semibold">
+                    {String(applicationStatus) === "REJECTED"
+                      ? "Your application was declined. You can fix the failed information and resubmit it."
+                      : "The loan team needs more information — open your application to complete what is missing."}
+                  </span>
+                  {String(data.applications[0].manualNote ?? "").trim() && (
+                    <span className="mt-1 block">Reviewer note: “{String(data.applications[0].manualNote).trim()}”</span>
+                  )}
+                </div>
+              )}
               <div className="mt-4 space-y-2 border-t border-slate-100 pt-3 dark:border-slate-700">
                 {(data.applications ?? []).slice(0, 4).map((application: NonNullable<DashboardData["applications"]>[number], index: number) => (
                   <div key={application.id ?? index} className="flex items-center justify-between gap-3 text-xs">
@@ -1302,7 +1348,11 @@ function BorrowerOverview(props: any) {
               </span>
             ) : (
               <Link to="/apply" className="btn-primary inline-flex items-center gap-2">
-                {data?.applications?.[0] ? "Continue Application" : "New Application"}
+                {["REJECTED", "MORE_INFORMATION_REQUIRED"].includes(String(applicationStatus))
+                  ? "Fix & Resubmit Application"
+                  : data?.applications?.[0]
+                  ? "Continue Application"
+                  : "New Application"}
               </Link>
             )}
           </div>

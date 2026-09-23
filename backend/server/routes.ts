@@ -3134,7 +3134,10 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
       res.status(409).json({ ok: false, error: `Application ${application.applicationId} is locked because its loan is ${application.status}.`, application });
       return;
     }
-    if (!["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED"].includes(application.status)) {
+    // REJECTED applications are EDITABLE: the customer must be able to re-access
+    // the loan, fix the failed information and resubmit. MORE_INFORMATION_REQUIRED
+    // stays editable as before.
+    if (!["DRAFT", "IN_PROGRESS", "MORE_INFORMATION_REQUIRED", "REJECTED"].includes(application.status)) {
       res.status(409).json({ ok: false, error: `Application ${application.status} cannot be modified` });
       return;
     }
@@ -3249,11 +3252,25 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
       return;
     }
     const wasSubmitted = Boolean(application.submittedAt);
+    const isResubmission = application.status === "REJECTED";
     application.status = "SUBMITTED";
-    application.submittedAt = application.submittedAt ?? new Date().toISOString();
+    application.submittedAt = new Date().toISOString();
     application.updatedAt = new Date().toISOString();
+    if (isResubmission) {
+      // Resubmission after rejection: reset the ENTIRE review pipeline so the
+      // loan team sees a FRESH review. The previous rejection decision, note
+      // and stage rejections must not leak into the new review round.
+      application.manualDecision = "PENDING";
+      application.manualNote = "";
+      application.approvedAt = undefined;
+      application.stageRejectionNotes = {};
+      application.stageStatuses = {
+        profile: "COMPLETED", employment: "COMPLETED", bvn_nin: "COMPLETED", address: "COMPLETED", liveness: "COMPLETED", loan_details: "COMPLETED", documents: "COMPLETED", disbursement_account: "COMPLETED", consent: "COMPLETED", credit_review: "PENDING_REVIEW", risk_review: "PENDING_REVIEW", approval: "PENDING_REVIEW",
+      };
+      console.info(`[routes] application ${application.applicationId} resubmitted after rejection user=${req.user!.id}`);
+    }
     if (!(await persistMutation(res))) return;
-    res.json({ ok: true, application });
+    res.json({ ok: true, application, resubmitted: isResubmission });
     if (!wasSubmitted) void sendLoanEmails(application, "SUBMITTED");
   } catch (_e) {
     console.error("[routes] unexpected POST /borrower/applications/:id/submit error:", _e);
@@ -5887,11 +5904,48 @@ router.put("/investor/payout-accounts/:accountId/default", requireAuth, requireR
 
 router.get("/borrower/disbursement-account", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
   const borrowerId = req.user!.id;
-  const account = disbursementAccounts.find((a) => a.borrowerId === borrowerId);
+  const saved = disbursementAccounts.find((a) => a.borrowerId === borrowerId) ?? null;
   const pendingRequests = accountChangeRequests.filter(
     (r) => r.userId === borrowerId && r.type === "BORROWER_DISBURSEMENT_ACCOUNT"
   );
-  res.json({ ok: true, account: account ?? null, pendingRequests });
+  // Visibility guarantee: while a loan application is submitted the settings
+  // form is LOCKED — but locked must never mean INVISIBLE. When no standalone
+  // account is saved, fall back to the account the borrower submitted WITH the
+  // most recent open application so they can always see exactly where their
+  // loan will be paid. `accountSource` lets the UI label it appropriately.
+  let account = saved;
+  let accountSource: "saved" | "application" | null = saved ? "saved" : null;
+  if (!account) {
+    const openStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSEMENT_PENDING", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID"];
+    const application = loanApplications
+      .filter((a) => a.borrowerId === borrowerId && openStatuses.includes(String(a.status)))
+      .sort((a, b) => String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? "")))
+      .find((a) => {
+        const top = (a.disbursementAccount ?? {}) as Record<string, unknown>;
+        const snap = (((a.customerSnapshot ?? {}) as Record<string, unknown>).disbursementAccount ?? {}) as Record<string, unknown>;
+        return Boolean(top.accountNumber || snap.accountNumber);
+      });
+    if (application) {
+      const snap = (((application.customerSnapshot ?? {}) as Record<string, unknown>).disbursementAccount ?? {}) as Record<string, unknown>;
+      const merged = { ...snap, ...((application.disbursementAccount ?? {}) as Record<string, unknown>) };
+      if (merged.accountNumber) {
+        account = {
+          id: `application:${application.id}`,
+          borrowerId,
+          bankCode: String(merged.bankCode ?? ""),
+          bankName: merged.bankName ? String(merged.bankName) : undefined,
+          accountNumber: String(merged.accountNumber),
+          accountName: merged.accountName ? String(merged.accountName) : undefined,
+          status: "ACTIVE" as const,
+          createdAt: application.createdAt,
+          updatedAt: application.updatedAt ?? application.createdAt,
+          rejectionReason: null,
+        };
+        accountSource = "application";
+      }
+    }
+  }
+  res.json({ ok: true, account: account ?? null, accountSource, pendingRequests });
 });
 
 router.post("/borrower/disbursement-account/resolve", requireAuth, requireRole("BORROWER"), async (req, res) => {

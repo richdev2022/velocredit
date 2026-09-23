@@ -12,7 +12,9 @@ export type ApplicationStatus =
   | "DRAFT"
   | "IN_PROGRESS"
   | "SUBMITTED"
+  | "KYC_PENDING"
   | "UNDER_REVIEW"
+  | "MORE_INFORMATION_REQUIRED"
   | "APPROVED"
   | "REJECTED"
   | "DISBURSED"
@@ -196,6 +198,15 @@ export interface ApplicationData {
   createdAt: string;
   updatedAt: string;
   submittedAt: string | null;
+
+  /**
+   * Populated when the backend reports this application as REJECTED (or
+   * MORE_INFORMATION_REQUIRED): the reviewer's note describing what failed.
+   * The wizard shows it so the customer knows exactly what to fix before
+   * resubmitting. Synced from the borrower dashboard on restore.
+   */
+  rejectionNote?: string | null;
+  rejectedAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------

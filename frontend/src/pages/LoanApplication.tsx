@@ -11,6 +11,7 @@ import { useEffect } from "react";
 import { useSearchParams, useNavigate, Routes, Route, Navigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import { useApplication, canSubmitApplication } from "../context/ApplicationContext";
+import type { ApplicationData } from "../types/application";
 import ApplicantTypeSection from "../sections/ApplicantTypeSection";
 import PersonalInfoSection from "../sections/PersonalInfoSection";
 import PersonalKycSection from "../sections/PersonalKycSection";
@@ -25,6 +26,75 @@ import AgreementSection from "../sections/AgreementSection";
 import ReviewSection from "../sections/ReviewSection";
 import ApplicationDashboard from "../components/ApplicationDashboard";
 import SuccessPage from "./Success";
+
+/**
+ * Banner shown when the customer re-opens an application the loan team
+ * REJECTED (or flagged MORE_INFORMATION_REQUIRED). Explains what failed and
+ * guides them to fix the failed information and resubmit.
+ */
+function ReapplicationNotice({ application }: { application: ApplicationData }) {
+  const isMoreInfo = application.status === "MORE_INFORMATION_REQUIRED";
+  const note = application.rejectionNote?.trim();
+  return (
+    <div
+      className={`rounded-xl border p-4 sm:p-5 ${
+        isMoreInfo
+          ? "border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20"
+          : "border-red-200 bg-red-50 dark:border-red-900/40 dark:bg-red-900/20"
+      }`}
+      role="alert"
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className={`mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+            isMoreInfo ? "bg-amber-500" : "bg-red-500"
+          } text-white`}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </div>
+        <div className="min-w-0">
+          <p
+            className={`text-sm font-bold ${
+              isMoreInfo ? "text-amber-900 dark:text-amber-200" : "text-red-900 dark:text-red-200"
+            }`}
+          >
+            {isMoreInfo
+              ? "More information required on your loan application"
+              : "Your loan application needs changes before it can be approved"}
+          </p>
+          <p
+            className={`mt-1 text-sm leading-6 ${
+              isMoreInfo ? "text-amber-800 dark:text-amber-300" : "text-red-800 dark:text-red-300"
+            }`}
+          >
+            {isMoreInfo
+              ? "The loan team needs a little more information to continue reviewing your application. Your previous answers are saved — go through the sections below to complete what is missing, then resubmit from Review & Submit."
+              : "Your application was declined, but you can fix it and try again. Your previous answers are saved — go through the sections below to update the information that failed, then resubmit it for a fresh review from Review & Submit."}
+          </p>
+          {note && (
+            <p
+              className={`mt-2 rounded-lg px-3 py-2 text-sm font-medium ${
+                isMoreInfo
+                  ? "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200"
+                  : "bg-red-100 text-red-900 dark:bg-red-900/40 dark:text-red-200"
+              }`}
+            >
+              Reviewer note: “{note}”
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function Wizard() {
   const {
@@ -57,16 +127,21 @@ function Wizard() {
     // Fall back to the dashboard
     return (
       <Layout>
-        <ApplicationDashboard
-          application={application}
-          sections={sections}
-          currentIndex={currentIndex}
-          saveState={saveState}
-          lastSavedAt={lastSavedAt}
-          onNavigate={navigate}
-          onSubmit={submit}
-          canSubmit={canSubmitApplication(application, sections)}
-        />
+        <div className="space-y-5">
+          {(application.status === "REJECTED" || application.status === "MORE_INFORMATION_REQUIRED") && (
+            <ReapplicationNotice application={application} />
+          )}
+          <ApplicationDashboard
+            application={application}
+            sections={sections}
+            currentIndex={currentIndex}
+            saveState={saveState}
+            lastSavedAt={lastSavedAt}
+            onNavigate={navigate}
+            onSubmit={submit}
+            canSubmit={canSubmitApplication(application, sections)}
+          />
+        </div>
       </Layout>
     );
   }
@@ -95,8 +170,19 @@ function Wizard() {
     }
   };
 
-  // Each section component renders its own SectionShell — wrap in Layout here
-  return <Layout>{renderSection()}</Layout>;
+  // Each section component renders its own SectionShell — wrap in Layout here.
+  // A rejected / more-info application shows the re-application banner above
+  // the section so the customer always knows WHY they are editing it.
+  return (
+    <Layout>
+      <div className="space-y-5">
+        {(application.status === "REJECTED" || application.status === "MORE_INFORMATION_REQUIRED") && (
+          <ReapplicationNotice application={application} />
+        )}
+        {renderSection()}
+      </div>
+    </Layout>
+  );
 }
 
 function Dashboard() {
@@ -123,16 +209,21 @@ function Dashboard() {
 
   return (
     <Layout>
-      <ApplicationDashboard
-        application={application}
-        sections={sections}
-        currentIndex={currentIndex}
-        saveState={saveState}
-        lastSavedAt={lastSavedAt}
-        onNavigate={(i) => { navigate(i); nav("/apply"); }}
-        onSubmit={submit}
-        canSubmit={canSubmitApplication(application, sections)}
-      />
+      <div className="space-y-5">
+        {(application.status === "REJECTED" || application.status === "MORE_INFORMATION_REQUIRED") && (
+          <ReapplicationNotice application={application} />
+        )}
+        <ApplicationDashboard
+          application={application}
+          sections={sections}
+          currentIndex={currentIndex}
+          saveState={saveState}
+          lastSavedAt={lastSavedAt}
+          onNavigate={(i) => { navigate(i); nav("/apply"); }}
+          onSubmit={submit}
+          canSubmit={canSubmitApplication(application, sections)}
+        />
+      </div>
       <div className="mt-6 text-center">
         <button
           type="button"
