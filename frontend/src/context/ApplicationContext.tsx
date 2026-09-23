@@ -38,6 +38,7 @@ import {
   getAccessToken,
   getApplicationDraft,
   getBorrowerDashboard,
+  getReapplyPrefill,
   saveApplicationDraft,
   submitBorrowerApplication,
   getLoanProducts,
@@ -127,6 +128,9 @@ interface ApplicationContextValue {
   resumeApplication: (email: string, phone: string) => Promise<LookupDraftResponse>;
   loadExisting: (id: string, data?: ApplicationData, sectionIndex?: number | null) => void;
   resetApplication: () => void;
+  /** Source application ID when the current draft was auto-prefilled from a previous application. */
+  prefilledFrom: string | null;
+  dismissPrefillNotice: () => void;
 
   // navigation
   navigate: (index: number) => void;
@@ -172,6 +176,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [sectionStatusOverrides, setSectionStatusOverrides] = useState<Partial<Record<SectionKey, SectionStatus>>>({});
   const [loanConfigVersion, setLoanConfigVersion] = useState(0);
+  const [prefilledFrom, setPrefilledFrom] = useState<string | null>(null);
 
   const applicationRef = useRef<ApplicationData | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -397,109 +402,69 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     setCurrentIndex(0);
     currentIndexRef.current = 0;
     setSectionStatusOverrides({});
+    setPrefilledFrom(null);
     return fresh;
   }, []);
 
   // ----- lifecycle: prefill from previous application -----
   // Returning borrowers must NOT re-enter information they already provided.
-  // We pull the most recent previous application snapshot from the backend and
-  // fill every still-empty field of the fresh draft. Identity verifications
-  // carry over too (same person, already verified). Documents and the signed
-  // agreement are intentionally NOT carried over — those must be re-uploaded /
-  // re-signed for the new loan.
+  // Preferred source: the server-side reapply-prefill endpoint, which merges
+  // EVERY previous application snapshot (newest wins) with the account
+  // profile, the verified KYC case and the saved disbursement account — so
+  // even a customer whose latest snapshot is incomplete still gets every
+  // section filled. Fallback: the most recent snapshot from the borrower
+  // dashboard. Identity verifications carry over too (same person, already
+  // verified). Documents and the signed agreement are intentionally NOT
+  // carried over — those must be re-uploaded / re-signed for the new loan.
   const prefillFromPrevious = useCallback(async (): Promise<ApplicationData | null> => {
     const current = applicationRef.current;
     if (!current || current.status === "SUBMITTED") return null;
     if (!getAccessToken()) return null;
     try {
+      // 1) Server-merged prefill (richest source).
+      try {
+        const response = await getReapplyPrefill();
+        const prefill = response?.prefill;
+        if (response?.ok && prefill && response.meta?.hasPreviousApplication) {
+          const updated = mergePrefillIntoDraft(current, prefill);
+          if (applicationRef.current?.applicationId !== current.applicationId) return null;
+          applicationRef.current = updated;
+          setApplication(updated);
+          setPrefilledFrom(response.meta?.sourceApplicationId || "previous-application");
+          return updated;
+        }
+        if (response?.ok && response.meta && response.meta.hasPreviousApplication === false) {
+          return null; // genuinely a first-time borrower
+        }
+      } catch {
+        // Endpoint unavailable (older backend deployment) — fall through.
+      }
+
+      // 2) Fallback: most recent dashboard application snapshot.
       const dashboard = await getBorrowerDashboard();
       const applications = Array.isArray((dashboard as { applications?: unknown[] }).applications)
         ? ((dashboard as { applications: unknown[] }).applications as Array<Record<string, unknown>>)
         : [];
-      const relevantStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "REJECTED"];
+      const relevantStatuses = ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED", "APPROVED", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "REJECTED", "CANCELLED", "WRITTEN_OFF"];
       const previous = applications
         .filter((app) => relevantStatuses.includes(String(app.status ?? "")))
-        .filter((app) => String(app.id ?? "") !== current.applicationId)
+        .filter((app) => String(app.id ?? "") !== current.applicationId && String(app.applicationId ?? "") !== current.applicationId)
         .sort((a, b) =>
           String(b.submittedAt ?? b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.submittedAt ?? a.updatedAt ?? a.createdAt ?? ""))
         )[0];
       if (!previous) return null;
-      const snapshot = (previous.customerSnapshot ?? {}) as Record<string, Record<string, unknown>>;
-      const str = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
-
-      const fillStrings = <T extends object>(base: T, incoming: Record<string, unknown> | undefined, fields: Array<keyof T & string>): T => {
-        const next = { ...base } as Record<string, unknown>;
-        for (const field of fields) {
-          if (String(next[field] ?? "").trim() !== "") continue;
-          const value = str(incoming?.[field]);
-          if (value) next[field] = value;
-        }
-        return next as unknown as T;
-      };
-
-      const prevDisb = snapshot.disbursementAccount ?? {};
-      const prevKyc = snapshot.kyc ?? {};
-      const prevLoan = snapshot.loanRequest ?? {};
-      const program = getLoanProgram(current.applicantType || "PERSONAL");
-
-      // Loan request: restore the previous amount/tenure — clamped to the
-      // CURRENT product limits, which may have changed since the last loan.
-      const prevAmount = Number(prevLoan.amount);
-      const amount = Number.isFinite(prevAmount) && prevAmount > 0
-        ? Math.min(program.loanLimits.max, Math.max(program.loanLimits.min, prevAmount))
-        : current.loanRequest.amount;
-      const tenureValues = program.tenures.map((t) => t.value);
-      const prevTenure = Number(prevLoan.tenure);
-      const tenure = tenureValues.includes(prevTenure) ? prevTenure : current.loanRequest.tenure;
-      const purpose = current.loanRequest.purpose || str(prevLoan.purpose);
-
-      // KYC: carry the identifiers AND their verification status — the same
-      // person already passed BVN/NIN/liveness in a previous application.
-      const kyc: ApplicationData["kyc"] = { ...current.kyc };
-      for (const field of ["bvn", "nin", "identificationType", "identificationNumber"] as const) {
-        if (String(kyc[field] ?? "").trim() === "" && str(prevKyc[field])) {
-          (kyc as unknown as Record<string, unknown>)[field] = str(prevKyc[field]);
-        }
-      }
-      if (prevKyc.bvnVerified === true) kyc.bvnVerified = true;
-      if (prevKyc.ninVerified === true) kyc.ninVerified = true;
-      if (prevKyc.livenessVerified === true) kyc.livenessVerified = true;
-      if (prevKyc.verifiedDetails && typeof prevKyc.verifiedDetails === "object") {
-        kyc.verifiedDetails = { ...(kyc.verifiedDetails ?? {}), ...(prevKyc.verifiedDetails as Record<string, unknown>) };
-      }
-      if (str(prevKyc.identityPhotoUrl)) kyc.identityPhotoUrl = str(prevKyc.identityPhotoUrl);
-
-      const updated: ApplicationData = touch({
-        ...current,
-        personalInfo: fillStrings(current.personalInfo, snapshot.personalInfo, ["fullName", "phone", "email", "dateOfBirth", "residentialAddress", "state", "lga"]),
-        disbursementAccount: fillStrings(
-          { ...current.disbursementAccount, bankCode: current.disbursementAccount.bankCode ?? "" },
-          prevDisb,
-          ["accountName", "bankName", "bankCode", "accountNumber"],
-        ),
-        personalFinancial: fillStrings(current.personalFinancial, snapshot.personalFinancial, ["employmentStatus", "employerBusinessName", "monthlyIncome", "monthlyExpenses", "existingLoanObligations", "expectedRepaymentSource"]),
-        businessInfo: fillStrings(current.businessInfo, snapshot.businessInfo, ["businessName", "businessRegistrationNumber", "businessType", "businessAddress", "businessIndustry", "yearsInBusiness"]),
-        businessRep: fillStrings(current.businessRep, snapshot.businessRep, ["fullName", "dateOfBirth", "position", "phone", "email", "residentialAddress"]),
-        businessFinancial: fillStrings(current.businessFinancial, snapshot.businessFinancial, ["averageMonthlyRevenue", "averageMonthlyExpenses", "existingLoanObligations", "expectedRepaymentSource"]),
-        kyc,
-        collateral: (() => {
-          const prev = snapshot.collateral ?? {};
-          const merged = { ...current.collateral };
-          for (const field of ["type", "description", "estimatedValue", "ownership", "location", "documentReference"] as const) {
-            if (String(merged[field] ?? "").trim() === "" && str(prev[field])) merged[field] = str(prev[field]);
-          }
-          if (merged.provided !== true && typeof prev.provided === "boolean") merged.provided = prev.provided;
-          return merged;
-        })(),
-        witness: (() => {
-          const prev = snapshot.witness ?? {};
-          return {
-            fullName: current.witness.fullName || str(prev.fullName),
-            phone: current.witness.phone || str(prev.phone),
-          };
-        })(),
-        loanRequest: { amount, tenure, purpose },
-        calculation: calculateLoan(amount, tenure, { loanType: current.applicantType || "PERSONAL" }),
+      const snapshot = (previous.customerSnapshot ?? {}) as Record<string, unknown>;
+      const updated = mergePrefillIntoDraft(current, {
+        personalInfo: snapshot.personalInfo as Record<string, unknown> | undefined,
+        disbursementAccount: snapshot.disbursementAccount as Record<string, unknown> | undefined,
+        personalFinancial: snapshot.personalFinancial as Record<string, unknown> | undefined,
+        businessInfo: snapshot.businessInfo as Record<string, unknown> | undefined,
+        businessRep: snapshot.businessRep as Record<string, unknown> | undefined,
+        businessFinancial: snapshot.businessFinancial as Record<string, unknown> | undefined,
+        kyc: snapshot.kyc as Record<string, unknown> | undefined,
+        collateral: snapshot.collateral as Record<string, unknown> | undefined,
+        witness: snapshot.witness as Record<string, unknown> | undefined,
+        loanRequest: snapshot.loanRequest as Record<string, unknown> | undefined,
       });
       // Commit the prefill ONLY if the fresh draft we started from is still
       // the active application — if the dashboard call raced with another
@@ -508,6 +473,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       if (applicationRef.current?.applicationId !== current.applicationId) return null;
       applicationRef.current = updated;
       setApplication(updated);
+      setPrefilledFrom(String(previous.applicationId ?? previous.id ?? "previous-application"));
       return updated;
     } catch (_e) {
       return null;
@@ -572,6 +538,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     setSaveState("idle");
     setLastSavedAt(null);
     setSectionStatusOverrides({});
+    setPrefilledFrom(null);
   }, [application]);
 
   // ----- navigation -----
@@ -784,6 +751,8 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
     submit,
     isSubmitting,
     submitError,
+    prefilledFrom,
+    dismissPrefillNotice: () => setPrefilledFrom(null),
   };
 
   return <ApplicationContext.Provider value={value}>{children}</ApplicationContext.Provider>;
@@ -826,6 +795,107 @@ function pickOptionalString(prior: unknown, data: unknown, fallback: string | nu
  * rejected loan, fix the failed information and resubmit. Every section is
  * restored from the immutable customerSnapshot captured at submission.
  */
+/**
+ * Merge a server-provided prefill payload (from the reapply-prefill endpoint
+ * or a dashboard application snapshot) into a fresh draft. Every still-empty
+ * field is filled; values the customer has already typed in this draft are
+ * never overwritten (except the loan request, which restores the previous
+ * amount/tenure clamped to the CURRENT product limits). Used by BOTH prefill
+ * sources so the behaviour is identical whichever one serves the data.
+ */
+function mergePrefillIntoDraft(
+  current: ApplicationData,
+  prefill: {
+    personalInfo?: Record<string, unknown> | null;
+    disbursementAccount?: Record<string, unknown> | null;
+    personalFinancial?: Record<string, unknown> | null;
+    businessInfo?: Record<string, unknown> | null;
+    businessRep?: Record<string, unknown> | null;
+    businessFinancial?: Record<string, unknown> | null;
+    kyc?: Record<string, unknown> | null;
+    collateral?: Record<string, unknown> | null;
+    witness?: Record<string, unknown> | null;
+    loanRequest?: Record<string, unknown> | null;
+  }
+): ApplicationData {
+  const str = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  const fillStrings = <T extends object>(base: T, incoming: Record<string, unknown> | undefined | null, fields: Array<keyof T & string>): T => {
+    const next = { ...base } as Record<string, unknown>;
+    for (const field of fields) {
+      if (String(next[field] ?? "").trim() !== "") continue;
+      const value = str(incoming?.[field]);
+      if (value) next[field] = value;
+    }
+    return next as unknown as T;
+  };
+
+  const prevDisb = (prefill.disbursementAccount ?? {}) as Record<string, unknown>;
+  const prevKyc = (prefill.kyc ?? {}) as Record<string, unknown>;
+  const prevLoan = (prefill.loanRequest ?? {}) as Record<string, unknown>;
+  const program = getLoanProgram(current.applicantType || "PERSONAL");
+
+  // Loan request: restore the previous amount/tenure — clamped to the
+  // CURRENT product limits, which may have changed since the last loan.
+  const prevAmount = Number(prevLoan.amount);
+  const amount = Number.isFinite(prevAmount) && prevAmount > 0
+    ? Math.min(program.loanLimits.max, Math.max(program.loanLimits.min, prevAmount))
+    : current.loanRequest.amount;
+  const tenureValues = program.tenures.map((t) => t.value);
+  const prevTenure = Number(prevLoan.tenure);
+  const tenure = tenureValues.includes(prevTenure) ? prevTenure : current.loanRequest.tenure;
+  const purpose = current.loanRequest.purpose || str(prevLoan.purpose);
+
+  // KYC: carry the identifiers AND their verification status — the same
+  // person already passed BVN/NIN/liveness in a previous application.
+  const kyc: ApplicationData["kyc"] = { ...current.kyc };
+  for (const field of ["bvn", "nin", "identificationType", "identificationNumber"] as const) {
+    if (String(kyc[field] ?? "").trim() === "" && str(prevKyc[field])) {
+      (kyc as unknown as Record<string, unknown>)[field] = str(prevKyc[field]);
+    }
+  }
+  if (prevKyc.bvnVerified === true) kyc.bvnVerified = true;
+  if (prevKyc.ninVerified === true) kyc.ninVerified = true;
+  if (prevKyc.livenessVerified === true) kyc.livenessVerified = true;
+  if (prevKyc.verifiedDetails && typeof prevKyc.verifiedDetails === "object") {
+    kyc.verifiedDetails = { ...(kyc.verifiedDetails ?? {}), ...(prevKyc.verifiedDetails as Record<string, unknown>) };
+  }
+  if (str(prevKyc.identityPhotoUrl)) kyc.identityPhotoUrl = str(prevKyc.identityPhotoUrl);
+
+  return {
+    ...current,
+    updatedAt: new Date().toISOString(),
+    personalInfo: fillStrings(current.personalInfo, prefill.personalInfo, ["fullName", "phone", "email", "dateOfBirth", "residentialAddress", "state", "lga"]),
+    disbursementAccount: fillStrings(
+      { ...current.disbursementAccount, bankCode: current.disbursementAccount.bankCode ?? "" },
+      prevDisb,
+      ["accountName", "bankName", "bankCode", "accountNumber"],
+    ),
+    personalFinancial: fillStrings(current.personalFinancial, prefill.personalFinancial, ["employmentStatus", "employerBusinessName", "monthlyIncome", "monthlyExpenses", "existingLoanObligations", "expectedRepaymentSource"]),
+    businessInfo: fillStrings(current.businessInfo, prefill.businessInfo, ["businessName", "businessRegistrationNumber", "businessType", "businessAddress", "businessIndustry", "yearsInBusiness"]),
+    businessRep: fillStrings(current.businessRep, prefill.businessRep, ["fullName", "dateOfBirth", "position", "phone", "email", "residentialAddress"]),
+    businessFinancial: fillStrings(current.businessFinancial, prefill.businessFinancial, ["averageMonthlyRevenue", "averageMonthlyExpenses", "existingLoanObligations", "expectedRepaymentSource"]),
+    kyc,
+    collateral: (() => {
+      const prev = (prefill.collateral ?? {}) as Record<string, unknown>;
+      const merged = { ...current.collateral };
+      for (const field of ["type", "description", "estimatedValue", "ownership", "location", "documentReference"] as const) {
+        if (String(merged[field] ?? "").trim() === "" && str(prev[field])) merged[field] = str(prev[field]);
+      }
+      if (merged.provided !== true && typeof prev.provided === "boolean") merged.provided = prev.provided;
+      return merged;
+    })(),
+    witness: (() => {
+      const prev = (prefill.witness ?? {}) as Record<string, unknown>;
+      return {
+        fullName: current.witness.fullName || str(prev.fullName),
+        phone: current.witness.phone || str(prev.phone),
+      };
+    })(),
+    loanRequest: { amount, tenure, purpose },
+    calculation: calculateLoan(amount, tenure, { loanType: current.applicantType || "PERSONAL" }),
+  };
+}
+
 function buildEditableApplicationFromServerRow(row: Record<string, unknown>): ApplicationData | null {
   const applicantType = row.applicantType === "BUSINESS" ? "BUSINESS" : row.applicantType === "PERSONAL" ? "PERSONAL" : null;
   const applicationId = String(row.applicationId ?? row.id ?? "").trim();

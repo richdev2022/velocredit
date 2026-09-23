@@ -37,6 +37,8 @@ const envSchema = z.object({
   PREMBLY_ID_SCAN_PATH: z.string().startsWith("/").default("/api/v1/fraud/id-scan/"),
   PREMBLY_FACE_LIVENESS_PATH: z.string().startsWith("/").default("/verification/biometrics/face/liveliness_check"),
   PREMBLY_CREDIT_REPORT_PATH: z.string().startsWith("/").default("/verification/credit_bureau/consumer/advance"),
+  PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH: z.string().startsWith("/").default("/verification/credit_bureau/commercial/advance"),
+  PREMBLY_CREDIT_DATA_MODE: z.enum(["BASIC", "ADVANCE"]).default("ADVANCE"),
   PREMBLY_LIVENESS_PATH: z.string().startsWith("/").default("/identitypass/face-verification/liveness"),
   PREMBLY_WEBHOOK_SECRET: z.string().optional(),
   KUDI_BASE_URL: z.string().url().default("https://my.kudisms.net/api"),

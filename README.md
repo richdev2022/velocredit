@@ -134,7 +134,7 @@ All backend configuration is validated at boot with Zod (`backend/server/config.
 | Group | Variables |
 |---|---|
 | **Flutterwave** | `FLUTTERWAVE_BASE_URL`, `FLUTTERWAVE_PUBLIC_KEY`, `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_ENCRYPTION_KEY`, `FLUTTERWAVE_WEBHOOK_SECRET` |
-| **Prembly (KYC)** | `PREMBLY_BASE_URL`, `PREMBLY_API_KEY`, `PREMBLY_WEBHOOK_SECRET`, endpoint path overrides (`PREMBLY_BVN_PATH`, `PREMBLY_NIN_PATH`, `PREMBLY_BVN_FACE_PATH`, `PREMBLY_NIN_FACE_PATH`, `PREMBLY_ID_SCAN_PATH`, `PREMBLY_FACE_LIVENESS_PATH`, `PREMBLY_CREDIT_REPORT_PATH`, `PREMBLY_LIVENESS_PATH`) |
+| **Prembly (KYC)** | `PREMBLY_BASE_URL`, `PREMBLY_API_KEY`, `PREMBLY_WEBHOOK_SECRET`, endpoint path overrides (`PREMBLY_BVN_PATH`, `PREMBLY_NIN_PATH`, `PREMBLY_BVN_FACE_PATH`, `PREMBLY_NIN_FACE_PATH`, `PREMBLY_ID_SCAN_PATH`, `PREMBLY_FACE_LIVENESS_PATH`, `PREMBLY_CREDIT_REPORT_PATH`, `PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH`, `PREMBLY_CREDIT_DATA_MODE`, `PREMBLY_LIVENESS_PATH`) |
 | **Kudi SMS** | `KUDI_BASE_URL`, `KUDI_API_KEY`, `KUDI_SENDER_ID`, `KUDI_WEBHOOK_SECRET` |
 | **Meta WhatsApp** | `META_WHATSAPP_ACCESS_TOKEN`, `META_WHATSAPP_APP_SECRET`, `META_WHATSAPP_VERIFY_TOKEN`, `META_WHATSAPP_BUSINESS_ACCOUNT_ID`, `META_WHATSAPP_PHONE_NUMBER_ID`, `META_GRAPH_API_VERSION` |
 | **Brevo email** | `BREVO_API_URL`, `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `BREVO_SENDER_NAME` |
@@ -221,10 +221,18 @@ This is a hard API rule: `POST /borrower/applications` **creates a new applicati
 - Drafts are saved locally and cloud-side (`GET/PUT/DELETE /borrower/application-draft…`) with one in-flight draft per borrower.
 - `GET /borrower/application-draft` **self-heals**: if the draft points at a terminal application it is purged (DB + store) and the API answers `draft: null`.
 - Auto-prefill **copies** previous personal/business/financial data into a brand-new application — it never re-uses the old application record.
+- **Server-side reapply prefill** (`GET /borrower/applications/reapply-prefill`): merges EVERY previous application snapshot (oldest → newest, newest wins) with the account profile, the verified KYC case and the saved disbursement account, so even a customer whose last snapshot is incomplete gets every wizard section pre-filled. The wizard shows a "Your previous details are already filled in" banner; documents and the signed agreement are always re-provided.
 
 ### Staged review (admin)
 
 Applications are reviewed stage-by-stage (applicant, business, financials, KYC, collateral, agreement). Admins approve/reject each stage (`PATCH /admin/loans/:loanId/stages/:stageKey`), approve all outstanding stages at once, record the overall decision, and disburse. If a disbursement account change is pending, disbursal is blocked until the borrower's new account is verified/approved (admin can trigger "request account update").
+
+### Credit bureau (Prembly)
+
+- **Commercial (Business) Advance** is the primary bureau product: when the customer's identity/profile holds a business RC number + registered name (`businessInfo` in the application snapshot), the platform calls `POST /verification/credit_bureau/commercial/advance` with `{ rc_number, company_name, data_mode }` and derives a bureau-equivalent score (300–850) from delinquency rating, facility performance, judgements/dishonoured cheques and monthly payment history.
+- **Consumer advance fallback**: borrowers without an RC number are checked via their verified BVN (`/verification/credit_bureau/consumer/advance`).
+- **Admin trigger** (`POST /admin/loan-applications/:applicationId/credit-bureau`, exposed as "Run credit bureau check" on every loan application's detail page): pulls a fresh report, stores a `creditReports` row, refreshes the application's `creditReportSnapshot` (external + recomputed internal score) and writes an audit log. Bureau codes map deterministically: `00` received, `01` record-not-found → FAILED, `02` → PENDING, `03` wallet balance → FAILED.
+- Reports left **PENDING** are retried by the reconciliation cron every 10 minutes (commercial reports retry with their stored RC/company, consumer reports re-resolve BVN/name/DOB).
 
 ---
 

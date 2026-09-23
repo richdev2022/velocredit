@@ -295,6 +295,217 @@ export async function verifyLiveness(image: string, _mimeType?: string): Promise
   }
 }
 
+/* =========================================================================
+   Credit Bureau — Commercial (Business) Advance
+   POST /verification/credit_bureau/commercial/advance
+   Body: { rc_number: <integer RC number>, company_name: string,
+           data_mode: "BASIC" | "ADVANCE" }
+   Success: status === true && response_code === "00"
+   Response: `data` is an ARRAY of single-key sections:
+     SubjectList, BusinessData, HighestDelinquencyRating,
+     FacilityPerformanceSummary, DirectorInformation,
+     CreditAgreementSummary, AccountMonthlyPaymentHistoryHeader,
+     AccountMonthlyPaymentHistory, AddressHistory,
+     AdditionalContactHistory, EnquiryHistoryTop, EnquiryDetails.
+   The commercial report carries NO single numeric score, so we derive a
+   bureau-equivalent score (300–850) deterministically from the facility
+   performance + delinquency + payment history sections. The derivation is
+   documented in deriveCommercialBureauScore() below.
+   ========================================================================= */
+
+export interface CommercialCreditReportInput {
+  rcNumber: number | string;
+  companyName: string;
+  dataMode?: "BASIC" | "ADVANCE";
+}
+
+/** The commercial response nests every section inside `data` as single-key objects. */
+function commercialSections(response: Record<string, unknown>): Record<string, Array<Record<string, unknown>>> {
+  const data = (response as { data?: unknown }).data;
+  const sections: Record<string, Array<Record<string, unknown>>> = {};
+  if (!Array.isArray(data)) return sections;
+  for (const entry of data) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    for (const [key, value] of Object.entries(entry as Record<string, unknown>)) {
+      if (Array.isArray(value)) sections[key] = value as Array<Record<string, unknown>>;
+      else if (value && typeof value === "object") sections[key] = [value as Record<string, unknown>];
+    }
+  }
+  return sections;
+}
+
+function firstRow(sections: Record<string, Array<Record<string, unknown>>>, key: string): Record<string, unknown> {
+  const rows = sections[key];
+  return rows && rows.length > 0 && rows[0] && typeof rows[0] === "object" ? rows[0] : {};
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const cleaned = value.replace(/,/g, "").trim();
+    const n = Number(cleaned);
+    if (Number.isFinite(n) && cleaned !== "") return n;
+  }
+  return 0;
+}
+
+/**
+ * Deterministic bureau-equivalent score (300–850) from a FirstCentral-style
+ * commercial credit report. Neutral base 620, then:
+ *   − delinquency rating 1..5 → −60 per level (max −300); ≤ 0 means none
+ *   − accounts in bad condition → −45 each (max −270)
+ *   − accounts in good condition → +25 each (max +125)
+ *   − arrears present → −40
+ *   − court judgements → −70 each (max −210)
+ *   − dishonoured/bounced cheques → −30 each (max −90)
+ *   − non-performing facilities → −35 each (max −140)
+ *   − performing facilities → +15 each (max +75)
+ * A "thin file" (no facilities at all) stays near the neutral base so a
+ * business with no bureau history is not punished twice.
+ */
+export function deriveCommercialBureauScore(sections: Record<string, Array<Record<string, unknown>>>): { score: number; breakdown: Record<string, number | string> } {
+  const perf = firstRow(sections, "FacilityPerformanceSummary");
+  const delinquencyRaw = firstRow(sections, "HighestDelinquencyRating").HighestDelinquencyRating;
+  const delinquency = toNumber(delinquencyRaw);
+  const accountsTotal = toNumber(perf.TotalAccounts ?? perf.TotalNumberofAccounts);
+  const accountsGood = toNumber(perf.TotalaccountinGoodcondition);
+  const accountsBad = toNumber(perf.TotalaccountinBadcondition);
+  const arrears = toNumber(perf.TotalAccountarrear ?? perf.Amountarrear);
+  const judgements = toNumber(perf.TotalNumberofJudgement);
+  const dishonoured = toNumber(perf.TotalNumberofDishonoured);
+  const outstanding = toNumber(perf.TotalOutstandingdebt);
+
+  const history = sections.AccountMonthlyPaymentHistory ?? [];
+  let performing = 0;
+  let nonPerforming = 0;
+  for (const row of history) {
+    const status = String(row.PerformanceStatus ?? "").toUpperCase();
+    if (!status) continue;
+    if (/NON.?PERFORM|NOT.?PERFORM|BAD|DOUBTFUL|LOST|WRITTEN.?OFF/.test(status)) nonPerforming += 1;
+    else if (/PERFORM|CURRENT|SATISFACTORY|GOOD/.test(status)) performing += 1;
+  }
+
+  const clamp = (value: number, max: number): number => Math.max(-max, Math.min(0, value));
+  const breakdown: Record<string, number | string> = {
+    base: 620,
+    delinquencyRating: delinquencyRaw == null || delinquencyRaw === "" ? "none" : String(delinquencyRaw),
+    accountsTotal,
+    accountsGood,
+    accountsBad,
+    arrears,
+    judgements,
+    dishonouredCheques: dishonoured,
+    outstandingDebt: outstanding,
+    performingFacilities: performing,
+    nonPerformingFacilities: nonPerforming,
+  };
+
+  let score = 620;
+  const adjustments: Array<[string, number]> = [];
+  if (delinquency > 0) {
+    const adj = -60 * Math.min(delinquency, 5);
+    adjustments.push(["delinquency", adj]);
+  }
+  if (accountsBad > 0) adjustments.push(["badConditionAccounts", clamp(-45 * accountsBad, 270)]);
+  if (accountsGood > 0) adjustments.push(["goodConditionAccounts", Math.min(25 * accountsGood, 125)]);
+  if (arrears > 0) adjustments.push(["arrears", -40]);
+  if (judgements > 0) adjustments.push(["judgements", clamp(-70 * judgements, 210)]);
+  if (dishonoured > 0) adjustments.push(["dishonouredCheques", clamp(-30 * dishonoured, 90)]);
+  if (nonPerforming > 0) adjustments.push(["nonPerformingFacilities", clamp(-35 * nonPerforming, 140)]);
+  if (performing > 0) adjustments.push(["performingFacilities", Math.min(15 * performing, 75)]);
+  for (const [key, adj] of adjustments) {
+    score += adj;
+    breakdown[`adj_${key}`] = adj;
+  }
+
+  const bounded = Math.max(300, Math.min(850, Math.round(score)));
+  breakdown.finalScore = bounded;
+  return { score: bounded, breakdown };
+}
+
+export async function requestCommercialCreditReport(input: CommercialCreditReportInput): Promise<VerificationResult> {
+  const rcDigits = String(input.rcNumber ?? "").replace(/\D/g, "");
+  if (!rcDigits) {
+    return { status: "FAILED", errorMessage: "A business RC number is required for a commercial credit bureau check." };
+  }
+  const companyName = String(input.companyName ?? "").trim();
+  if (!companyName) {
+    return { status: "FAILED", errorMessage: "The registered business name is required for a commercial credit bureau check." };
+  }
+  const body: Record<string, unknown> = {
+    rc_number: Number(rcDigits),
+    company_name: companyName,
+    data_mode: input.dataMode ?? env.PREMBLY_CREDIT_DATA_MODE ?? "ADVANCE",
+  };
+  try {
+    const response = await premblyPost(env.PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH, body);
+    const responseCode = String((response as { response_code?: unknown }).response_code ?? "").trim();
+    const detail = String((response as { detail?: unknown }).detail ?? (response as { message?: unknown }).message ?? "").trim();
+    const ok = (response as { status?: unknown }).status === true && responseCode === "00";
+
+    if (!ok) {
+      if (responseCode === "02") {
+        return {
+          status: "PENDING",
+          errorMessage: detail || "Credit bureau is still processing this report; retry shortly.",
+          normalizedFields: { reportType: "COMMERCIAL_ADVANCE", rcNumber: rcDigits, companyName, ...body },
+          rawResponse: response,
+        };
+      }
+      const friendly =
+        responseCode === "01"
+          ? `No commercial credit record was found at the bureau for RC number ${rcDigits} (${companyName}).`
+          : responseCode === "03"
+          ? "The Prembly wallet balance is insufficient to run this credit check — top up the Prembly wallet and retry."
+          : detail || "Credit bureau lookup failed";
+      return {
+        status: "FAILED",
+        errorMessage: friendly,
+        normalizedFields: { reportType: "COMMERCIAL_ADVANCE", rcNumber: rcDigits, companyName, responseCode },
+        rawResponse: response,
+      };
+    }
+
+    const sections = commercialSections(response);
+    const { score, breakdown } = deriveCommercialBureauScore(sections);
+    const business = firstRow(sections, "BusinessData");
+    const directors = (sections.DirectorInformation ?? []).filter((d) => d && (d.surname || d.firstName || d.othernames));
+    const normalized: Record<string, unknown> = {
+      reportType: "COMMERCIAL_ADVANCE",
+      rcNumber: rcDigits,
+      companyName,
+      dataMode: body.data_mode,
+      score,
+      scoreBreakdown: breakdown,
+      businessName: String(business.BusinessName ?? companyName),
+      commercialId: business.CommercialID != null ? String(business.CommercialID) : undefined,
+      registrationNumber: business.BusinessRegistrationNumber != null ? String(business.BusinessRegistrationNumber) : rcDigits,
+      dateOfIncorporation: business.DateOfIncorporation != null ? String(business.DateOfIncorporation) : undefined,
+      taxIdentificationNumber: business.TaxIdentificationNumber != null ? String(business.TaxIdentificationNumber) : undefined,
+      industrySector: business.IndustrySector != null ? String(business.IndustrySector) : undefined,
+      businessAddress: [business.CommercialAddress1, business.CommercialAddress2, business.CommercialAddress3].filter(Boolean).join(", ") || undefined,
+      highestDelinquencyRating: firstRow(sections, "HighestDelinquencyRating").HighestDelinquencyRating,
+      facilityPerformanceSummary: firstRow(sections, "FacilityPerformanceSummary"),
+      creditAgreements: sections.CreditAgreementSummary ?? [],
+      monthlyPaymentHistory: sections.AccountMonthlyPaymentHistory ?? [],
+      directors: directors.length ? directors : undefined,
+    };
+    const providerReference = String(business.CommercialID ?? (response as { reference?: unknown }).reference ?? "") || undefined;
+    return {
+      status: "SUCCESS",
+      providerReference: providerReference || undefined,
+      normalizedFields: normalized,
+      rawResponse: response,
+    };
+  } catch (error) {
+    return {
+      status: "FAILED",
+      errorMessage: error instanceof Error ? error.message : "Commercial credit report unavailable",
+      normalizedFields: { reportType: "COMMERCIAL_ADVANCE", rcNumber: rcDigits, companyName },
+    };
+  }
+}
+
 export async function requestCreditReport(input: CreditReportInput): Promise<VerificationResult> {
   try {
     const provider: "crc" | "first-central" = input.crb_provider ?? "first-central";

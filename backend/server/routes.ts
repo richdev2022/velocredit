@@ -89,6 +89,12 @@ import { env } from "./config.js";
 import { sql } from "./db.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
 import { calculateCreditScore } from "./credit.js";
+import {
+  externalReportPayload,
+  recomputeInternalCreditScore,
+  runCreditBureauCheck,
+  type CreditBureauCheckOutcome,
+} from "./creditBureau.js";
 import { evaluateLoanEligibility } from "./loanDecision.js";
 import {
   initializeRepayment,
@@ -105,7 +111,7 @@ import {
   FlutterwaveError,
   normalizeBankCodeForFlutterwave,
 } from "./providers/flutterwave.js";
-import { verifyBvn, verifyNin, verifyIdentityWithFace, requestCreditReport } from "./providers/prembly.js";
+import { verifyBvn, verifyNin, verifyIdentityWithFace } from "./providers/prembly.js";
 import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult, PlatformAnnouncement, PlatformBanner, Document as StoreDocument } from "./store.js";
 
@@ -3311,6 +3317,119 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
 });
 
 /**
+ * Reapply prefill — one endpoint that returns EVERYTHING the customer's next
+ * loan application should start pre-filled with, merged server-side:
+ *   1. Every previous loan application's customerSnapshot, oldest → newest
+ *      (newest values win, so the last application's answers are authoritative)
+ *   2. The account profile (fullName, email, phone, dateOfBirth)
+ *   3. The verified KYC case (BVN/NIN win over typed-in application values)
+ *   4. The saved disbursement account (admin-verified payout account wins)
+ * The frontend fills every still-empty wizard field from this payload — a
+ * returning customer must never have to re-type information we already hold.
+ */
+router.get("/borrower/applications/reapply-prefill", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+  const shallowMerge = (layers: Array<Record<string, unknown> | undefined>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const layer of layers) {
+      if (!layer || typeof layer !== "object" || Array.isArray(layer)) continue;
+      for (const [key, value] of Object.entries(layer)) {
+        if (value == null) continue;
+        if (typeof value === "string" && !value.trim()) continue;
+        if (typeof value === "object" && !Array.isArray(value) && Object.keys(value as object).length === 0) continue;
+        out[key] = value;
+      }
+    }
+    return out;
+  };
+
+  const apps = loanApplications
+    .filter((item) => item.borrowerId === req.user!.id && item.status !== "DRAFT" && item.status !== "IN_PROGRESS")
+    .sort((a, b) =>
+      String(a.submittedAt ?? a.updatedAt ?? a.createdAt ?? "").localeCompare(
+        String(b.submittedAt ?? b.updatedAt ?? b.createdAt ?? "")
+      )
+    );
+  const snapshots = apps.map((app) => (app.customerSnapshot ?? {}) as Record<string, unknown>);
+
+  const user = users.find((item) => item.id === req.user!.id);
+  const kyc = kycCases.find((item) => item.userId === req.user!.id);
+  const savedDisbursement = disbursementAccounts
+    .filter((item) => item.borrowerId === req.user!.id)
+    .sort((a, b) => String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? "")))
+    .find((item) => item.status === "ACTIVE") ??
+    disbursementAccounts.filter((item) => item.borrowerId === req.user!.id).slice(-1)[0];
+
+  const personalInfoLayers: Array<Record<string, unknown> | undefined> = snapshots.map((s) => s.personalInfo as Record<string, unknown> | undefined);
+  if (user) {
+    personalInfoLayers.push({
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      dateOfBirth: user.dateOfBirth ?? "",
+    });
+  }
+  const disbursementLayers: Array<Record<string, unknown> | undefined> = [
+    ...snapshots.map((s) => s.disbursementAccount as Record<string, unknown> | undefined),
+    ...(savedDisbursement
+      ? [{
+          accountName: savedDisbursement.accountName ?? "",
+          bankName: savedDisbursement.bankName ?? "",
+          bankCode: savedDisbursement.bankCode ?? "",
+          accountNumber: savedDisbursement.accountNumber ?? "",
+        }]
+      : []),
+  ];
+  const kycLayers: Array<Record<string, unknown> | undefined> = [
+    ...snapshots.map((s) => s.kyc as Record<string, unknown> | undefined),
+    ...(kyc
+      ? [{
+          bvn: kyc.bvn ?? "",
+          nin: kyc.nin ?? "",
+          bvnVerified: kyc.checklist.bvn === true,
+          ninVerified: kyc.checklist.nin === true,
+          livenessVerified: kyc.checklist.liveness === true,
+          ...(kyc.verifiedDetails ? { verifiedDetails: kyc.verifiedDetails } : {}),
+          ...(kyc.identityPhotoUrl ? { identityPhotoUrl: kyc.identityPhotoUrl } : {}),
+        }]
+      : []),
+  ];
+
+  const prefill = {
+    personalInfo: Object.keys(shallowMerge(personalInfoLayers)).length ? shallowMerge(personalInfoLayers) : null,
+    disbursementAccount: Object.keys(shallowMerge(disbursementLayers)).length ? shallowMerge(disbursementLayers) : null,
+    personalFinancial: snapshots.map((s) => s.personalFinancial as Record<string, unknown> | undefined).some((l) => l && Object.keys(l).length) ? shallowMerge(snapshots.map((s) => s.personalFinancial as Record<string, unknown> | undefined)) : null,
+    businessInfo: snapshots.map((s) => s.businessInfo as Record<string, unknown> | undefined).some((l) => l && Object.keys(l).length) ? shallowMerge(snapshots.map((s) => s.businessInfo as Record<string, unknown> | undefined)) : null,
+    businessRep: snapshots.map((s) => s.businessRep as Record<string, unknown> | undefined).some((l) => l && Object.keys(l).length) ? shallowMerge(snapshots.map((s) => s.businessRep as Record<string, unknown> | undefined)) : null,
+    businessFinancial: snapshots.map((s) => s.businessFinancial as Record<string, unknown> | undefined).some((l) => l && Object.keys(l).length) ? shallowMerge(snapshots.map((s) => s.businessFinancial as Record<string, unknown> | undefined)) : null,
+    kyc: Object.keys(shallowMerge(kycLayers)).length ? shallowMerge(kycLayers) : null,
+    collateral: snapshots.map((s) => s.collateral as Record<string, unknown> | undefined).some((l) => l && Object.keys(l).length) ? shallowMerge(snapshots.map((s) => s.collateral as Record<string, unknown> | undefined)) : null,
+    witness: snapshots.map((s) => s.witness as Record<string, unknown> | undefined).some((l) => l && Object.keys(l).length) ? shallowMerge(snapshots.map((s) => s.witness as Record<string, unknown> | undefined)) : null,
+    loanRequest: (() => {
+      const loanLayers = snapshots.map((s) => s.loanRequest as Record<string, unknown> | undefined);
+      const merged = shallowMerge(loanLayers);
+      return Object.keys(merged).length ? merged : null;
+    })(),
+  };
+
+  const latest = apps.length > 0 ? apps[apps.length - 1] : null;
+  res.json({
+    ok: true,
+    prefill,
+    meta: {
+      hasPreviousApplication: apps.length > 0,
+      previousApplicationCount: apps.length,
+      sourceApplicationId: latest?.applicationId ?? latest?.id ?? null,
+      sources: {
+        applicationSnapshots: snapshots.length,
+        profile: Boolean(user),
+        kycCase: Boolean(kyc),
+        disbursementAccount: Boolean(savedDisbursement),
+      },
+    },
+  });
+});
+
+/**
  * Build the borrower-facing product catalog payload.
  *
  * Contract (production incident 2026-09: endpoint returned `products: []`):
@@ -3602,11 +3721,6 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     const user = users.find((item) => item.id === req.user!.id);
     recordConsent(req.user!.id, "CREDIT_REPORT");
 
-    const kycBvnData = (kyc.providerRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data ?? {};
-    const bvnFullName: string | undefined =
-      [kycBvnData.title ? `${String(kycBvnData.title)} ` : "", kycBvnData.firstName, kycBvnData.middleName ? `${String(kycBvnData.middleName)} ` : "", kycBvnData.lastName]
-        .filter(Boolean).join(" ") || undefined;
-    const bvnDob: string | undefined = typeof kycBvnData.dateOfBirth === "string" ? kycBvnData.dateOfBirth : undefined;
     const now = new Date().toISOString();
 
     let latestExternalCredit = creditReports
@@ -3614,79 +3728,31 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 
     // Kick off the credit bureau fetch in the background so loan submission
-    // is not blocked waiting on Prembly. The creditReconciliation cron will
-    // retry PENDING reports every 10 minutes until they resolve.
-    const creditBureauPromise: Promise<CreditReport | null> = (async (): Promise<CreditReport | null> => {
-      try {
-        const hasBvn = typeof kyc.bvn === "string" && kyc.bvn.length === 11;
-        const cbResult = await requestCreditReport(
-          hasBvn
-            ? { mode: "ID", number: kyc.bvn, customer_name: bvnFullName ?? user?.fullName, dob: bvnDob ?? user?.dateOfBirth }
-            : { mode: "BIO", customer_name: user?.fullName, dob: user?.dateOfBirth }
-        );
-        const cbRaw = cbResult.rawResponse ?? {};
-        const cbScore: number | undefined =
-          typeof (cbResult.normalizedFields as { score?: unknown } | undefined)?.score === "number"
-            ? ((cbResult.normalizedFields as { score: number }).score as number)
-            : typeof (cbRaw as { score?: unknown }).score === "number"
-            ? (cbRaw as { score: number }).score
-            : undefined;
-        const cbStatus: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED" =
-          cbResult.status === "SUCCESS"
-            ? "RECEIVED"
-            : cbResult.status === "PENDING" || cbResult.status === "MANUAL_REVIEW"
-            ? "PENDING"
-            : "FAILED";
-        const report: CreditReport = {
-          id: randomUUID(),
-          userId: req.user!.id,
-          provider: "prembly" as const,
-          consentGrantedAt: now,
-          requestedAt: now,
-          reportReference: cbResult.providerReference,
-          status: cbStatus,
-          score: cbScore,
-          normalizedFields: cbResult.normalizedFields,
-          redactedRaw: cbRaw,
-          createdAt: now,
-        };
-        creditReports.push(report);
-        return report;
-      } catch (_e) {
-        return null;
-      }
-    })();
+    // is not blocked waiting on Prembly. Business customers run the
+    // COMMERCIAL (Business) Advance bureau product with the RC number +
+    // company name from their application/profile; customers without an RC
+    // number fall back to the consumer product via their verified BVN. The
+    // creditReconciliation cron retries PENDING reports until they resolve.
+    const creditBureauPromise: Promise<CreditBureauCheckOutcome> = runCreditBureauCheck(req.user!.id, {
+      source: "SUBMISSION",
+      snapshot: { businessInfo: input.businessInfo, personalInfo: input.personalInfo, kyc: input.kyc },
+    });
 
     // Wait briefly (max 8 seconds) for the credit bureau to respond. If it
     // takes longer, we proceed with submission and let the cron pick up the
     // PENDING report later.
     let currentExternalCredit: CreditReport | null = null;
     try {
-      currentExternalCredit = await Promise.race([
+      const outcome = await Promise.race([
         creditBureauPromise,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
       ]);
+      if (outcome && outcome.ok) currentExternalCredit = outcome.report;
     } catch {
       currentExternalCredit = null;
     }
     if (currentExternalCredit) latestExternalCredit = currentExternalCredit;
-
-    void creditBureauPromise.then((report) => {
-      if (!report || report.status !== "RECEIVED" || report.score == null) return;
-      const idx = creditScores.findIndex((s) => s.userId === req.user!.id);
-      if (idx < 0) return;
-      const recomputed = calculateCreditScore({
-        completedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "REPAID").length,
-        onTimePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === true).length,
-        latePayments: repayments.filter((item) => item.borrowerId === req.user!.id && item.status === "SUCCESSFUL" && item.onTime === false).length,
-        defaultedLoans: loans.filter((item) => item.borrowerId === req.user!.id && item.status === "DEFAULTED").length,
-        outstandingMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100), 0),
-        totalBorrowedMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100), 0),
-        kycVerified: user?.kycStatus === "VERIFIED",
-        bureauScore: report.score,
-      });
-      creditScores[idx] = { ...creditScores[idx], score: recomputed.score, band: recomputed.band, factors: recomputed.factors, createdAt: recomputed.calculatedAt };
-    });
+    void creditBureauPromise.catch(() => undefined);
 
     const customerSnapshot = {
       userId: req.user!.id,
@@ -3791,6 +3857,25 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       submittedAt: now,
     });
     loanApplications.push(application);
+    // If the bureau report lands AFTER the application row exists (slow
+    // provider, or the 8s race expired), sync the freshly created
+    // application's credit snapshot so the admin card never sticks on
+    // PENDING while the report has actually resolved.
+    void creditBureauPromise
+      .then((outcome) => {
+        if (!outcome.ok) return;
+        const report = outcome.report;
+        if (report.status === "RECEIVED") {
+          application.creditReportSnapshot = {
+            ...(application.creditReportSnapshot ?? {}),
+            external: externalReportPayload(report),
+            ...(outcome.internal ? { internal: outcome.internal } : {}),
+          };
+          application.updatedAt = new Date().toISOString();
+          void persistStore().catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
     creditHistory.push({
       id: randomUUID(),
       userId: req.user!.id,
@@ -4095,66 +4180,29 @@ router.get("/borrower/credit-score", requireAuth, requireRole("BORROWER"), (req:
 
 router.post("/borrower/credit-report/request", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
   const schema = z.object({ consent: z.boolean().refine((v) => v === true, "Consent is required") });
-  const parsed = schema.safeParse(req.body);
+  const parsed = schema.safeParse(req.body ?? {});
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const user = users.find((u) => u.id === req.user?.id);
-  const now = new Date().toISOString();
-  const kycCase = findOrCreateKycCase(req.user!.id);
-  const hasBvn = typeof kycCase.bvn === "string" && kycCase.bvn.length === 11;
-  const kycData = (kycCase.providerRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data ?? {};
-  const bvnFullName: string | undefined =
-    [kycData.title ? `${String(kycData.title)} ` : "", kycData.firstName, kycData.middleName ? `${String(kycData.middleName)} ` : "", kycData.lastName]
-      .filter(Boolean).join(" ") || undefined;
-  const bvnDob: string | undefined = typeof kycData.dateOfBirth === "string" ? kycData.dateOfBirth : undefined;
-  const result = await requestCreditReport(
-    hasBvn
-      ? {
-          mode: "ID",
-          number: kycCase.bvn,
-          customer_name: bvnFullName ?? user?.fullName,
-          dob: bvnDob ?? user?.dateOfBirth,
-        }
-      : {
-          mode: "BIO",
-          customer_name: user?.fullName,
-          dob: user?.dateOfBirth,
-        }
-  );
-  const raw = result.rawResponse ?? {};
-  const extractedScore: number | undefined =
-    typeof (result.normalizedFields as { score?: unknown } | undefined)?.score === "number"
-      ? ((result.normalizedFields as { score: number }).score as number)
-      : typeof (raw as { score?: unknown }).score === "number"
-      ? (raw as { score: number }).score
-      : undefined;
-  const reportStatus: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED" =
-    result.status === "SUCCESS"
-      ? "RECEIVED"
-      : result.status === "PENDING" || result.status === "MANUAL_REVIEW"
-      ? "PENDING"
-      : "FAILED";
-  const report: CreditReport = {
-    id: randomUUID(),
-    userId: req.user!.id,
-    provider: "prembly" as const,
-    consentGrantedAt: now,
-    requestedAt: now,
-    reportReference: result.providerReference,
-    status: reportStatus,
-    score: extractedScore,
-    normalizedFields: result.normalizedFields,
-    redactedRaw: raw,
-    createdAt: now,
-  };
-  creditReports.push(report);
-  recordConsent(req.user!.id, "CREDIT_REPORT");
+  // Shared bureau flow: commercial (RC + company name) first, consumer via
+  // BVN as fallback; stores the report, recomputes the internal score and
+  // syncs the borrower's loan application snapshots.
+  const outcome = await runCreditBureauCheck(req.user!.id, { source: "BORROWER_REQUEST" });
+  if (!outcome.ok) {
+    res.status(409).json({ ok: false, error: outcome.message });
+    return;
+  }
   res.json({
     ok: true,
-    report,
-    message: result.errorMessage ?? "Credit report request created.",
+    report: outcome.report,
+    creditScore: outcome.internal,
+    message:
+      outcome.report.status === "RECEIVED"
+        ? "Credit report received."
+        : outcome.report.status === "PENDING"
+        ? "Credit report request is processing; it will complete automatically."
+        : (outcome.report.normalizedFields as { reason?: string } | undefined)?.reason ?? "Credit report request could not be completed.",
   });
 });
 
@@ -5177,6 +5225,66 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req
     kycCase: borrowerKyc,
     kycDocuments,
   });
+});
+
+// Admin: trigger a Prembly credit-bureau check for a specific loan
+// application's borrower. Identity (RC number + company name for the
+// COMMERCIAL (Business) Advance product, or verified BVN for the consumer
+// product) is resolved from the customer's application snapshot and profile.
+// Stores a creditReports row, refreshes the application's
+// creditReportSnapshot (external + recomputed internal) and returns both.
+router.post("/admin/loan-applications/:applicationId/credit-bureau", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  const application = loanApplications.find(
+    (a) => a.id === req.params.applicationId || a.applicationId === req.params.applicationId
+  );
+  if (!application) {
+    res.status(404).json({ ok: false, error: "Loan application not found" });
+    return;
+  }
+  const dataMode = typeof req.body?.dataMode === "string" && req.body.dataMode.toUpperCase() === "BASIC" ? "BASIC" as const : "ADVANCE" as const;
+  try {
+    const outcome = await runCreditBureauCheck(application.borrowerId, {
+      applicationId: application.applicationId || application.id,
+      snapshot: application.customerSnapshot as Record<string, unknown> | undefined,
+      source: "ADMIN_TRIGGER",
+      dataMode,
+    });
+    if (!outcome.ok) {
+      res.status(409).json({ ok: false, error: outcome.message });
+      return;
+    }
+    auditLogs.push({
+      id: randomUUID(),
+      userId: req.user!.id,
+      action: "credit_bureau_check_triggered",
+      resourceType: "LOAN_APPLICATION",
+      resourceId: application.applicationId || application.id,
+      metadata: {
+        borrowerId: application.borrowerId,
+        reportId: outcome.report.id,
+        reportStatus: outcome.report.status,
+        reportScore: outcome.report.score ?? null,
+        product: (outcome.report.normalizedFields as { reportType?: string } | undefined)?.reportType ?? "CONSUMER_ADVANCE",
+      },
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent") ?? undefined,
+      createdAt: new Date().toISOString(),
+    });
+    res.json({
+      ok: true,
+      report: outcome.report,
+      creditReportSnapshot: application.creditReportSnapshot ?? null,
+      message:
+        outcome.report.status === "RECEIVED"
+          ? `Credit bureau report received${outcome.report.score != null ? ` — bureau-equivalent score ${outcome.report.score}` : ""}.`
+          : outcome.report.status === "PENDING"
+          ? "The credit bureau is still processing this report — it will complete automatically and the cron retries PENDING reports every 10 minutes."
+          : ((outcome.report.normalizedFields as { reason?: string } | undefined)?.reason ?? "The credit bureau lookup failed — see the report details."),
+    });
+  } catch (error) {
+    console.error("[routes] admin credit-bureau check failed:", error);
+    res.status(502).json({ ok: false, error: error instanceof Error ? error.message : "The credit bureau check failed unexpectedly." });
+  }
 });
 
 // Admin: proxy-download a KYC document by documentId. Streams the file from

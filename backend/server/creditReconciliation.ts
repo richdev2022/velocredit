@@ -21,15 +21,17 @@
 
 import {
   creditReports,
-  creditScores,
   users,
-  loans,
-  repayments,
-  kycCases,
   persistStore,
 } from "./store.js";
-import { requestCreditReport } from "./providers/prembly.js";
-import { calculateCreditScore } from "./credit.js";
+import {
+  retryCreditReport,
+  mapProviderStatus,
+  extractReportScore,
+  recomputeInternalCreditScore,
+  syncApplicationCreditSnapshots,
+} from "./creditBureau.js";
+import type { VerificationResult } from "./providers/prembly.js";
 
 let creditReconRunning = false;
 
@@ -52,34 +54,16 @@ export async function runCreditReportReconciliationSweep(): Promise<{ retried: n
           failed += 1;
           continue;
         }
-        const kyc = kycCases.find((k) => k.userId === report.userId);
-        const kycBvnData = (kyc?.providerRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data ?? {};
-        const bvnFullName: string | undefined =
-          [kycBvnData.title ? `${String(kycBvnData.title)} ` : "", kycBvnData.firstName, kycBvnData.middleName ? `${String(kycBvnData.middleName)} ` : "", kycBvnData.lastName]
-            .filter(Boolean).join(" ") || undefined;
-        const bvnDob: string | undefined = typeof kycBvnData.dateOfBirth === "string" ? kycBvnData.dateOfBirth : undefined;
-        const hasBvn = typeof kyc?.bvn === "string" && kyc.bvn.length === 11;
 
-        const cbResult = await requestCreditReport(
-          hasBvn
-            ? { mode: "ID", number: kyc!.bvn!, customer_name: bvnFullName ?? user.fullName, dob: bvnDob ?? user.dateOfBirth }
-            : { mode: "BIO", customer_name: user.fullName, dob: user.dateOfBirth }
-        );
+        // Commercial reports retry with the RC number + company name stored
+        // in the report; consumer reports re-resolve the borrower's BVN +
+        // name + DOB (both handled inside retryCreditReport).
+        const cbResult: VerificationResult = await retryCreditReport(report);
 
         retried += 1;
         const cbRaw = cbResult.rawResponse ?? {};
-        const cbScore: number | undefined =
-          typeof (cbResult.normalizedFields as { score?: unknown } | undefined)?.score === "number"
-            ? ((cbResult.normalizedFields as { score: number }).score as number)
-            : typeof (cbRaw as { score?: unknown }).score === "number"
-            ? (cbRaw as { score: number }).score
-            : undefined;
-        const cbStatus: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED" =
-          cbResult.status === "SUCCESS"
-            ? "RECEIVED"
-            : cbResult.status === "PENDING" || cbResult.status === "MANUAL_REVIEW"
-            ? "PENDING"
-            : "FAILED";
+        const cbScore = extractReportScore(cbResult);
+        const cbStatus = mapProviderStatus(cbResult.status);
 
         if (cbStatus === "PENDING") {
           // Still pending — leave the row alone, will retry next cron run.
@@ -88,32 +72,23 @@ export async function runCreditReportReconciliationSweep(): Promise<{ retried: n
 
         report.status = cbStatus;
         report.score = cbScore;
-        report.normalizedFields = cbResult.normalizedFields;
+        report.normalizedFields = {
+          ...(cbResult.normalizedFields ?? {}),
+          ...(cbResult.errorMessage ? { reason: cbResult.errorMessage } : {}),
+        };
         report.redactedRaw = cbRaw;
         report.reportReference = cbResult.providerReference ?? report.reportReference;
         report.requestedAt = new Date().toISOString();
 
         if (cbStatus === "RECEIVED") {
           resolved += 1;
-          // Recompute the user's internal credit score with the new bureau score.
-          if (cbScore != null) {
-            const idx = creditScores.findIndex((s) => s.userId === report.userId);
-            if (idx >= 0) {
-              const recomputed = calculateCreditScore({
-                completedLoans: loans.filter((item) => item.borrowerId === report.userId && item.status === "REPAID").length,
-                onTimePayments: repayments.filter((item) => item.borrowerId === report.userId && item.status === "SUCCESSFUL" && item.onTime === true).length,
-                latePayments: repayments.filter((item) => item.borrowerId === report.userId && item.status === "SUCCESSFUL" && item.onTime === false).length,
-                defaultedLoans: loans.filter((item) => item.borrowerId === report.userId && item.status === "DEFAULTED").length,
-                outstandingMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.outstandingNaira ?? 0) * 100), 0),
-                totalBorrowedMinor: loans.reduce((sum, item) => sum + Math.round(Number(item.principalNaira ?? 0) * 100), 0),
-                kycVerified: user.kycStatus === "VERIFIED",
-                bureauScore: cbScore,
-              });
-              creditScores[idx] = { ...creditScores[idx], score: recomputed.score, band: recomputed.band, factors: recomputed.factors, createdAt: recomputed.calculatedAt };
-            }
-          }
+          // Recompute the user's internal credit score with the new bureau
+          // score and refresh the loan application credit snapshots.
+          const internal = recomputeInternalCreditScore(report.userId, cbScore ?? null);
+          syncApplicationCreditSnapshots(report.userId, report, internal);
         } else if (cbStatus === "FAILED") {
           failed += 1;
+          syncApplicationCreditSnapshots(report.userId, report, null);
         }
       } catch (error) {
         console.error("[creditRecon] failed for report", report.id, error);

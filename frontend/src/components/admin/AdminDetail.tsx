@@ -12,6 +12,7 @@ import {
   adminListDisbursements,
   adminRequestDisbursementAccountUpdate,
   adminRetryDisbursement,
+  adminRunCreditBureauCheck,
   adminUpdateStatus,
   type AdminApplicationDetail,
   type AdminApplicationDraftDetail,
@@ -36,6 +37,8 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
   const [newStatus, setNewStatus] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [bureauBusy, setBureauBusy] = useState(false);
+  const [bureauMsg, setBureauMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +94,24 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     } finally {
       setSaving(false);
       setTimeout(() => setSaveMsg(null), 4000);
+    }
+  }
+
+  async function handleRunCreditBureau() {
+    if (!app || bureauBusy) return;
+    setBureauBusy(true);
+    setBureauMsg(null);
+    try {
+      const response = await adminRunCreditBureauCheck(app.applicationId);
+      if (response.creditReportSnapshot) {
+        setApp((current) => (current ? { ...current, creditReportSnapshot: response.creditReportSnapshot } : current));
+      }
+      setBureauMsg(response.message || "Credit bureau check finished.");
+    } catch (err: any) {
+      setBureauMsg(err?.message || "Unable to run the credit bureau check.");
+    } finally {
+      setBureauBusy(false);
+      setTimeout(() => setBureauMsg(null), 12000);
     }
   }
 
@@ -414,8 +435,44 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
             </div>
             <div className="text-xs text-slate-500 mb-3">
               Provider: {app.creditReportSnapshot?.external?.provider || "Prembly"}
+              {app.creditReportSnapshot?.external?.product && app.creditReportSnapshot.external.product !== "CONSUMER_ADVANCE" && (
+                <> · {String(app.creditReportSnapshot.external.product).replace(/_/g, " ")}</>
+              )}
               {(app.creditReportSnapshot?.external?.pulledAt || app.creditReportSnapshot?.external?.requestedAt) && (
                 <> · {app.creditReportSnapshot.external.pulledAt ? "Pulled" : "Requested"} {formatDateLabel(app.creditReportSnapshot.external.pulledAt || app.creditReportSnapshot.external.requestedAt)}</>
+              )}
+            </div>
+            <div className="mb-3">
+              <button
+                type="button"
+                onClick={handleRunCreditBureau}
+                disabled={bureauBusy || !app.applicationId}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {bureauBusy ? (
+                  <>
+                    <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.25" />
+                      <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                    </svg>
+                    Running bureau check…
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path d="M4 19V9m6 10V5m6 14v-7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                    </svg>
+                    Run credit bureau check
+                  </>
+                )}
+              </button>
+              <p className="mt-1.5 text-[11px] text-slate-500">
+                Pulls a fresh Prembly report — Commercial (Business) Advance with the customer&apos;s RC number and registered name when available, otherwise the consumer check via their verified BVN.
+              </p>
+              {bureauMsg && (
+                <p className={`mt-2 rounded-lg px-3 py-2 text-xs font-medium ${app.creditReportSnapshot?.external?.status === "RECEIVED" ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-700"}`}>
+                  {bureauMsg}
+                </p>
               )}
             </div>
             {app.creditReportSnapshot?.external?.reportReference && (

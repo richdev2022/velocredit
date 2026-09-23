@@ -553,6 +553,31 @@ export interface ApplicationDraftResponse { ok: true; draft: { applicationId: st
 export async function getApplicationDraft(): Promise<ApplicationDraftResponse> {
   return request("/api/v1/borrower/application-draft");
 }
+
+// Server-side reapply prefill: merges EVERY previous application snapshot
+// (oldest → newest, newest wins) with the account profile, the verified KYC
+// case and the saved disbursement account, so a returning customer's next
+// application starts fully populated. Used by prefillFromPrevious() before
+// falling back to the dashboard-only merge.
+export interface ReapplyPrefillResponse {
+  ok: true;
+  prefill: {
+    personalInfo?: Record<string, unknown> | null;
+    disbursementAccount?: Record<string, unknown> | null;
+    personalFinancial?: Record<string, unknown> | null;
+    businessInfo?: Record<string, unknown> | null;
+    businessRep?: Record<string, unknown> | null;
+    businessFinancial?: Record<string, unknown> | null;
+    kyc?: Record<string, unknown> | null;
+    collateral?: Record<string, unknown> | null;
+    witness?: Record<string, unknown> | null;
+    loanRequest?: Record<string, unknown> | null;
+  };
+  meta: { hasPreviousApplication: boolean; previousApplicationCount: number; sourceApplicationId?: string | null };
+}
+export async function getReapplyPrefill(): Promise<ReapplyPrefillResponse> {
+  return request("/api/v1/borrower/applications/reapply-prefill");
+}
 export async function saveApplicationDraft(input: { applicationId: string; applicantType: "PERSONAL" | "BUSINESS"; data: Record<string, unknown>; lastSectionIndex: number; updatedAt: string }): Promise<ApplicationDraftResponse> {
   return request("/api/v1/borrower/application-draft", { method: "PUT", body: JSON.stringify(input) });
 }
@@ -567,9 +592,10 @@ export async function getBorrowerCreditHistory(): Promise<{ ok: true; events: un
 export interface CreditScoreResponse { ok: true; score: { score: number; band: string; sources: Record<string, number>; calculatedAt: string; userId: string; }; }
 export async function getBorrowerCreditScore(): Promise<CreditScoreResponse> { return request("/api/v1/borrower/credit-score"); }
 
-export interface CreditReportRequestResponse { ok: true; status: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED"; report?: { id: string; provider: string; score?: number; pulledAt?: string; }; message?: string; }
-export async function requestCreditReport(otpChallengeId?: string, otpCode?: string): Promise<CreditReportRequestResponse> {
-  return request("/api/v1/borrower/credit-report/request", { method: "POST", body: JSON.stringify({ otpChallengeId, otpCode }) });
+export interface CreditReportRequestResponse { ok: true; status: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED"; report?: { id: string; provider: string; score?: number; pulledAt?: string; }; creditScore?: { score: number; band: string } | null; message?: string; }
+export async function requestCreditReport(): Promise<CreditReportRequestResponse> {
+  // The backend requires explicit consent (legal gate for a bureau pull).
+  return request("/api/v1/borrower/credit-report/request", { method: "POST", body: JSON.stringify({ consent: true }) });
 }
 
 export interface RepaymentInitResponse {

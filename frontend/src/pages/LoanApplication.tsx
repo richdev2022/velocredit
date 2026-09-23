@@ -97,6 +97,40 @@ function ReapplicationNotice({ application }: { application: ApplicationData }) 
   );
 }
 
+function PrefillNotice() {
+  const { prefilledFrom, dismissPrefillNotice } = useApplication();
+  if (!prefilledFrom) return null;
+  return (
+    <div className="rounded-xl border border-velo-200 bg-velo-50 p-4 dark:border-velo-800 dark:bg-velo-900/30" role="status">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-velo-500 text-white">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-bold text-velo-900 dark:text-white">Your previous details are already filled in</p>
+            <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+              We pre-filled every section from your previous loan application and profile. Go through each section to confirm or update anything that has changed — you only need to re-upload documents and re-sign the agreement.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={dismissPrefillNotice}
+          className="rounded-lg p-1.5 text-slate-400 hover:bg-white hover:text-slate-600 dark:hover:bg-slate-800"
+          aria-label="Dismiss prefill notice"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Wizard() {
   const {
     application,
@@ -205,13 +239,15 @@ function Wizard() {
 
   // Each section component renders its own SectionShell — wrap in Layout here.
   // A rejected / more-info application shows the re-application banner above
-  // the section so the customer always knows WHY they are editing it.
+  // the section so the customer always knows WHY they are editing it, and a
+  // freshly prefilled draft shows what was auto-filled from the previous loan.
   return (
     <Layout>
       <div className="space-y-5">
         {(application.status === "REJECTED" || application.status === "MORE_INFORMATION_REQUIRED") && (
           <ReapplicationNotice application={application} />
         )}
+        <PrefillNotice />
         {renderSection()}
       </div>
     </Layout>

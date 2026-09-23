@@ -413,6 +413,20 @@ export async function adminRetryDisbursement(disbursementId: string): Promise<Ad
 export async function adminRequestDisbursementAccountUpdate(loanId: string, opts: { note?: string; clear?: boolean } = {}): Promise<{ ok: true; loan: Record<string, unknown>; updateRequested: boolean; message: string }> {
   return request(`/api/v1/admin/loans/${encodeURIComponent(loanId)}/request-account-update`, { method: "POST", body: JSON.stringify(opts) });
 }
+
+// Trigger a Prembly credit-bureau check (Commercial/Business Advance when the
+// customer's profile has an RC number, consumer advance via BVN otherwise) for
+// a specific loan application. Returns the stored report plus the refreshed
+// creditReportSnapshot the detail card renders.
+export interface AdminCreditBureauResponse {
+  ok: true;
+  report: { id: string; status: "NOT_REQUESTED" | "PENDING" | "RECEIVED" | "FAILED"; score?: number | null; provider: string; reportReference?: string | null; normalizedFields?: Record<string, unknown>; createdAt: string };
+  creditReportSnapshot: Record<string, any> | null;
+  message: string;
+}
+export async function adminRunCreditBureauCheck(applicationId: string, opts: { dataMode?: "BASIC" | "ADVANCE" } = {}): Promise<AdminCreditBureauResponse> {
+  return request(`/api/v1/admin/loan-applications/${encodeURIComponent(applicationId)}/credit-bureau`, { method: "POST", body: JSON.stringify(opts) });
+}
 export interface AccountChangeRequest {
   id: string;
   userId: string;
