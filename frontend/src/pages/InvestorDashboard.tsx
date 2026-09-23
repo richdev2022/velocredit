@@ -33,6 +33,7 @@ import { documentDownloadUrl, documentPreviewUrl } from "../utils/documentLinks"
 import Icon from "../components/Icon";
 import CsvExportButton from "../components/CsvExportButton";
 import { AnnouncementSlider, BannerCarousel } from "../components/EngagementWidgets";
+import { buildUnifiedTxs, txStatus, txStatusTone, safeTxTime, type UnifiedTx, type TransactionData } from "../utils/unifiedTxs";
 
 const money = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -54,13 +55,6 @@ type DashboardData = {
     expectedInterestNaira?: number;
   }>;
 };
-type TransactionData = {
-  payouts?: Array<Record<string, unknown>>;
-  investments?: Array<Record<string, unknown>>;
-  ledger?: Array<Record<string, unknown>>;
-  walletTransactions?: Array<Record<string, unknown>>;
-  withdrawals?: Array<Record<string, unknown>>;
-};
 type KycData = {
   status?: string;
   bvn?: string;
@@ -75,48 +69,6 @@ type KycData = {
 type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number };
 
 type InvestorView = "overview" | "wallet" | "investments" | "kyc" | "transactions" | "payout" | "profile";
-
-type UnifiedTx = {
-  id: string;
-  kind: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RETURN" | "INVESTMENT" | "PAYOUT" | "DEPOSIT" | "FEE" | "OTHER";
-  direction: "CREDIT" | "DEBIT";
-  amountMinor: number;
-  label: string;
-  narration?: string;
-  referenceId?: string;
-  createdAt: string;
-  balanceAfterMinor?: number;
-  status?: string;
-  raw: Record<string, unknown>;
-};
-
-// Normalize any provider/store status string for display (e.g.
-// "PENDING_PROVIDER_CONFIRMATION" -> "PENDING PROVIDER CONFIRMATION").
-function txStatus(raw: unknown): string | undefined {
-  if (raw == null || raw === "") return undefined;
-  return String(raw).toUpperCase().replace(/_/g, " ");
-}
-
-// Invalid timestamps (missing/legacy rows) must not poison the list sort with
-// NaN comparisons — clamp them to 0.
-function safeTxTime(value: string | undefined): number {
-  const t = new Date(value ?? "").getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-const TX_STATUS_TONES: Array<{ tone: "emerald" | "amber" | "red" | "slate"; match: string[] }> = [
-  { tone: "emerald", match: ["SUCCESSFUL", "COMPLETED", "ACTIVE", "PAID OUT", "VERIFIED", "MATURED"] },
-  { tone: "amber", match: ["PENDING", "PROCESSING", "LIQUIDITY REQUESTED", "LIQUIDITY APPROVED", "MATURITY PENDING", "PAYOUT PENDING", "PENDING REVIEW", "PENDING APPROVAL", "UNDER REVIEW"] },
-  { tone: "red", match: ["FAILED", "REJECTED", "REVERSED", "CANCELLED", "DISPUTED", "DEFAULTED", "PAYOUT FAILED", "WRITTEN OFF", "PROVIDER NOT CONFIGURED"] },
-];
-
-function txStatusTone(status?: string): "emerald" | "amber" | "red" | "slate" {
-  if (!status) return "slate";
-  for (const { tone, match } of TX_STATUS_TONES) {
-    if (match.some((m) => status === m || status.startsWith(m))) return tone;
-  }
-  return "slate";
-}
 
 const TX_TONE_CLASS: Record<string, string> = {
   emerald: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
@@ -665,15 +617,28 @@ export default function InvestorDashboard() {
   const investments = data?.investments ?? [];
   const available = Number(wallet?.availableMinor ?? 0) / 100;
   const locked = Number(wallet?.heldMinor ?? 0) / 100;
-  const returns = investments.reduce(
+  // Analysis must reflect REAL deployed capital only: money actually locked in
+  // ACTIVE investments and the earnings those positions are projected to pay.
+  // Wallet cash that has not been invested is NOT capital, and matured/paid-out
+  // positions must not inflate the projections — showing "analysis" for an
+  // investor who never activated an investment is exactly what confused users.
+  const activeInvestments = (investments as Array<{ status?: string; amountNaira?: number; annualRatePercent?: number; expectedEarningsNaira?: number; accrual?: { expectedEarningsNaira?: number }; expectedInterestNaira?: number; expectedInterestMinor?: number }>).filter(
+    (investment) => String(investment.status ?? "").toUpperCase() === "ACTIVE"
+  );
+  const investedCapital = activeInvestments.reduce((sum, item) => sum + Number(item.amountNaira ?? 0), 0);
+  const returns = activeInvestments.reduce(
     (sum, item) =>
       sum +
       Number(item.expectedEarningsNaira ?? item.accrual?.expectedEarningsNaira ?? item.expectedInterestNaira ?? Number(item.expectedInterestMinor ?? 0) / 100),
     0
   );
   const totalCapital = available + locked;
-  const activeCount = investments.filter((investment) => ["ACTIVE", "PENDING"].includes(String((investment as { status?: string }).status))).length;
-  const returnRate = totalCapital ? Math.min(100, Math.round((returns / totalCapital) * 100)) : 0;
+  const activeCount = activeInvestments.length;
+  const returnRate = investedCapital ? Math.min(100, Math.round((returns / investedCapital) * 100)) : 0;
+  // Weighted annual rate across the active positions (for the investments tab).
+  const blendedAnnualRate = investedCapital
+    ? Math.round((activeInvestments.reduce((sum, item) => sum + Number(item.amountNaira ?? 0) * Number(item.annualRatePercent ?? 0), 0) / investedCapital) * 10) / 10
+    : 0;
 
   const hasBothRoles = user?.roles.includes("INVESTOR") && user?.roles.includes("BORROWER");
   const checklist = kyc?.checklist ?? {};
@@ -869,6 +834,7 @@ export default function InvestorDashboard() {
               returns={returns}
               activeCount={activeCount}
               totalCapital={totalCapital}
+              investedCapital={investedCapital}
               returnRate={returnRate}
               investments={investments}
               data={data}
@@ -906,9 +872,9 @@ export default function InvestorDashboard() {
             <InvestorInvestments
               investments={investments}
               plans={plans}
-              totalCapital={totalCapital}
+              investedCapital={investedCapital}
               returns={returns}
-              returnRate={returnRate}
+              blendedAnnualRate={blendedAnnualRate}
               openInvestModal={openInvestModal}
               setError={setError}
             />
@@ -1035,8 +1001,42 @@ export default function InvestorDashboard() {
   );
 }
 
+// Build an honest earnings-accrual curve from the ACTIVE investments' real
+// accrual math (daily rate × elapsed days). Replaces the old hardcoded SVG
+// path that showed the same fake "performance" for every investor.
+function buildAccrualCurve(activeInvestments: Array<{ amountNaira?: number; annualRatePercent?: number; tenureDays?: number; startsAt?: string; maturesAt?: string; expectedEarningsNaira?: number }>): { line: string; area: string } {
+  const W = 520;
+  const H = 96;
+  const usable = activeInvestments.filter((inv) => Number(inv.amountNaira ?? 0) > 0);
+  if (!usable.length) return { line: "", area: "" };
+  const times = usable.flatMap((inv) => [new Date(inv.startsAt ?? "").getTime(), new Date(inv.maturesAt ?? "").getTime()]).filter(Number.isFinite);
+  if (!times.length) return { line: "", area: "" };
+  const t0 = Math.min(...times);
+  const t1 = Math.max(...times);
+  const span = Math.max(1, t1 - t0);
+  const maxAccrued = Math.max(1, usable.reduce((sum, inv) => sum + Number(inv.expectedEarningsNaira ?? 0), 0));
+  const steps = 28;
+  const coords: string[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = t0 + (span * i) / steps;
+    let accrued = 0;
+    for (const inv of usable) {
+      const startsAt = new Date(inv.startsAt ?? "").getTime();
+      const maturesAt = new Date(inv.maturesAt ?? "").getTime();
+      if (!Number.isFinite(startsAt) || !Number.isFinite(maturesAt) || t < startsAt) continue;
+      const elapsedDays = Math.min(Number(inv.tenureDays ?? 0), (Math.min(t, maturesAt) - startsAt) / 86400000);
+      accrued += ((Number(inv.amountNaira ?? 0) * Number(inv.annualRatePercent ?? 0)) / 100 / 365) * Math.max(0, elapsedDays);
+    }
+    const x = (W * i) / steps;
+    const y = H - 8 - (accrued / maxAccrued) * (H - 24);
+    coords.push(`${x.toFixed(1)},${Math.max(6, Math.min(H - 6, y)).toFixed(1)}`);
+  }
+  const line = `M${coords.join(" L")}`;
+  return { line, area: `${line} L${W},${H} L0,${H} Z` };
+}
+
 function InvestorOverview(props: any) {
-  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, returnRate, investments, data, kyc, transactions, openAction, action, plans, openFundModal, openInvestModal, goToTransactions } = props;
+  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, investedCapital, returnRate, investments, data, kyc, transactions, openAction, action, plans, openFundModal, openInvestModal, goToTransactions } = props;
   const payoutCount = transactions?.payouts?.length ?? 0;
   const checklist = kyc?.checklist ?? {};
   const onboardingRequirements: readonly [string, string, boolean][] = [
@@ -1047,6 +1047,28 @@ function InvestorOverview(props: any) {
     ["Payout account", "Bank account for returns", Boolean(data?.payoutAccount?.status === "VERIFIED")],
   ];
   const completedOnboardingRequirements = onboardingRequirements.filter(([, , completed]) => completed).length;
+  // Real analysis data — derived strictly from the ACTIVE positions.
+  const activeInvList = (investments as Array<{ status?: string; amountNaira?: number; annualRatePercent?: number; tenureDays?: number; startsAt?: string; maturesAt?: string; expectedEarningsNaira?: number }>).filter(
+    (inv) => String(inv.status ?? "").toUpperCase() === "ACTIVE"
+  );
+  const curve = buildAccrualCurve(activeInvList);
+  const hasPerformanceData = activeInvList.length > 0;
+  // Capital allocation donut computed from the REAL balances (the old version
+  // hardcoded 38% / 44% / 18% slices, so every investor saw the same chart).
+  const allocParts = [
+    { color: "#2196f3", value: Math.max(0, available) },
+    { color: "#10b981", value: Math.max(0, locked) },
+    { color: "#f59e0b", value: Math.max(0, returns) },
+  ];
+  const allocTotal = allocParts.reduce((sum, part) => sum + part.value, 0);
+  let allocCursor = 0;
+  const allocStops = allocParts.map((part) => {
+    const from = (allocTotal > 0 ? (allocCursor / allocTotal) * 100 : 0).toFixed(2);
+    allocCursor += part.value;
+    const to = (allocTotal > 0 ? (allocCursor / allocTotal) * 100 : 0).toFixed(2);
+    return `${part.color} ${from}% ${to}%`;
+  });
+  const donutBackground = allocTotal > 0 ? `conic-gradient(${allocStops.join(", ")})` : "conic-gradient(#cbd5e1 0% 100%)";
   return (
     <div className="space-y-6">
         <div>
@@ -1214,18 +1236,18 @@ function InvestorOverview(props: any) {
           <Metric
             label="Locked investments"
             value={money.format(locked)}
-            detail={`${investments.length} active investment(s)`}
+            detail={`${activeCount} active investment${activeCount === 1 ? "" : "(s)"}`}
           />
           <Metric
             label="Expected returns"
             value={money.format(returns)}
-            detail="From loaded investment records"
+            detail="Projected on active investments"
           />
         </div>
 
         <div className="grid gap-5 lg:grid-cols-[1.25fr_.75fr]">
-          <section className="velo-card overflow-hidden p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><h2 className="section-heading">Portfolio performance</h2><p className="section-subheading">Capital and expected earnings across your investments.</p></div><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">{activeCount} active</span></div><div className="mt-6 grid grid-cols-3 gap-3"><div><p className="text-xs text-slate-500">Capital</p><p className="mt-1 text-base font-semibold text-velo-900 dark:text-white">{money.format(totalCapital)}</p></div><div><p className="text-xs text-slate-500">Expected return</p><p className="mt-1 text-base font-semibold text-emerald-600">{money.format(returns)}</p></div><div><p className="text-xs text-slate-500">Return ratio</p><p className="mt-1 text-base font-semibold text-velo-900 dark:text-white">{returnRate}%</p></div></div><svg className="mt-6 h-24 w-full" viewBox="0 0 520 96" role="img" aria-label="Investment performance chart"><defs><linearGradient id="investor-chart-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#10b981" stopOpacity=".3"/><stop offset="1" stopColor="#10b981" stopOpacity="0"/></linearGradient></defs><path d="M0 80 C80 72 120 67 170 60 S250 66 310 42 S420 46 520 14 V96 H0Z" fill="url(#investor-chart-fill)"/><path d="M0 80 C80 72 120 67 170 60 S250 66 310 42 S420 46 520 14" fill="none" stroke="#10b981" strokeWidth="3" strokeLinecap="round"/></svg></section>
-          <section className="velo-card p-4 sm:p-5 lg:p-6"><h2 className="section-heading">Capital allocation</h2><p className="section-subheading">Where your money sits today.</p><div className="mx-auto mt-6 flex h-36 w-36 items-center justify-center rounded-full" style={{ background: `conic-gradient(#2196f3 0 38%, #10b981 38% 82%, #f59e0b 82% 100%)` }}><div className="flex h-24 w-24 flex-col items-center justify-center rounded-full bg-white dark:bg-slate-900"><span className="text-lg font-semibold text-velo-900 dark:text-white">{money.format(totalCapital)}</span><span className="text-[10px] text-slate-500">total value</span></div></div><div className="mt-5 space-y-2 text-xs"><Legend color="bg-sky-500" label="Available wallet" value={money.format(available)} /><Legend color="bg-emerald-500" label="Locked investments" value={money.format(locked)} /><Legend color="bg-amber-500" label="Expected earnings" value={money.format(returns)} /></div></section>
+          <section className="velo-card overflow-hidden p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><h2 className="section-heading">Portfolio performance</h2><p className="section-subheading">Projected earnings accrual across your active investments.</p></div><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">{activeCount} active</span></div><div className="mt-6 grid grid-cols-3 gap-3"><div><p className="text-xs text-slate-500">Capital invested</p><p className="mt-1 text-base font-semibold text-velo-900 dark:text-white">{money.format(investedCapital)}</p></div><div><p className="text-xs text-slate-500">Expected return</p><p className="mt-1 text-base font-semibold text-emerald-600">{money.format(returns)}</p></div><div><p className="text-xs text-slate-500">Return ratio</p><p className="mt-1 text-base font-semibold text-velo-900 dark:text-white">{returnRate}%</p></div></div>{hasPerformanceData && curve.line ? (<svg className="mt-6 h-24 w-full" viewBox="0 0 520 96" preserveAspectRatio="none" role="img" aria-label="Projected earnings accrual"><defs><linearGradient id="investor-chart-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#10b981" stopOpacity=".3"/><stop offset="1" stopColor="#10b981" stopOpacity="0"/></linearGradient></defs><path d={curve.area} fill="url(#investor-chart-fill)"/><path d={curve.line} fill="none" stroke="#10b981" strokeWidth="3" strokeLinecap="round"/></svg>) : (<div className="mt-6 rounded-xl border border-dashed border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 px-4 py-6 text-center"><p className="text-sm font-semibold text-velo-900 dark:text-white">No active investments yet</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Your earnings curve appears here once you activate an investment plan.</p></div>)}</section>
+          <section className="velo-card p-4 sm:p-5 lg:p-6"><h2 className="section-heading">Capital allocation</h2><p className="section-subheading">Where your money sits today.</p><div className="mx-auto mt-6 flex h-36 w-36 items-center justify-center rounded-full" style={{ background: donutBackground }}><div className="flex h-24 w-24 flex-col items-center justify-center rounded-full bg-white dark:bg-slate-900"><span className="text-lg font-semibold text-velo-900 dark:text-white">{money.format(totalCapital)}</span><span className="text-[10px] text-slate-500">total value</span></div></div><div className="mt-5 space-y-2 text-xs"><Legend color="bg-sky-500" label="Available wallet" value={money.format(available)} /><Legend color="bg-emerald-500" label="Locked investments" value={money.format(locked)} /><Legend color="bg-amber-500" label="Expected earnings" value={money.format(returns)} /></div>{allocTotal <= 0 && <p className="mt-4 text-center text-[11px] text-slate-400 dark:text-slate-500">Fund your wallet and activate an investment to see your allocation.</p>}</section>
         </div>
 
         <div className="grid gap-5 lg:grid-cols-[1.3fr_.7fr]">
@@ -1460,7 +1482,7 @@ function InvestorWallet(props: any) {
 }
 
 function InvestorInvestments(props: any) {
-  const { investments, plans, totalCapital, returns, returnRate, openInvestModal } = props;
+  const { investments, plans, investedCapital, returns, blendedAnnualRate, openInvestModal } = props;
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -1471,9 +1493,9 @@ function InvestorInvestments(props: any) {
         </div>
       </div>
       <div className="grid gap-4 md:grid-cols-3">
-        <Metric label="Capital deployed" value={money.format(totalCapital)} detail="Total invested" />
-        <Metric label="Expected returns" value={money.format(returns)} detail="Earnings on maturity" />
-        <Metric label="Blended return" value={`${returnRate}%`} detail="Weighted rate" />
+        <Metric label="Capital deployed" value={money.format(investedCapital)} detail="Locked in active investments" />
+        <Metric label="Expected returns" value={money.format(returns)} detail="Earnings on active investments" />
+        <Metric label="Blended rate" value={`${blendedAnnualRate}%`} detail="Weighted annual rate" />
       </div>
       <section className="velo-card p-4 sm:p-5 lg:p-6">
         <div className="flex items-center justify-between gap-3 mb-4">
@@ -1510,12 +1532,17 @@ function InvestorInvestments(props: any) {
         </div>
         {investments.length ? (
           <div className="mt-5 space-y-3">
-            {investments.map((inv: any, idx: number) => (
+            {investments.map((inv: any, idx: number) => {
+              const status = String(inv.status || "UNKNOWN").toUpperCase();
+              const settledStatuses = ["COMPLETED", "MATURED", "PAID_OUT", "SETTLED"];
+              const settlingStatuses = ["PAYOUT_PENDING", "PAYOUT_ACCOUNT_REQUIRED", "LIQUIDITY_APPROVED", "MATURITY_PENDING"];
+              return (
               <div key={inv.id || idx} className="rounded-xl border border-slate-100 dark:border-slate-800 p-4 flex flex-wrap justify-between gap-3">
-                <div><div className="text-sm font-semibold text-velo-900 dark:text-white">{inv.planSnapshot?.name || `Investment ${idx + 1}`}</div><div className="text-xs text-slate-500 mt-0.5">Status: {inv.status || "UNKNOWN"} · Started: {inv.startsAt ? new Date(inv.startsAt).toLocaleDateString() : "—"}</div><div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-amber-700 dark:text-amber-300"><Icon name="lock" size={13} />Locked until {inv.maturesAt ? new Date(inv.maturesAt).toLocaleDateString() : "maturity"} · {inv.accrual?.remainingDays ?? inv.tenureDays ?? 0} days remaining</div></div>
-                <div className="text-right"><div className="font-semibold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div><div className="text-xs text-emerald-600">Accrued: +{money.format(Number(inv.accrual?.accruedEarningsNaira ?? 0))}</div><div className="text-[11px] text-slate-500">Maturity interest: {money.format(Number(inv.expectedEarningsNaira ?? 0))}</div></div>
+                <div><div className="text-sm font-semibold text-velo-900 dark:text-white">{inv.planSnapshot?.name || `Investment ${idx + 1}`}</div><div className="text-xs text-slate-500 mt-0.5">Status: {status} · Started: {inv.startsAt ? new Date(inv.startsAt).toLocaleDateString() : "—"}</div>{status === "ACTIVE" ? (<div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-amber-700 dark:text-amber-300"><Icon name="lock" size={13} />Locked until {inv.maturesAt ? new Date(inv.maturesAt).toLocaleDateString() : "maturity"} · {inv.accrual?.remainingDays ?? inv.tenureDays ?? 0} days remaining</div>) : settlingStatuses.includes(status) ? (<div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-sky-700 dark:text-sky-300"><Icon name="clock" size={13} />Matured — settlement in progress{status === "PAYOUT_ACCOUNT_REQUIRED" ? " (add a verified payout account)" : ""}</div>) : settledStatuses.includes(status) ? (<div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300">Principal and earnings settled</div>) : status === "PAYOUT_FAILED" ? (<div className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300">Settlement failed — contact support for a retry</div>) : null}</div>
+                <div className="text-right"><div className="font-semibold dark:text-white">{money.format(Number(inv.amountNaira ?? 0))}</div>{status === "ACTIVE" && <div className="text-xs text-emerald-600">Accrued: +{money.format(Number(inv.accrual?.accruedEarningsNaira ?? 0))}</div>}{(status === "ACTIVE" || status === "PAYOUT_PENDING" || status === "PAYOUT_FAILED" || status === "PAYOUT_ACCOUNT_REQUIRED") && <div className="text-[11px] text-slate-500">Maturity interest: {money.format(Number(inv.expectedEarningsNaira ?? 0))}</div>}</div>
               </div>
-            ))}
+              );
+            })}
           </div>
         ) : <Empty text="No investments yet. Fund your wallet and choose a plan to begin." />}
       </section>
@@ -2058,143 +2085,6 @@ function InvestorKyc(props: any) {
   );
 }
 
-function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
-  const out: UnifiedTx[] = [];
-  if (!data) return out;
-  // Withdrawal records first: they carry the LIVE transfer status
-  // (PROCESSING -> SUCCESSFUL/FAILED). Used both for first-class rows below and
-  // to upgrade the matching WITHDRAWAL_INITIATED ledger rows (which would
-  // otherwise render as an eternal "PROCESSING" entry even after the money
-  // actually arrived in the investor's bank account).
-  const withdrawalById = new Map<string, Record<string, unknown>>();
-  (data.withdrawals || []).forEach((w: Record<string, unknown>) => {
-    if (w && typeof w.id === "string") withdrawalById.set(w.id, w);
-  });
-  (data.ledger || []).forEach((entry: any) => {
-    const entryType = String(entry.entryType || "");
-    // Bookkeeping marker (always ₦0) — the real movement is on the
-    // WITHDRAWAL_INITIATED row and the withdrawal record itself.
-    if (/WITHDRAWAL_SETTLEMENT/.test(entryType) && Number(entry.amountMinor ?? 0) === 0) return;
-    const direction: "CREDIT" | "DEBIT" = entry.direction === "CREDIT" ? "CREDIT" : entry.direction === "DEBIT" ? "DEBIT" : (["INVESTOR_FUNDING", "INVESTMENT_RETURN", "DEPOSIT_CREDIT", "FUNDING"].some(k => entryType.includes(k)) ? "CREDIT" : "DEBIT");
-    let kind: UnifiedTx["kind"] = "OTHER";
-    if (/FUNDING|DEPOSIT/.test(entryType)) kind = "FUNDING";
-    else if (/INVESTMENT.*LOCK|INVESTMENT_DEBIT/.test(entryType)) kind = "INVESTMENT_LOCK";
-    else if (/INVESTMENT.*RETURN|INVESTMENT_CREDIT|MATURITY/.test(entryType)) kind = "INVESTMENT_RETURN";
-    else if (/PAYOUT|WITHDRAWAL/.test(entryType)) kind = "PAYOUT";
-    else if (/FEE/.test(entryType)) kind = "FEE";
-    // Ledger entries are bookkeeping records: settled by definition, but
-    // initiated withdrawals inherit the LIVE withdrawal status when available
-    // (matched via referenceId), reversals are reversed.
-    const linkedWithdrawal = entry.referenceId ? withdrawalById.get(String(entry.referenceId)) : undefined;
-    // DEDUP: when a withdrawal RECORD exists for this ledger entry, the
-    // first-class withdrawal row below already renders it (with the live
-    // transfer status). Pushing the WITHDRAWAL_INITIATED ledger row as well
-    // made every withdrawal appear TWICE in the history — skip it here.
-    if (linkedWithdrawal && /WITHDRAWAL_INITIATED/.test(entryType)) return;
-    const ledgerStatus = linkedWithdrawal
-      ? txStatus(linkedWithdrawal.status) ?? (/WITHDRAWAL_INITIATED/.test(entryType) ? "PROCESSING" : "COMPLETED")
-      : /WITHDRAWAL_INITIATED/.test(entryType)
-        ? "PROCESSING"
-        : /REVERSAL/.test(entryType)
-          ? "REVERSED"
-          : "COMPLETED";
-    out.push({
-      id: String(entry.id || `ledger-${entry.createdAt}-${entry.amountMinor}`),
-      kind,
-      direction,
-      amountMinor: Number(entry.amountMinor ?? 0),
-      label: String(entry.entryType || "Ledger entry").replace(/_/g, " "),
-      narration: linkedWithdrawal && /WITHDRAWAL_INITIATED/.test(entryType)
-        ? (String(linkedWithdrawal.error ?? "") || `Withdrawal to ${linkedWithdrawal.bankName ?? linkedWithdrawal.bankCode ?? "bank"} ••••${String(linkedWithdrawal.accountNumber ?? "").slice(-4)}`)
-        : entry.description || entry.narration,
-      referenceId: entry.referenceId,
-      createdAt: entry.createdAt || new Date().toISOString(),
-      balanceAfterMinor: entry.balanceAfterMinor != null ? Number(entry.balanceAfterMinor) : undefined,
-      status: ledgerStatus,
-      raw: entry,
-    });
-  });
-  (data.walletTransactions || []).forEach((tx: any) => {
-    const isCredit = /CREDIT|DEPOSIT|FUNDING|IN/.test(String(tx.type || tx.direction || "").toUpperCase());
-    const amountMinor = tx.amountMinor != null ? Number(tx.amountMinor) : tx.amountNaira != null ? Number(tx.amountNaira) * 100 : 0;
-    out.push({
-      id: String(tx.id || `wallet-${tx.createdAt}-${tx.amountMinor}`),
-      kind: isCredit ? "DEPOSIT" : "OTHER",
-      direction: isCredit ? "CREDIT" : "DEBIT",
-      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
-      label: tx.type ? String(tx.type).replace(/_/g, " ") : "Wallet transaction",
-      narration: tx.description || tx.narration,
-      referenceId: tx.reference || tx.txRef || tx.transactionId,
-      createdAt: tx.createdAt || new Date().toISOString(),
-      balanceAfterMinor: tx.balanceAfterMinor != null ? Number(tx.balanceAfterMinor) : undefined,
-      status: txStatus(tx.status),
-      raw: tx,
-    });
-  });
-  (data.investments || []).forEach((inv: any, i: number) => {
-    const amountMinor = inv.amountMinor != null ? Number(inv.amountMinor) : inv.amountNaira != null ? Number(inv.amountNaira) * 100 : 0;
-    out.push({
-      id: String(inv.id || `inv-${i}`),
-      kind: "INVESTMENT",
-      direction: "DEBIT",
-      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
-      label: inv.planSnapshot?.name ? `Investment: ${inv.planSnapshot.name}` : "New investment",
-      narration: `Investment created · Status: ${inv.status || "PENDING"}`,
-      referenceId: inv.id,
-      createdAt: inv.createdAt || new Date().toISOString(),
-      status: txStatus(inv.status),
-      raw: inv,
-    });
-  });
-  (data.payouts || []).forEach((p: any, i: number) => {
-    const amountMinor = p.amountMinor != null ? Number(p.amountMinor) : p.amountNaira != null ? Number(p.amountNaira) * 100 : 0;
-    out.push({
-      id: String(p.id || `payout-${i}`),
-      kind: "PAYOUT",
-      direction: "CREDIT",
-      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
-      label: "Investment payout",
-      narration: `Payout status: ${p.status || "PENDING"}`,
-      referenceId: p.referenceId || p.id,
-      createdAt: p.createdAt || new Date().toISOString(),
-      status: txStatus(p.status),
-      raw: p,
-    });
-  });
-  // First-class withdrawal rows: one per withdrawal attempt with its live
-  // status — so SUCCESSFUL withdrawals finally render as successful in the
-  // history (dedup: a row whose referenceId matches an already-added
-  // withdrawal is skipped).
-  const addedWithdrawalRefs = new Set<string>();
-  (data.withdrawals || []).forEach((w: any, i: number) => {
-    const amountMinor = w.amountMinor != null ? Number(w.amountMinor) : w.amountNaira != null ? Number(w.amountNaira) * 100 : 0;
-    const refKey = String(w.id ?? `withdrawal-${i}`);
-    if (addedWithdrawalRefs.has(refKey)) return;
-    addedWithdrawalRefs.add(refKey);
-    const bankLabel = w.bankName || w.bankCode || "bank";
-    out.push({
-      id: `withdrawal-${refKey}`,
-      kind: "PAYOUT",
-      direction: "DEBIT",
-      amountMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
-      label: `Withdrawal · ${bankLabel}`,
-      narration: `To ${bankLabel} ••••${String(w.accountNumber ?? "").slice(-4)}${w.accountName ? ` · ${w.accountName}` : ""}${w.error ? ` — ${w.error}` : ""}`,
-      referenceId: w.id,
-      createdAt: w.createdAt || new Date().toISOString(),
-      status: txStatus(w.status) ?? "PROCESSING",
-      raw: w,
-    });
-  });
-  // React silently drops list rows whose keys collide — and collisions DO occur
-  // when legacy rows lack an id and share the (createdAt, amount) fallback.
-  // Guarantee unique ids so no transaction can ever silently vanish.
-  const seenIds = new Set<string>();
-  for (const row of out) {
-    if (seenIds.has(row.id)) row.id = `${row.id}~${seenIds.size}`;
-    seenIds.add(row.id);
-  }
-  return out.sort((a, b) => safeTxTime(b.createdAt) - safeTxTime(a.createdAt));
-}
 
 type InvestorTransactionsProps = { transactions: TransactionData | null; selectedTx: UnifiedTx | null; setSelectedTx: (t: UnifiedTx | null) => void };
 

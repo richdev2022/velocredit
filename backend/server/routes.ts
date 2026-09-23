@@ -7140,6 +7140,9 @@ function csvFileName(dataset: string, from: unknown, to: unknown): string {
 }
 
 const csvNaira = (value: unknown): number => Math.round(Number(value ?? 0)) / 100;
+// For fields that are ALREADY stored in naira (major units) — csvNaira above
+// expects minor units and would divide these by 100, exporting wrong amounts.
+const csvNairaValue = (value: unknown): number => Math.round(Number(value ?? 0) * 100) / 100;
 const csvStamp = (from: unknown, to: unknown) => ({
   from: parseDateQueryParam(from),
   to: parseDateQueryParam(to, { endOfDay: true }),
@@ -7165,7 +7168,7 @@ router.get("/admin/export/:dataset", requireAuth, requireRole("ADMIN"), (req, re
         const investor = users.find((u) => u.id === w.investorId);
         return [
           w.id, w.createdAt, w.status, investor?.fullName ?? w.investorId, investor?.email ?? "",
-          csvNaira(w.amountNaira), csvNaira(w.feeNaira), csvNaira(w.netNaira),
+          csvNairaValue(w.amountNaira), csvNairaValue(w.feeNaira), csvNairaValue(w.netNaira),
           w.bankName ?? w.bankCode ?? "", w.accountNumber, w.accountName ?? "",
           w.providerReference ?? "", w.retryCount ?? 0, w.lastAttemptAt ?? "", w.processedAt ?? "", w.error ?? "",
         ];
@@ -7189,8 +7192,8 @@ router.get("/admin/export/:dataset", requireAuth, requireRole("ADMIN"), (req, re
           app.applicationId || app.id, app.createdAt, snapshot.fullName || borrower?.fullName || app.borrowerId,
           snapshot.email || borrower?.email || "", snapshot.phone || borrower?.phone || "",
           app.applicantType ?? "", app.productSnapshot?.productName ?? "",
-          csvNaira(app.amountNaira), app.tenureDays ?? "", app.status,
-          loanRecord ? loanRecord.status : "", csvNaira(loanRecord?.outstandingNaira ?? 0),
+          csvNairaValue(app.amountNaira), app.tenureDays ?? "", app.status,
+          loanRecord ? loanRecord.status : "", csvNairaValue(loanRecord?.outstandingNaira ?? 0),
           loanRecord?.disbursedAt ?? "", loanRecord?.dueAt ?? "",
         ];
       });
@@ -7209,8 +7212,8 @@ router.get("/admin/export/:dataset", requireAuth, requireRole("ADMIN"), (req, re
         const investor = users.find((u) => u.id === p.userId);
         return [
           p.id, p.createdAt, investor?.fullName ?? p.userId, investor?.email ?? "", p.investmentId ?? "",
-          p.payoutType ?? "", csvNaira(p.principalNaira), csvNaira(p.earningsNaira), csvNaira(p.feesNaira),
-          csvNaira(p.amountNaira), p.status, p.providerReference ?? "", p.updatedAt ?? p.createdAt, p.error ?? "",
+          p.payoutType ?? "", csvNairaValue(p.principalNaira), csvNairaValue(p.earningsNaira), csvNairaValue(p.feesNaira),
+          csvNairaValue(p.amountNaira), p.status, p.providerReference ?? "", p.updatedAt ?? p.createdAt, p.error ?? "",
         ];
       });
     sendCsvResponse(res, csvFileName(dataset, req.query.from, req.query.to), buildCsv(
@@ -7275,7 +7278,28 @@ router.get("/admin/export/:dataset", requireAuth, requireRole("ADMIN"), (req, re
     return;
   }
 
-  res.status(400).json({ ok: false, error: `Unknown export dataset '${dataset}'. Available: withdrawals, loans, payouts, ledger, kyc, investors` });
+  if (dataset === "audit-logs") {
+    const rows = auditLogs
+      .filter((a) => (!status || a.action === status) && inRange(a.createdAt, from, to))
+      .slice()
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .map((a) => {
+        const actor = a.userId ? users.find((u) => u.id === a.userId) : undefined;
+        const target = a.resourceId ? users.find((u) => u.id === a.resourceId) : undefined;
+        return [
+          a.id, a.createdAt, a.action, actor?.fullName ?? "", actor?.email ?? "",
+          a.resourceType ?? "", a.resourceId ?? "", target?.fullName ?? "",
+          JSON.stringify(a.metadata ?? {}), a.ipAddress ?? "", a.userAgent ?? "",
+        ];
+      });
+    sendCsvResponse(res, csvFileName(dataset, req.query.from, req.query.to), buildCsv(
+      ["Event ID", "Created", "Action", "Actor", "Actor Email", "Resource Type", "Resource ID", "Target User", "Metadata", "IP Address", "User Agent"],
+      rows,
+    ));
+    return;
+  }
+
+  res.status(400).json({ ok: false, error: `Unknown export dataset '${dataset}'. Available: withdrawals, loans, payouts, ledger, kyc, investors, audit-logs` });
 });
 
 router.get("/investor/export/:dataset", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
@@ -7286,16 +7310,30 @@ router.get("/investor/export/:dataset", requireAuth, requireRole("INVESTOR"), (r
   if (dataset === "transactions") {
     // Mirror the unified transaction history shown in the dashboard (including
     // its dedup rules) so the exported file always matches what the investor
-    // sees on screen.
+    // sees on screen: one row per real money movement — the wallet DEPOSIT row
+    // for fundings, the first-class investment row for positions.
     const wallet = findWallet(userId);
     const userWithdrawals = investorWithdrawals.filter((w) => w.investorId === userId);
     const withdrawalIds = new Set(userWithdrawals.map((w) => w.id));
+    const userWalletTxs = walletTransactions.filter((t) => t.userId === userId);
+    const depositTxIds = new Set(userWalletTxs.filter((t) => String(t.type) === "DEPOSIT").map((t) => t.id));
+    const userInvestments = investments.filter((i) => i.investorId === userId);
+    const investmentIdSet = new Set(userInvestments.map((i) => i.id));
     type Row = { date: string; type: string; direction: string; amountNaira: number; status: string; description: string; reference: string };
     const rows: Row[] = [];
     for (const entry of ledgerEntries.filter((e) => e.walletId === wallet.id)) {
       const entryType = String(entry.entryType ?? "");
       if (/WITHDRAWAL_SETTLEMENT/.test(entryType) && Number(entry.amountMinor ?? 0) === 0) continue;
       if (/WITHDRAWAL_INITIATED/.test(entryType) && withdrawalIds.has(String(entry.referenceId ?? ""))) continue;
+      // DEDUP (funding): the FUNDING ledger row duplicates the DEPOSIT wallet
+      // transaction (same money, richer live status on the deposit row).
+      if (/^FUNDING$/.test(entryType)) {
+        const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+        if (depositTxIds.has(String(entry.referenceId ?? "")) || (meta.txRef && userWalletTxs.some((t) => t.txRef === meta.txRef))) continue;
+      }
+      // DEDUP (investment): the first-class investment row below already
+      // carries plan name + status — skip the INVESTMENT_LOCK bookkeeping row.
+      if (/INVESTMENT_LOCK/.test(entryType) && investmentIdSet.has(String(entry.referenceId ?? ""))) continue;
       rows.push({
         date: entry.createdAt,
         type: entryType.replace(/_/g, " "),
@@ -7306,23 +7344,37 @@ router.get("/investor/export/:dataset", requireAuth, requireRole("INVESTOR"), (r
         reference: String(entry.referenceId ?? ""),
       });
     }
+    // Wallet funding rows — same source the dashboard renders, so statuses
+    // match (PENDING PROVIDER CONFIRMATION / SUCCESSFUL / FAILED).
+    for (const tx of userWalletTxs) {
+      if (String(tx.type) !== "DEPOSIT") continue;
+      rows.push({
+        date: String(tx.createdAt),
+        type: "Wallet funding",
+        direction: "CREDIT",
+        amountNaira: csvNaira(tx.amountMinor),
+        status: String(tx.status ?? "SUCCESSFUL"),
+        description: `Wallet funding via ${String(tx.provider ?? "payment gateway")}`,
+        reference: String(tx.txRef ?? tx.id),
+      });
+    }
     for (const w of userWithdrawals) {
       rows.push({
-        date: String(w.createdAt), type: "Withdrawal", direction: "DEBIT", amountNaira: csvNaira(w.amountNaira),
+        date: String(w.createdAt), type: "Withdrawal", direction: "DEBIT", amountNaira: csvNairaValue(w.amountNaira),
         status: String(w.status), description: `Withdrawal to ${w.bankName || w.bankCode} ••••${String(w.accountNumber).slice(-4)}`,
         reference: String(w.providerReference ?? w.id),
       });
     }
-    for (const inv of investments.filter((i) => i.investorId === userId)) {
+    for (const inv of userInvestments) {
       rows.push({
-        date: String(inv.createdAt), type: "Investment", direction: "DEBIT", amountNaira: csvNaira(inv.amountNaira),
+        date: String(inv.createdAt), type: "Investment", direction: "DEBIT", amountNaira: csvNairaValue(inv.amountNaira),
         status: String(inv.status), description: inv.planSnapshot?.name ? `Investment: ${inv.planSnapshot.name}` : "New investment",
         reference: String(inv.id),
       });
     }
     for (const p of payouts.filter((p) => p.userId === userId)) {
       rows.push({
-        date: String(p.createdAt), type: "Investment payout", direction: "CREDIT", amountNaira: csvNaira(p.amountNaira),
+        date: String(p.createdAt), type: "Investment payout", direction: "CREDIT", amountNaira: csvNairaValue(p.amountNaira),
         status: String(p.status), description: `Payout (${p.payoutType ?? "PAYOUT"})`, reference: String(p.providerReference ?? p.id),
       });
     }
@@ -7342,9 +7394,9 @@ router.get("/investor/export/:dataset", requireAuth, requireRole("INVESTOR"), (r
       .filter((i) => i.investorId === userId && inRange(i.createdAt, from, to))
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       .map((inv) => [
-        inv.id, inv.createdAt, inv.planSnapshot?.name ?? "", csvNaira(inv.amountNaira),
+        inv.id, inv.createdAt, inv.planSnapshot?.name ?? "", csvNairaValue(inv.amountNaira),
         inv.tenureDays ?? "", inv.status, inv.startsAt ?? "", inv.maturesAt ?? "",
-        csvNaira(inv.expectedEarningsNaira), inv.annualRatePercent ?? "",
+        csvNairaValue(inv.expectedEarningsNaira), inv.annualRatePercent ?? "",
       ]);
     sendCsvResponse(res, csvFileName(dataset, req.query.from, req.query.to), buildCsv(
       ["Investment ID", "Created", "Plan", "Amount (NGN)", "Tenure (days)", "Status", "Started", "Matures", "Expected Earnings (NGN)", "Annual Rate (%)"],
@@ -7366,7 +7418,7 @@ router.get("/borrower/export/:dataset", requireAuth, requireRole("BORROWER"), (r
       .filter((r) => r.borrowerId === userId && inRange(r.createdAt, from, to))
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
       .map((r) => [
-        r.createdAt, r.loanId, csvNaira(r.amountNaira), r.status, r.onTime ? "YES" : "NO",
+        r.createdAt, r.loanId, csvNairaValue(r.amountNaira), r.status, r.onTime ? "YES" : "NO",
         r.txRef ?? "", r.providerReference ?? "", r.verifiedAt ?? "",
       ]);
     sendCsvResponse(res, csvFileName(dataset, req.query.from, req.query.to), buildCsv(
@@ -7384,8 +7436,8 @@ router.get("/borrower/export/:dataset", requireAuth, requireRole("BORROWER"), (r
         const loanRecord = loans.find((l) => l.applicationId === app.id);
         return [
           app.applicationId || app.id, app.createdAt, app.applicantType ?? "",
-          app.productSnapshot?.productName ?? "", csvNaira(app.amountNaira), app.tenureDays ?? "",
-          app.status, loanRecord ? loanRecord.status : "", csvNaira(loanRecord?.outstandingNaira ?? 0),
+          app.productSnapshot?.productName ?? "", csvNairaValue(app.amountNaira), app.tenureDays ?? "",
+          app.status, loanRecord ? loanRecord.status : "", csvNairaValue(loanRecord?.outstandingNaira ?? 0),
           loanRecord?.disbursedAt ?? "", loanRecord?.dueAt ?? "",
         ];
       });
@@ -7407,8 +7459,8 @@ router.get("/borrower/export/:dataset", requireAuth, requireRole("BORROWER"), (r
       .filter((s) => s.loanId === loanId)
       .sort((a, b) => Number(a.installmentNumber) - Number(b.installmentNumber))
       .map((s) => [
-        s.installmentNumber, s.dueDate, csvNaira(s.principalNaira), csvNaira(s.interestNaira),
-        csvNaira(s.feesNaira), csvNaira(s.totalDueNaira), csvNaira(s.totalPaidNaira), s.status,
+        s.installmentNumber, s.dueDate, csvNairaValue(s.principalNaira), csvNairaValue(s.interestNaira),
+        csvNairaValue(s.feesNaira), csvNairaValue(s.totalDueNaira), csvNairaValue(s.totalPaidNaira), s.status,
       ]);
     sendCsvResponse(res, csvFileName(dataset, req.query.from, req.query.to), buildCsv(
       ["Installment", "Due Date", "Principal (NGN)", "Interest (NGN)", "Fees (NGN)", "Total Due (NGN)", "Total Paid (NGN)", "Status"],
