@@ -1,5 +1,22 @@
 import { env } from "../config.js";
 
+// Carries everything Flutterwave returned when a call fails, so callers (e.g.
+// loan disbursement) can persist the raw provider response and the admin UI
+// can show the REAL reason a transfer failed instead of a bare message.
+export class FlutterwaveError extends Error {
+  readonly providerResponse: Record<string, unknown>;
+  readonly httpStatus: number;
+  constructor(message: string, httpStatus: number, providerResponse: unknown) {
+    super(message);
+    this.name = "FlutterwaveError";
+    this.httpStatus = httpStatus;
+    this.providerResponse =
+      providerResponse && typeof providerResponse === "object"
+        ? (providerResponse as Record<string, unknown>)
+        : { raw: String(providerResponse ?? "") };
+  }
+}
+
 async function flutterwaveRequest<T>(path: string, body: Record<string, unknown>): Promise<T> {
   if (!env.FLUTTERWAVE_SECRET_KEY) throw new Error("Flutterwave is not configured");
   const controller = new AbortController();
@@ -22,14 +39,16 @@ async function flutterwaveRequest<T>(path: string, body: Record<string, unknown>
     clearTimeout(timeout);
   }
   const text = await response.text();
-  let data: (T & { status?: string; message?: string }) | null = null;
+  let data: (T & { status?: string; message?: string; code?: string }) | null = null;
   try {
-    data = JSON.parse(text) as T & { status?: string; message?: string };
+    data = JSON.parse(text) as T & { status?: string; message?: string; code?: string };
   } catch (_error) {
-    if (!response.ok) throw new Error(`Flutterwave request failed (${response.status}): ${text.slice(0, 200) || response.statusText}`);
-    throw new Error("Flutterwave returned an invalid response");
+    if (!response.ok) throw new FlutterwaveError(`Flutterwave request failed (${response.status}): ${text.slice(0, 200) || response.statusText}`, response.status, { raw: text.slice(0, 2000) || response.statusText });
+    throw new FlutterwaveError("Flutterwave returned an invalid response", response.status, { raw: text.slice(0, 2000) });
   }
-  if (!response.ok) throw new Error(data?.message || `Flutterwave request failed (${response.status})`);
+  if (!response.ok) {
+    throw new FlutterwaveError(data?.message || `Flutterwave request failed (${response.status})`, response.status, data);
+  }
   return data;
 }
 

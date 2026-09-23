@@ -18,7 +18,6 @@ import {
 import { documentDownloadUrl, documentPreviewUrl } from "../../utils/documentLinks";
 import {
   adminListDisbursements,
-  adminRetryDisbursement,
   adminListAuditLogs,
   adminCreateUser,
   adminPatchUserRoles,
@@ -673,9 +672,10 @@ function Payouts() {
 
 function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   const [rows, setRows] = useState<any[]>([]);
-  const [disbursedLoans, setDisbursedLoans] = useState<any[]>([]);
+  const [loanRecords, setLoanRecords] = useState<any[]>([]);
   const [disbursements, setDisbursements] = useState<LoanDisbursement[]>([]);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState("");
@@ -684,7 +684,7 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
   useEffect(() => {
     const load = () => adminListLoans(size, page * size).then((response) => {
       setRows(response.loans);
-      setDisbursedLoans((response as any).disbursedLoans || []);
+      setLoanRecords(((response as any).loanRecords) || []);
       setTotal(response.meta?.total || response.loans.length);
     }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load loans"));
     void load();
@@ -692,32 +692,63 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
     const interval = window.setInterval(() => { void load(); loadDisbursements(); }, 3000);
     return () => window.clearInterval(interval);
   }, [page]);
-  async function retryDisbursement(disbursementId: string) {
-    setBusy(disbursementId);
-    try { await adminRetryDisbursement(disbursementId); await loadDisbursements(); }
-    catch (err) { setError(err instanceof Error ? err.message : "Retry failed"); }
-    finally { setBusy(""); }
-  }
   async function disburseLoan(applicationId: string) {
     setBusy(applicationId);
+    setActionError("");
     try {
       const response = await adminDisburseLoan(applicationId);
-      setDisbursedLoans((current) => [...current.filter((loan) => loan.id !== (response.loan as any).id), response.loan]);
+      // Optimistically update the loan record so the button state reflects the
+      // in-flight disbursement immediately (polling keeps it fresh afterwards).
+      setLoanRecords((current) => [...current.filter((loan) => loan.id !== (response.loan as any).id), response.loan]);
       await loadDisbursements();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to initiate disbursement");
+      setActionError(err instanceof Error ? err.message : "Unable to initiate disbursement");
     } finally {
       setBusy("");
     }
   }
   function disbursementsForLoan(loanAppId: string, loanRecordId?: string) {
-    return disbursements.filter((d) => (loanRecordId && d.loanId === loanRecordId) || d.applicationId === loanAppId);
+    return disbursements
+      .filter((d) => (loanRecordId && d.loanId === loanRecordId) || d.applicationId === loanAppId)
+      .slice()
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
-  return <Panel title="Loan management & disbursement tracking" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} applications · {disbursements.length} transfer records</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <Table headers={["Application / Loan", "Borrower", "Principal", "Application status", "Disbursements", "Actions", "Created"]}>{rows.map((loanApp) => {
+  // Disbursement button state machine (per loan application):
+  //   done      — a transfer succeeded (or the loan reached a post-disbursement
+  //               lifecycle status): the Disburse button must NEVER appear again.
+  //   inFlight  — an actual transfer is PROCESSING/PENDING: no button, waiting
+  //               for the provider.
+  //   failed    — the latest transfer FAILED: show status + provider response
+  //               (in the transfer card) and offer "Retry disbursement".
+  //   ready     — approved and awaiting disbursement. NOTE: a freshly approved
+  //               loan is created with status DISBURSEMENT_PENDING BEFORE any
+  //               transfer exists, so that status alone must NOT be treated as
+  //               in-flight — only real transfer records gate the button.
+  //   locked    — anything else (not approved yet).
+  const disbursedDoneStatuses = ["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF"];
+  function disburseActionFor(loanApp: any, loanRecord: any, transfers: LoanDisbursement[]): { kind: "done" | "inFlight" | "failed" | "ready" | "locked" } {
+    const loanStatus = String(loanRecord?.status || "");
+    const hasSuccessfulTransfer = transfers.some((t) => t.status === "SUCCESSFUL");
+    const inFlightTransfer = transfers.some((t) => ["PROCESSING", "PENDING"].includes(t.status));
+    if (hasSuccessfulTransfer || disbursedDoneStatuses.includes(loanStatus)) return { kind: "done" };
+    if (inFlightTransfer) return { kind: "inFlight" };
+    if (transfers.length > 0 && transfers[0]?.status === "FAILED") return { kind: "failed" };
+    if (loanApp.status === "APPROVED" || ["APPROVED", "DISBURSEMENT_PENDING"].includes(loanStatus)) return { kind: "ready" };
+    return { kind: "locked" };
+  }
+  return <Panel title="Loan management & disbursement tracking" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} applications · {disbursements.length} transfer records</span>}>{error ? <ErrorBox message={error} /> : <>
+    {actionError && (
+      <div className="mx-3 mt-3 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+        <span>{actionError}</span>
+        <button type="button" className="text-xs font-semibold underline" onClick={() => setActionError("")}>Dismiss</button>
+      </div>
+    )}
+    {rows.length ? <Table headers={["Application / Loan", "Borrower", "Principal", "Application status", "Disbursements", "Actions", "Created"]}>{rows.map((loanApp) => {
     const appId = loanApp.id;
-    const matchingLoanRecord = disbursedLoans.find((l: any) => l.applicationId === appId || l.id === appId);
+    const matchingLoanRecord = loanRecords.find((l: any) => l.applicationId === appId || l.id === appId);
     const loanRecordId = matchingLoanRecord?.id;
     const transfers = disbursementsForLoan(appId, loanRecordId);
+    const action = disburseActionFor(loanApp, matchingLoanRecord, transfers);
     return (
       <React.Fragment key={loanApp.id || loanApp.applicationId}>
         <tr>
@@ -735,7 +766,7 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
             {transfers.length > 0
               ? (<div className="space-y-2">
                   {transfers.map((t) => (
-                    <div key={t.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-900">
+                    <div key={t.id} className={`rounded-lg border p-3 ${t.status === "FAILED" ? "border-red-200 bg-red-50/50 dark:border-red-900/50 dark:bg-red-950/20" : "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900"}`}>
                       <div className="flex flex-wrap items-center gap-2 justify-between">
                         <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">#{t.id.slice(0, 10)}…{t.retryOfId ? <span className="ml-2 text-amber-600 dark:text-amber-400">(retry #{t.retryCount || 1})</span> : ""}</div>
                         <StatusBadge status={t.status} />
@@ -748,10 +779,14 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
                       </div>
                       <div className="mt-2"><ProviderResponse title="View provider response" data={t.providerTransfer} error={t.error} /></div>
                       {t.status === "FAILED" && (
-                        <div className="mt-3 text-right">
-                          <button type="button" className="btn-primary text-xs" disabled={busy === t.id} onClick={() => retryDisbursement(t.id)}>
-                            {busy === t.id ? "Retrying…" : "Retry transfer"}
-                          </button>
+                        <div className="mt-3 rounded-md border border-red-200 bg-white px-3 py-2 text-[11px] text-red-700 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-300">
+                          <div className="font-semibold">Disbursement failed{t.error ? `: ${t.error}` : ""}.</div>
+                          <div className="mt-1">Review the provider response above{t.bankName ? ` and the borrower's account (${t.bankName} · ••••${String(t.accountNumber || "").slice(-4)})` : ""}, then click <strong>Retry disbursement</strong> in the Actions column to trigger it again. The button below stays disabled while a transfer is being processed, and disappears permanently once a transfer succeeds.</div>
+                        </div>
+                      )}
+                      {t.status === "PROCESSING" && (
+                        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                          Transfer is being processed by the provider. The final status is confirmed automatically — this row updates within seconds.
                         </div>
                       )}
                     </div>
@@ -760,15 +795,26 @@ function Loans({ onSelect }: { onSelect?: (loanId: string) => void }) {
               : <span className="text-xs text-slate-400 dark:text-slate-500">No disbursement records</span>}
           </td>
           <td className="px-3 py-3">
-            {loanApp.status === "APPROVED" && !matchingLoanRecord && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Disburse"}</button>}
-            {loanApp.status === "APPROVED" && matchingLoanRecord?.status === "DISBURSEMENT_PENDING" && !transfers.length && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Disburse"}</button>}
-            {loanApp.status !== "APPROVED" && <span className="text-xs text-slate-400 dark:text-slate-500">Approve to disburse</span>}
+            {action.kind === "ready" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Disburse"}</button>}
+            {action.kind === "failed" && <button type="button" className="btn-primary text-xs" disabled={busy === appId} onClick={() => void disburseLoan(appId)}>{busy === appId ? "Submitting…" : "Retry disbursement"}</button>}
+            {action.kind === "inFlight" && (
+              <span className="inline-flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" aria-hidden="true"></span>
+                Disbursement in progress…
+              </span>
+            )}
+            {action.kind === "done" && (
+              <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                <span aria-hidden="true">✓</span> Disbursed
+              </span>
+            )}
+            {action.kind === "locked" && <span className="text-xs text-slate-400 dark:text-slate-500">Approve to disburse</span>}
           </td>
           <td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{loanApp.createdAt ? new Date(loanApp.createdAt).toLocaleDateString() : "—"}</td>
         </tr>
       </React.Fragment>
     );
-  })}</Table> : <Empty />}{!error && <Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} />}</Panel>;
+  })}</Table> : <Empty />}{!error && <Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} />}</>}</Panel>;
 }
 function Reconciliation() { const [data, setData] = useState<any>(null); const [error, setError] = useState(""); useEffect(() => { adminGetReconciliation().then(setData).catch((err) => setError(err instanceof Error ? err.message : "Unable to load reconciliation")); }, []); const keys = ["providerEvents", "unverifiedDeposits", "unverifiedRepayments", "pendingPayouts", "pendingWithdrawals"]; return <Panel title="Reconciliation center">{error ? <ErrorBox message={error} /> : data ? <div className="space-y-5"><div className="rounded-xl border border-velo-100 dark:border-velo-900/40 bg-velo-50/60 dark:bg-velo-900/20 p-4"><h3 className="font-semibold text-velo-900 dark:text-velo-100">What is matched</h3><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Each queue is matched against the provider reference, internal record ID, user, amount, currency, and current status before it is marked resolved.</p><div className="mt-3 grid gap-2 text-xs text-slate-600 dark:text-slate-300">{Object.entries(data.guide || {}).map(([key, value]) => <div key={key}><strong className="text-slate-900 dark:text-white">{key.replace(/([A-Z])/g, " $1")}:</strong> {String(value)}</div>)}</div></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{keys.map((key) => <div key={key} className="rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">{key.replace(/([A-Z])/g, " $1")}</div><div className="mt-2 text-2xl font-bold text-velo-900 dark:text-white">{data[key]?.length || 0}</div></div>)}</div></div> : <div className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">Loading reconciliation…</div>}</Panel>; }
 function Audit() { const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [page, setPage] = useState(0); const [total, setTotal] = useState(0); const size = 20; useEffect(() => { adminListAuditLogs({ limit: size, offset: page * size }).then((body) => { setRows(body.logs || []); setTotal(body.meta?.total || 0); }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load audit logs")); }, [page]); return <Panel title="Audit log" action={<span className="text-xs text-slate-500 dark:text-slate-400">{total} events</span>}>{error ? <ErrorBox message={error} /> : rows.length ? <><Table headers={["Date", "User / actor", "Action", "Details", "Network"]}>{rows.map((row) => <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40"><td className="px-3 py-3 text-xs text-slate-500 dark:text-slate-400">{new Date(row.createdAt).toLocaleString()}</td><td className="px-3 py-3 text-xs text-slate-700 dark:text-slate-200">{row.actor?.fullName || "System"}<br /><span className="text-slate-400">{row.actor?.email || "Automated process"}</span></td><td className="px-3 py-3 font-medium text-velo-900 dark:text-white">{row.action}</td><td className="max-w-xs px-3 py-3 text-xs text-slate-600 dark:text-slate-300">{row.targetUser ? `${row.targetUser.fullName} (${row.targetUser.email})` : ""}{row.resourceType ? ` · ${row.resourceType} ${row.resourceId || ""}` : ""}<pre className="mt-1 whitespace-pre-wrap text-[10px] text-slate-400">{row.metadata ? JSON.stringify(row.metadata) : ""}</pre></td><td className="px-3 py-3 text-[10px] text-slate-500 dark:text-slate-400">{row.ipAddress || "—"}<br />{row.userAgent || "—"}</td></tr>)}</Table><Pager page={page} pages={Math.max(1, Math.ceil(total / size))} onPage={setPage} /></> : <Empty />}</Panel>; }
