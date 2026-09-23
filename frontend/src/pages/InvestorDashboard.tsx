@@ -41,7 +41,7 @@ const money = new Intl.NumberFormat("en-NG", {
   maximumFractionDigits: 0,
 });
 type DashboardData = {
-  wallet?: { availableMinor?: number; heldMinor?: number };
+  wallet?: { availableMinor?: number; heldMinor?: number; pendingDepositMinor?: number; pendingPayoutMinor?: number; totalCreditedMinor?: number; totalDebitedMinor?: number };
   investments?: Array<{
     amountNaira?: number;
     expectedEarningsNaira?: number;
@@ -617,6 +617,14 @@ export default function InvestorDashboard() {
   const investments = data?.investments ?? [];
   const available = Number(wallet?.availableMinor ?? 0) / 100;
   const locked = Number(wallet?.heldMinor ?? 0) / 100;
+  // Lifetime wallet flows straight from the backend ledger counters. These are
+  // GROSS movements: total credited = every naira that ever landed in the
+  // wallet (funding, earnings, reversals, reconciled releases); total debited
+  // = every naira that ever left the available balance (withdrawals,
+  // investment locks, fees). available = credited - debited always holds.
+  const totalCredited = Number(wallet?.totalCreditedMinor ?? 0) / 100;
+  const totalDebited = Number(wallet?.totalDebitedMinor ?? 0) / 100;
+  const pendingDeposits = Number(wallet?.pendingDepositMinor ?? 0) / 100;
   // Analysis must reflect REAL deployed capital only: money actually locked in
   // ACTIVE investments and the earnings those positions are projected to pay.
   // Wallet cash that has not been invested is NOT capital, and matured/paid-out
@@ -836,6 +844,9 @@ export default function InvestorDashboard() {
               totalCapital={totalCapital}
               investedCapital={investedCapital}
               returnRate={returnRate}
+              totalCredited={totalCredited}
+              totalDebited={totalDebited}
+              pendingDeposits={pendingDeposits}
               investments={investments}
               data={data}
               kyc={kyc}
@@ -1036,7 +1047,7 @@ function buildAccrualCurve(activeInvestments: Array<{ amountNaira?: number; annu
 }
 
 function InvestorOverview(props: any) {
-  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, investedCapital, returnRate, investments, data, kyc, transactions, openAction, action, plans, openFundModal, openInvestModal, goToTransactions } = props;
+  const { user, hasBothRoles, switchingBusy, switchMsg, handleEnableBorrower, fundingBanner, error, message, available, locked, returns, activeCount, totalCapital, investedCapital, returnRate, totalCredited, totalDebited, pendingDeposits, investments, data, kyc, transactions, openAction, action, plans, openFundModal, openInvestModal, goToTransactions } = props;
   const payoutCount = transactions?.payouts?.length ?? 0;
   const checklist = kyc?.checklist ?? {};
   const onboardingRequirements: readonly [string, string, boolean][] = [
@@ -1227,21 +1238,36 @@ function InvestorOverview(props: any) {
           </div>
         )}
 
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Metric
             label="Available wallet balance"
             value={money.format(available)}
-            detail="Available for investment"
+            detail="Available for investment and withdrawal"
           />
           <Metric
             label="Locked investments"
             value={money.format(locked)}
-            detail={`${activeCount} active investment${activeCount === 1 ? "" : "(s)"}`}
+            detail={locked > 0 ? `${activeCount} active investment${activeCount === 1 ? "" : "(s)"}` : "No funds currently locked"}
           />
           <Metric
             label="Expected returns"
             value={money.format(returns)}
             detail="Projected on active investments"
+          />
+          <Metric
+            label="Total credited"
+            value={money.format(totalCredited)}
+            detail="All money that has entered your wallet"
+          />
+          <Metric
+            label="Total debited"
+            value={money.format(totalDebited)}
+            detail="All money that has left your available balance"
+          />
+          <Metric
+            label="Pending deposits"
+            value={money.format(pendingDeposits)}
+            detail={pendingDeposits > 0 ? "Funding awaiting provider confirmation" : "No pending funding"}
           />
         </div>
 

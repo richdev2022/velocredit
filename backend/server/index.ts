@@ -5,7 +5,7 @@ import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
 import { assertProductionSecrets, env } from "./config.js";
 import { databaseHealth, sql } from "./db.js";
-import apiRouter from "./routes.js";
+import apiRouter, { reconcileAllWalletHolds } from "./routes.js";
 import { openapi } from "./openapi.js";
 import {
   verifyFlutterwaveWebhook,
@@ -58,6 +58,12 @@ app.disable("x-powered-by");
 async function runAndPersistInvestmentMaturitySweep(): Promise<void> {
   try {
     await runInvestmentMaturitySweep();
+    // The sweep moves money between held/available (principal release +
+    // earnings credit, KYC-gated holds); re-derive every wallet's held
+    // balance from its backing records so sweep interruptions cannot leave
+    // phantom or missing holds behind.
+    const repaired = reconcileAllWalletHolds();
+    if (repaired > 0) console.warn(`[index] hold reconciliation after maturity sweep repaired ${repaired} wallet(s)`);
     if (sql) await persistStore();
   } catch (error) {
     console.error("[index] investment maturity sweep failed:", error);
@@ -843,6 +849,16 @@ async function start(): Promise<void> {
     // seedAdminLedgerOpeningBalance(100_000_000 * 100);
     seedDefaultEngagement();
     getPlatformSettings();
+    // Boot-time hold reconciliation: any hold written by a previous process
+    // that crashed between "hold written" and "outcome written" (or legacy
+    // over-releases) is repaired against the real investment/withdrawal
+    // records BEFORE the API starts serving balances.
+    try {
+      const repaired = reconcileAllWalletHolds();
+      if (repaired > 0) console.warn(`[startup] hold reconciliation repaired ${repaired} wallet(s)`);
+    } catch (reconcileError) {
+      console.error("[startup] hold reconciliation failed:", reconcileError);
+    }
     if (sql) await persistStore();
     console.log("Database initialization complete.");
     let sheetsBackupRunning = false;

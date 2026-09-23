@@ -100,18 +100,38 @@ export async function runInvestmentMaturitySweep(now = new Date(), batchSize = 2
           maturesAt: investment.maturesAt,
         },
       });
+      // Two ledger entries instead of one: the principal release must be a
+      // INVESTMENT_RELEASE (that is the entry type that unlocks the held
+      // balance — see appendLedger), while the earnings are a plain
+      // INVESTMENT_RETURN credit. Emitting principal+earnings as one
+      // INVESTMENT_RETURN used to over-release the held balance by the
+      // earnings amount and corrupt other active investments' holds.
       appendLedger(wallet, {
-        entryType: "INVESTMENT_RETURN",
+        entryType: "INVESTMENT_RELEASE",
         referenceId: investment.id,
-        amountMinor,
+        amountMinor: principalMinor,
         direction: "CREDIT",
-        description: `Investment maturity sweep credit - principal + earnings for ${investment.id}`,
+        description: `Investment maturity release - principal for ${investment.id}`,
         metadata: {
-          principalNaira: investment.amountNaira,
-          earningsNaira: investment.expectedEarningsNaira,
+          sweep: true,
           maturesAt: investment.maturesAt,
         },
       });
+      if (earningsMinor > 0) {
+        appendLedger(wallet, {
+          entryType: "INVESTMENT_RETURN",
+          referenceId: investment.id,
+          amountMinor: earningsMinor,
+          direction: "CREDIT",
+          description: `Investment maturity earnings - ${investment.id}`,
+          metadata: {
+            sweep: true,
+            principalNaira: investment.amountNaira,
+            earningsNaira: investment.expectedEarningsNaira,
+            maturesAt: investment.maturesAt,
+          },
+        });
+      }
       const payout: Payout = {
         id: randomUUID(),
         investmentId: investment.id,

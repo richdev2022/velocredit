@@ -2586,6 +2586,11 @@ router.post("/me/payout-accounts/:id/verify", requireAuth, requireRole("INVESTOR
 });
 
 router.get("/investor/dashboard", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  // Self-heal stale/phantom holds BEFORE the wallet is read so the dashboard
+  // never displays money as "locked" without a backing record.
+  try { reconcileWalletHolds(req.user!.id); } catch (reconcileError) {
+    console.error("[routes] dashboard hold reconciliation failed:", reconcileError);
+  }
   const wallet = findWallet(req.user!.id);
   const userInvestments = investments.filter((item) => item.investorId === req.user!.id);
   const userPayouts = payouts.filter((item) => item.userId === req.user!.id);
@@ -2597,6 +2602,9 @@ router.get("/investor/dashboard", requireAuth, requireRole("INVESTOR"), (req: Au
 });
 
 router.get("/investor/wallet", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
+  try { reconcileWalletHolds(req.user!.id); } catch (reconcileError) {
+    console.error("[routes] wallet hold reconciliation failed:", reconcileError);
+  }
   const wallet = findWallet(req.user!.id);
   const entries = ledgerEntries.filter((e) => e.walletId === wallet.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const transactions = walletTransactions.filter((t) => t.userId === req.user?.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -3049,8 +3057,26 @@ function verifyPendingWithdrawalsInBackground(): void {
       for (const withdrawal of pending) {
         const transfer = (withdrawal.providerTransfer ?? {}) as { initiate?: { data?: { id?: number | string; reference?: string } }; verification?: Record<string, unknown> };
         const transferId = String(transfer.initiate?.data?.id ?? "");
+        // NOTE: only a real provider transfer id makes verification possible —
+        // the reference string has a constant fallback (`WITHDRAWAL-<id>`) and
+        // is therefore useless as a "provider saw this transfer" signal.
+        if (!transferId) {
+          // No provider transfer was ever created. If this has been stuck for
+          // over 15 minutes the transfer will never happen — fail it and
+          // release the hold so the money returns to the wallet instead of
+          // staying locked forever.
+          const ageMs = Date.now() - (Date.parse(withdrawal.updatedAt || withdrawal.createdAt || "") || 0);
+          if (ageMs > 15 * 60_000) {
+            const now = new Date().toISOString();
+            withdrawal.status = "FAILED";
+            withdrawal.error = "Transfer was never initiated (timed out) — funds returned to your wallet";
+            withdrawal.updatedAt = now;
+            reverseInvestorWithdrawal(withdrawal, "Transfer was never initiated (timed out)");
+            console.warn(`[routes] withdrawal ${withdrawal.id} had no provider transfer id; reversed after ${Math.round(ageMs / 60000)}m`);
+          }
+          continue;
+        }
         const reference = withdrawal.providerReference ?? String(transfer.initiate?.data?.reference ?? `WITHDRAWAL-${withdrawal.id}`);
-        if (!transferId && !reference) continue;
         const verification = await verifyTransferWithRetry(transferId, reference, 1, 250);
         const now = new Date().toISOString();
         withdrawal.providerTransfer = { ...withdrawal.providerTransfer, verification } as unknown as Record<string, unknown>;
@@ -3080,6 +3106,9 @@ function verifyPendingWithdrawalsInBackground(): void {
 router.get("/investor/withdrawals/status", requireAuth, requireRole("INVESTOR"), (req: AuthRequest, res) => {
   const refreshed = investorWithdrawals.filter((item) => item.investorId === req.user!.id && ["PENDING", "PROCESSING"].includes(item.status));
   if (refreshed.length > 0) verifyPendingWithdrawalsInBackground();
+  try { reconcileWalletHolds(req.user!.id); } catch (reconcileError) {
+    console.error("[routes] withdrawal-status hold reconciliation failed:", reconcileError);
+  }
   res.json({ ok: true, withdrawals: refreshed, wallet: findWallet(req.user!.id) });
 });
 
@@ -6331,6 +6360,132 @@ router.get("/payments/flutterwave/return", (req, res) => {
   res.redirect(302, redirect);
 });
 
+
+// ===============================
+// Wallet hold reconciliation
+// ===============================
+// `wallet.heldMinor` is maintained incrementally inside appendLedger, and
+// every historical path that wrote a hold (investment lock, withdrawal
+// initiation) or released one (settlement, reversal, sweep, early liquidity)
+// had to keep the counter in sync by itself. Any interruption — a process
+// restart between "hold written" and "record linked", an over-release, a
+// legacy double-write — left PHANTOM holds behind: money shown as "locked"
+// with no active investment and no in-flight withdrawal backing it (investors
+// saw a held balance while `investments` was empty).
+//
+// reconcileWalletHolds() derives the TRUE held balance from the backing
+// records and repairs the stored counter in both directions, writing a
+// compensating ledger entry so `available = totalCredited - totalDebited`
+// and `available + held` stay provably consistent:
+//   • held too HIGH (phantom/orphan hold)  -> HOLD_RELEASE credit: the money
+//     was debited from available but no provider transfer ever existed (no
+//     backing record), so it goes back to the investor.
+//   • held too LOW  (over-release ate holds) -> HOLD_RESTORE debit: money
+//     that belongs to a live position is moved back out of available.
+// Called on every investor wallet-reading endpoint and after the maturity
+// sweep, so the displayed numbers are always derived from real records.
+export function reconcileWalletHolds(userId: string, opts: { refundPhantom?: boolean } = {}): { beforeMinor: number; afterMinor: number; expectedMinor: number; changed: boolean } {
+  const wallet = findWallet(userId);
+  const before = wallet.heldMinor;
+
+  // --- Held investments -----------------------------------------------------
+  // A released investment has an INVESTMENT_RELEASE / INVESTMENT_RETURN ledger
+  // entry referencing its id (early liquidity releases immediately; the
+  // maturity sweep releases principal + earnings). Anything not provably
+  // released still locks the principal: ACTIVE positions, matured positions
+  // stuck on PAYOUT_ACCOUNT_REQUIRED (sweep bailed before any credit) and
+  // KYC-gated maturities whose payout sits in PENDING_APPROVAL without the
+  // wallet having been credited.
+  const walletEntries = ledgerEntries.filter((e) => e.walletId === wallet.id);
+  const releasedInvestmentIds = new Set(
+    walletEntries
+      .filter((e) => e.entryType === "INVESTMENT_RELEASE" || e.entryType === "INVESTMENT_RETURN")
+      .map((e) => String(e.referenceId ?? ""))
+  );
+  const heldInvestmentsMinor = investments
+    .filter((item) => {
+      if (item.investorId !== userId) return false;
+      const status = String(item.status ?? "");
+      if (status === "ACTIVE" || status === "PAYOUT_ACCOUNT_REQUIRED") return true;
+      if (releasedInvestmentIds.has(String(item.id ?? ""))) return false;
+      if (status === "PAYOUT_PENDING" || status === "LIQUIDITY_APPROVED") {
+        return payouts.some((p) => p.investmentId === item.id && p.status === "PENDING_APPROVAL");
+      }
+      return false;
+    })
+    .reduce((sum, item) => sum + Math.round(Number(item.amountNaira ?? 0) * 100), 0);
+
+  // --- In-flight withdrawals --------------------------------------------------
+  // Withdrawals hold their GROSS amount from initiation until the provider
+  // confirms the outcome. A withdrawal whose outcome entry already exists
+  // (settlement release or reversal) must not hold anymore, even if its
+  // status field was left stale by a crash.
+  const resolvedWithdrawalIds = new Set(
+    walletEntries
+      .filter((e) => e.entryType === "WITHDRAWAL_SETTLEMENT" || e.entryType === "WITHDRAWAL_REVERSAL")
+      .map((e) => String(e.referenceId ?? ""))
+  );
+  const inFlightWithdrawalsMinor = investorWithdrawals
+    .filter((w) =>
+      w.investorId === userId &&
+      ["PENDING", "PROCESSING"].includes(String(w.status ?? "")) &&
+      !resolvedWithdrawalIds.has(String(w.id ?? ""))
+    )
+    .reduce((sum, w) => sum + Math.round(Number(w.amountNaira ?? 0) * 100), 0);
+
+  const expected = heldInvestmentsMinor + inFlightWithdrawalsMinor;
+  if (expected === before) {
+    return { beforeMinor: before, afterMinor: wallet.heldMinor, expectedMinor: expected, changed: false };
+  }
+
+  if (expected < before) {
+    // Phantom hold: release the unbacked difference back to the investor.
+    const phantom = before - expected;
+    wallet.heldMinor = expected;
+    if (opts.refundPhantom !== false && phantom > 0) {
+      appendLedger(wallet, {
+        entryType: "HOLD_RELEASE",
+        referenceId: `reconcile-${Date.now()}`,
+        amountMinor: phantom,
+        direction: "CREDIT",
+        description: "Stale hold released - locked funds with no active investment or pending withdrawal",
+        metadata: { reconcile: true, beforeHeldMinor: before, expectedHeldMinor: expected },
+      });
+      console.warn(`[wallet/reconcile] user=${userId} phantom hold released: held ${before} -> ${expected} (+${phantom} credited back)`);
+    } else {
+      console.warn(`[wallet/reconcile] user=${userId} held lowered ${before} -> ${expected} (no refund requested)`);
+    }
+  } else {
+    // Under-held: a live position's hold was lost (over-release). Move the
+    // money back out of available so it cannot be spent twice.
+    const missing = expected - before;
+    wallet.heldMinor = expected;
+    appendLedger(wallet, {
+      entryType: "HOLD_RESTORE",
+      referenceId: `reconcile-${Date.now()}`,
+      amountMinor: missing,
+      direction: "DEBIT",
+      description: "Hold restored - funds locked in active investments or pending withdrawals",
+      metadata: { reconcile: true, beforeHeldMinor: before, expectedHeldMinor: expected },
+    });
+    console.warn(`[wallet/reconcile] user=${userId} hold restored: held ${before} -> ${expected} (-${missing} from available)`);
+  }
+  schedulePersist();
+  return { beforeMinor: before, afterMinor: wallet.heldMinor, expectedMinor: expected, changed: true };
+}
+
+/** Reconcile every wallet — used after the maturity sweep and on boot. */
+export function reconcileAllWalletHolds(): number {
+  let changed = 0;
+  for (const wallet of wallets) {
+    try {
+      if (reconcileWalletHolds(wallet.userId).changed) changed += 1;
+    } catch (error) {
+      console.error(`[wallet/reconcile] failed for user=${wallet.userId}:`, error);
+    }
+  }
+  return changed;
+}
 
 function reverseInvestorWithdrawal(withdrawal: (typeof investorWithdrawals)[number], reason: string): void {
   const wallet = findWallet(withdrawal.investorId);

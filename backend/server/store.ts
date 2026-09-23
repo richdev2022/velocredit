@@ -68,7 +68,7 @@ export interface LedgerEntry {
   id: string;
   walletId: string;
   userId: string;
-  entryType: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RELEASE" | "INVESTMENT_RETURN" | "PAYOUT" | "FEE" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "WITHDRAWAL_INITIATED" | "WITHDRAWAL_REVERSAL" | "WITHDRAWAL_SETTLEMENT";
+  entryType: "FUNDING" | "INVESTMENT_LOCK" | "INVESTMENT_RELEASE" | "INVESTMENT_RETURN" | "PAYOUT" | "FEE" | "MANUAL_ADJUSTMENT" | "REVERSAL" | "WITHDRAWAL_INITIATED" | "WITHDRAWAL_REVERSAL" | "WITHDRAWAL_SETTLEMENT" | "HOLD_RELEASE" | "HOLD_RESTORE";
   referenceId?: string;
   amountMinor: number;
   direction: "DEBIT" | "CREDIT";
@@ -1372,10 +1372,19 @@ export function appendLedger(wallet: Wallet, entry: Omit<LedgerEntry, "id" | "wa
   const newBalance = entry.direction === "CREDIT"
     ? wallet.availableMinor + entry.amountMinor
     : wallet.availableMinor - entry.amountMinor;
+  // Held-balance semantics: holds are created by INVESTMENT_LOCK and
+  // WITHDRAWAL_INITIATED and released ONLY by their matching principal
+  // entries. INVESTMENT_RETURN deliberately does NOT touch the held balance —
+  // it credits earnings (which were never locked) and, before the maturity
+  // sweep was split into principal+earnings entries, it used to over-release
+  // the hold by principal+earnings and silently corrupt OTHER active
+  // investments' holds. HOLD_RELEASE / HOLD_RESTORE are reconciliation
+  // entries: they move money between available and the investor's view of it,
+  // never between hold buckets, so they never change `held` either.
   const newHeld = entry.entryType === "INVESTMENT_LOCK" || entry.entryType === "WITHDRAWAL_INITIATED"
     ? wallet.heldMinor + entry.amountMinor
-    : entry.entryType === "INVESTMENT_RELEASE" || entry.entryType === "INVESTMENT_RETURN" || entry.entryType === "WITHDRAWAL_REVERSAL" || entry.entryType === "WITHDRAWAL_SETTLEMENT"
-    ? wallet.heldMinor - (entry.entryType === "WITHDRAWAL_SETTLEMENT" ? Number(entry.metadata?.releasedAmountMinor ?? 0) : entry.amountMinor)
+    : entry.entryType === "INVESTMENT_RELEASE" || entry.entryType === "WITHDRAWAL_REVERSAL" || entry.entryType === "WITHDRAWAL_SETTLEMENT"
+    ? Math.max(0, wallet.heldMinor - (entry.entryType === "WITHDRAWAL_SETTLEMENT" ? Number(entry.metadata?.releasedAmountMinor ?? 0) : entry.amountMinor))
     : wallet.heldMinor;
   wallet.availableMinor = Math.max(0, newBalance);
   wallet.heldMinor = Math.max(0, newHeld);
