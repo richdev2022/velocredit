@@ -520,102 +520,15 @@ export async function decomposeAndUpsertAll(
     }));
   }
 
-  if (has("creditHistory")) {
-    add("creditHistory", await upsertEntities<CreditHistoryEvent>(db, snapshot.creditHistory as readonly CreditHistoryEvent[], {
-      table: "credit_history_events",
-      pkColumns: ["id"],
-      columns: [
-        { snake: "id", get: (row) => row.id },
-        { snake: "user_id", get: (row) => row.userId },
-        { snake: "loan_id", get: (row) => row.loanId },
-        { snake: "repayment_id", get: (row) => row.repaymentId },
-        { snake: "event_type", get: (row) => row.eventType },
-        { snake: "detail", get: (row) => row.detail },
-        { snake: "metadata", get: (row) => row.metadata, json: true },
-        { snake: "occurred_at", get: (row) => row.occurredAt, asDate: true },
-        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
-      ],
-    }));
-  }
-
-  if (has("creditScores")) {
-    add("creditScores", await upsertEntities<CreditScore>(db, snapshot.creditScores as readonly CreditScore[], {
-      table: "credit_scores",
-      pkColumns: ["id"],
-      columns: [
-        { snake: "id", get: (row) => row.id },
-        { snake: "user_id", get: (row) => row.userId },
-        { snake: "version", get: (row) => row.version },
-        { snake: "score", get: (row) => row.score },
-        { snake: "band", get: (row) => row.band },
-        { snake: "factors", get: (row) => row.factors, json: true },
-        { snake: "rules_version", get: (row) => row.rulesVersion },
-        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
-      ],
-    }));
-  }
-
-  if (has("creditReports")) {
-    add("creditReports", await upsertEntities<CreditReport>(db, snapshot.creditReports as readonly CreditReport[], {
-      table: "credit_reports",
-      pkColumns: ["id"],
-      columns: [
-        { snake: "id", get: (row) => row.id },
-        { snake: "user_id", get: (row) => row.userId },
-        { snake: "provider", get: (row) => row.provider },
-        { snake: "consent_granted_at", get: (row) => row.consentGrantedAt, asDate: true },
-        { snake: "requested_at", get: (row) => row.requestedAt, asDate: true },
-        { snake: "report_reference", get: (row) => row.reportReference },
-        { snake: "status", get: (row) => row.status },
-        { snake: "score", get: (row) => row.score },
-        { snake: "normalized_fields", get: (row) => row.normalizedFields, json: true },
-        { snake: "redacted_raw", get: (row) => row.redactedRaw, json: true },
-        { snake: "expires_at", get: (row) => row.expiresAt, asDate: true },
-        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
-      ],
-    }));
-  }
-
-  if (has("auditLogs")) {
-    add("auditLogs", await upsertEntities<AuditLog>(db, snapshot.auditLogs as readonly AuditLog[], {
-      table: "audit_logs",
-      pkColumns: ["id"],
-      columns: [
-        { snake: "id", get: (row) => row.id },
-        { snake: "user_id", get: (row) => row.userId },
-        { snake: "action", get: (row) => row.action },
-        { snake: "resource_type", get: (row) => row.resourceType },
-        { snake: "resource_id", get: (row) => row.resourceId },
-        { snake: "metadata", get: (row) => row.metadata, json: true },
-        { snake: "ip_address", get: (row) => row.ipAddress },
-        { snake: "user_agent", get: (row) => row.userAgent },
-        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
-      ],
-    }));
-  }
-
-  if (has("adminLedger")) {
-    add("adminLedger", await upsertEntities<AdminLedgerEntry>(db, snapshot.adminLedger as readonly AdminLedgerEntry[], {
-      table: "admin_ledger_entries",
-      pkColumns: ["id"],
-      columns: [
-        { snake: "id", get: (row) => row.id },
-        { snake: "entry_type", get: (row) => row.entryType },
-        { snake: "reference_id", get: (row) => row.referenceId },
-        { snake: "investor_id", get: (row) => row.investorId },
-        { snake: "borrower_id", get: (row) => row.borrowerId },
-        { snake: "loan_id", get: (row) => row.loanId },
-        { snake: "amount_minor", get: (row) => row.amountMinor, asBig: true },
-        { snake: "direction", get: (row) => row.direction },
-        { snake: "balance_after_minor", get: (row) => row.balanceAfterMinor, asBig: true },
-        { snake: "currency", get: (row) => row.currency },
-        { snake: "description", get: (row) => row.description },
-        { snake: "metadata", get: (row) => row.metadata, json: true },
-        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
-      ],
-    }));
-  }
-
+  // NOTE (FK ordering): entities that reference loans/repayments
+  // (credit_history_events, admin_ledger_entries) MUST be upserted AFTER the
+  // loans/repayments blocks below. They used to live here, BEFORE
+  // loan_applications/loans — so approving a loan (which pushes a
+  // LOAN_APPROVED credit event for the brand-new loan id) violated
+  // credit_history_events.loan_id → loans(id) and the whole persist failed
+  // with 503 "Unable to save your information", even though the in-memory
+  // mutation had already been applied. All loan-child blocks now live in the
+  // "loan children" section near the end of this function.
   if (has("investorWithdrawals")) {
     add("investorWithdrawals", await upsertEntities<InvestorWithdrawal>(db, snapshot.investorWithdrawals as readonly InvestorWithdrawal[], {
       table: "investor_withdrawals",
@@ -819,6 +732,111 @@ export async function decomposeAndUpsertAll(
         { snake: "retry_count", get: (row) => row.retryCount ?? 0 },
         { snake: "created_at", get: (row) => row.createdAt, asDate: true },
         { snake: "updated_at", get: (row) => row.updatedAt ?? row.createdAt, asDate: true },
+      ],
+    }));
+  }
+
+  // ── Loan children that reference loans/repayments ─────────────────────────
+  // These MUST come after loans/loanSchedules/repayments above, otherwise the
+  // FK constraints (credit_history_events.loan_id → loans(id),
+  // admin_ledger_entries.loan_id → loans(id), …) fail on freshly-created
+  // loans (e.g. the LOAN_APPROVED credit event written when an admin approves
+  // an application).
+
+  if (has("creditHistory")) {
+    add("creditHistory", await upsertEntities<CreditHistoryEvent>(db, snapshot.creditHistory as readonly CreditHistoryEvent[], {
+      table: "credit_history_events",
+      pkColumns: ["id"],
+      columns: [
+        { snake: "id", get: (row) => row.id },
+        { snake: "user_id", get: (row) => row.userId },
+        { snake: "loan_id", get: (row) => row.loanId },
+        { snake: "repayment_id", get: (row) => row.repaymentId },
+        { snake: "event_type", get: (row) => row.eventType },
+        { snake: "detail", get: (row) => row.detail },
+        { snake: "metadata", get: (row) => row.metadata, json: true },
+        { snake: "occurred_at", get: (row) => row.occurredAt, asDate: true },
+        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
+      ],
+    }));
+  }
+
+  if (has("creditScores")) {
+    add("creditScores", await upsertEntities<CreditScore>(db, snapshot.creditScores as readonly CreditScore[], {
+      table: "credit_scores",
+      pkColumns: ["id"],
+      columns: [
+        { snake: "id", get: (row) => row.id },
+        { snake: "user_id", get: (row) => row.userId },
+        { snake: "version", get: (row) => row.version },
+        { snake: "score", get: (row) => row.score },
+        { snake: "band", get: (row) => row.band },
+        { snake: "factors", get: (row) => row.factors, json: true },
+        { snake: "rules_version", get: (row) => row.rulesVersion },
+        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
+      ],
+    }));
+  }
+
+  if (has("creditReports")) {
+    add("creditReports", await upsertEntities<CreditReport>(db, snapshot.creditReports as readonly CreditReport[], {
+      table: "credit_reports",
+      pkColumns: ["id"],
+      columns: [
+        { snake: "id", get: (row) => row.id },
+        { snake: "user_id", get: (row) => row.userId },
+        { snake: "provider", get: (row) => row.provider },
+        { snake: "consent_granted_at", get: (row) => row.consentGrantedAt, asDate: true },
+        { snake: "requested_at", get: (row) => row.requestedAt, asDate: true },
+        { snake: "report_reference", get: (row) => row.reportReference },
+        { snake: "status", get: (row) => row.status },
+        { snake: "score", get: (row) => row.score },
+        { snake: "normalized_fields", get: (row) => row.normalizedFields, json: true },
+        { snake: "redacted_raw", get: (row) => row.redactedRaw, json: true },
+        { snake: "expires_at", get: (row) => row.expiresAt, asDate: true },
+        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
+      ],
+    }));
+  }
+
+  if (has("adminLedger")) {
+    add("adminLedger", await upsertEntities<AdminLedgerEntry>(db, snapshot.adminLedger as readonly AdminLedgerEntry[], {
+      table: "admin_ledger_entries",
+      pkColumns: ["id"],
+      columns: [
+        { snake: "id", get: (row) => row.id },
+        { snake: "entry_type", get: (row) => row.entryType },
+        { snake: "reference_id", get: (row) => row.referenceId },
+        { snake: "investor_id", get: (row) => row.investorId },
+        { snake: "borrower_id", get: (row) => row.borrowerId },
+        { snake: "loan_id", get: (row) => row.loanId },
+        { snake: "amount_minor", get: (row) => row.amountMinor, asBig: true },
+        { snake: "direction", get: (row) => row.direction },
+        { snake: "balance_after_minor", get: (row) => row.balanceAfterMinor, asBig: true },
+        { snake: "currency", get: (row) => row.currency },
+        { snake: "description", get: (row) => row.description },
+        { snake: "metadata", get: (row) => row.metadata, json: true },
+        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
+      ],
+    }));
+  }
+
+  // audit_logs only references users, but it is cheap and safe to persist it
+  // here alongside the other child entities.
+  if (has("auditLogs")) {
+    add("auditLogs", await upsertEntities<AuditLog>(db, snapshot.auditLogs as readonly AuditLog[], {
+      table: "audit_logs",
+      pkColumns: ["id"],
+      columns: [
+        { snake: "id", get: (row) => row.id },
+        { snake: "user_id", get: (row) => row.userId },
+        { snake: "action", get: (row) => row.action },
+        { snake: "resource_type", get: (row) => row.resourceType },
+        { snake: "resource_id", get: (row) => row.resourceId },
+        { snake: "metadata", get: (row) => row.metadata, json: true },
+        { snake: "ip_address", get: (row) => row.ipAddress },
+        { snake: "user_agent", get: (row) => row.userAgent },
+        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
       ],
     }));
   }

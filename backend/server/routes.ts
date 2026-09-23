@@ -138,9 +138,17 @@ async function persistMutation(res: any): Promise<boolean> {
       console.warn("[routes] PostgreSQL persistence slow — responding without waiting");
       return true;
     }
-    console.error("[routes] PostgreSQL persistence failed:", error);
-    res.status(503).json({ ok: false, error: "Unable to save your information right now. Please try again." });
-    return false;
+    // HARD persistence failure. The mutation is ALREADY applied in memory, so
+    // telling the client "Unable to save your information" was a lie that
+    // caused real damage: admins saw an error on loan approval even though the
+    // approval HAD succeeded, then re-submitted and got duplicate/conflict
+    // errors. The 20s sweeper keeps retrying the persist, so durability
+    // converges in the background. Log loudly and let the request succeed.
+    console.error("[routes] PostgreSQL persistence failed (mutation stays applied, background sweeper will retry):", error);
+    if (res && typeof res.setHeader === "function" && !res.headersSent) {
+      res.setHeader("X-Persist-Retrying", "1");
+    }
+    return true;
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -4353,7 +4361,14 @@ router.get("/admin/loans", requireAuth, requireRole("ADMIN"), (req, res) => {
   // Note: we no longer return `disbursedLoans: loans` (ALL loans) — that was
   // forcing the entire loans array to be serialised on every admin list call.
   // Consumers that need disbursement data should hit /admin/disbursements.
-  res.json({ ok: true, loans: page.items, meta: page.meta, stages: LOAN_STAGES });
+  // The admin loan table still needs each application's LOAN RECORD status to
+  // drive the disburse button (disable while processing, hide once disbursed),
+  // so return a lightweight projection for just the applications on this page.
+  const pageApplicationIds = new Set(page.items.map((a) => a.id));
+  const loanRecords = loans
+    .filter((l) => (l.applicationId && pageApplicationIds.has(l.applicationId)))
+    .map((l) => ({ id: l.id, applicationId: l.applicationId, status: l.status, disbursedAt: l.disbursedAt ?? null, updatedAt: l.updatedAt }));
+  res.json({ ok: true, loans: page.items, loanRecords, meta: page.meta, stages: LOAN_STAGES });
 });
 
 router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req, res) => {
@@ -4774,8 +4789,11 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
     res.status(202).json({ ok: true, loan, disbursement, message: "Disbursement submitted to Flutterwave and is being processed. Final status will be confirmed shortly." });
     void (async () => {
       try {
+        // Reference must be UNIQUE per attempt: reusing a fixed loan-scoped
+        // reference made every retry fail with Flutterwave's duplicate-
+        // reference error once the provider had registered it.
         const transfer = await createLoanDisbursement({
-          txRef: `VELO-DISBURSE-${loan.id}`,
+          txRef: `VELO-DISBURSE-${loan.id}-${disbursement.id.slice(0, 8)}`,
           amountNaira: Number(loan.principalNaira),
           accountNumber: account.accountNumber,
           accountBank: account.bankCode,
@@ -4831,10 +4849,19 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
         }
         schedulePersist();
       } catch (error) {
-        const errMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
+        const fwResponse = (error as { providerResponse?: Record<string, unknown> })?.providerResponse;
+        const fwStatus = (error as { httpStatus?: number })?.httpStatus;
+        const baseMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
+        // Surface the provider's real reason: "Transfer creation failed" alone
+        // gives the admin nothing to act on; attach HTTP status + provider
+        // payload and persist both on the disbursement record.
+        const errMsg = fwResponse
+          ? `${baseMsg}${fwStatus ? ` (HTTP ${fwStatus})` : ""}${(fwResponse as { code?: string }).code ? ` [code: ${(fwResponse as { code?: string }).code}]` : ""}`
+          : baseMsg;
         console.error(`[routes] disbursement for loan ${loan.id} failed:`, errMsg);
         disbursement.status = "FAILED";
         disbursement.error = errMsg;
+        if (fwResponse) disbursement.providerTransfer = fwResponse;
         disbursement.updatedAt = new Date().toISOString();
         // Give the loan back to the admin so the disbursement can be retried.
         if (loan.status === "DISBURSEMENT_PENDING") {
@@ -6274,6 +6301,10 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     res.status(400).json({ ok: false, error: "Previous disbursement is missing bank/account details" });
     return;
   }
+  // Narrowed copies for the background closure (TS cannot carry the guard's
+  // narrowing into the async IIFE below).
+  const retryAccountNumber = prev.accountNumber;
+  const retryBankCode = prev.bankCode;
   const now = new Date().toISOString();
   const retryCount = (prev.retryCount ?? 0) + 1;
   const retry: (typeof loanDisbursements)[number] = {
@@ -6298,70 +6329,96 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
     retryCount,
   };
   loanDisbursements.push(retry);
-  try {
-    const transfer = await createLoanDisbursement({
-      txRef: `VELO-DISBURSE-${loan.id}-RETRY-${retry.id}`,
-      amountNaira: Number(prev.amountNaira),
-      accountNumber: prev.accountNumber,
-      accountBank: prev.bankCode,
-      beneficiaryName: prev.accountName ?? "Borrower",
-      narration: retry.narration ?? `Velo loan disbursement retry ${loan.id}`,
-    });
-    if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
-      throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the retry transfer");
-    }
-    appendAdminLedger({
-      entryType: "LOAN_DISBURSEMENT",
-      referenceId: retry.id,
-      borrowerId: loan.borrowerId,
-      loanId: loan.id,
-      amountMinor: Math.round(Number(prev.amountNaira) * 100),
-      direction: "DEBIT",
-      description: `Admin ledger debit for loan disbursement retry - loan ${loan.id}`,
-      metadata: { provider: "flutterwave", retryOfId: prev.id, accountBank: prev.bankCode },
-    });
-    retry.providerTransfer = transfer as unknown as Record<string, unknown>;
-    retry.providerReference =
-      (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ??
-      String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? retry.id);
-    retry.status = "PENDING";
-    retry.processedAt = now;
-    retry.updatedAt = now;
-    loan.status = "DISBURSEMENT_PENDING";
-    loan.providerTransfer = transfer;
-    loan.updatedAt = now;
-    const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
-    const verification = await verifyTransferWithRetry(transferId, retry.providerReference, 3, 500, Number(loan.principalNaira));
-    if (verification.settled) {
-      const settledAt = new Date().toISOString();
-      const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
-      loan.status = "ACTIVE";
-      loan.disbursedAt = settledAt;
-      loan.updatedAt = settledAt;
-      if (application) {
-        application.status = "ACTIVE";
-        application.updatedAt = settledAt;
+  loan.status = "DISBURSEMENT_PENDING";
+  loan.updatedAt = now;
+  // Respond immediately with PROCESSING state — same contract as the initiate
+  // route. The retry used to block on the Flutterwave call and answer 503 with
+  // "Flutterwave is not configured"-style errors, which kept the admin HTTP
+  // request hanging for up to 15s and made the retry row invisible until the
+  // provider answered. The transfer + verification now run in the background;
+  // admin/borrower views pick up the final status on their next fetch.
+  schedulePersist();
+  recordAdminAudit(req, "LOAN_DISBURSEMENT_RETRY_INITIATED", "LOAN", loan.id, { applicationId: prev.applicationId, retryOfId: prev.id, retryCount, disbursementId: retry.id });
+  res.status(202).json({ ok: true, loan, disbursement: retry, message: "Disbursement retry submitted to Flutterwave and is being processed. Final status will be confirmed shortly." });
+  void (async () => {
+    try {
+      // Reference must be UNIQUE per attempt (the attempt id guarantees it) so
+      // a registered reference can never block a later retry.
+      const transfer = await createLoanDisbursement({
+        txRef: `VELO-DISBURSE-${loan.id}-${retry.id.slice(0, 8)}`,
+        amountNaira: Number(prev.amountNaira),
+        accountNumber: retryAccountNumber,
+        accountBank: retryBankCode,
+        beneficiaryName: prev.accountName ?? "Borrower",
+        narration: retry.narration ?? `Velo loan disbursement retry ${loan.id}`,
+      });
+      if (String((transfer as { status?: string }).status ?? "").toLowerCase() !== "success") {
+        throw new Error((transfer as { message?: string }).message || "Flutterwave did not accept the retry transfer");
       }
-      loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? retry.providerReference);
-      retry.status = "SUCCESSFUL";
-      retry.processedAt = settledAt;
-      retry.updatedAt = settledAt;
-      creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
-      const borrower = users.find((user) => user.id === loan.borrowerId);
-      if (borrower) {
-        const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.applicationId, amountNaira: Number(loan.principalNaira) });
-        void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+      appendAdminLedger({
+        entryType: "LOAN_DISBURSEMENT",
+        referenceId: retry.id,
+        borrowerId: loan.borrowerId,
+        loanId: loan.id,
+        amountMinor: Math.round(Number(prev.amountNaira) * 100),
+        direction: "DEBIT",
+        description: `Admin ledger debit for loan disbursement retry - loan ${loan.id}`,
+        metadata: { provider: "flutterwave", retryOfId: prev.id, accountBank: prev.bankCode },
+      });
+      retry.providerTransfer = transfer as unknown as Record<string, unknown>;
+      retry.providerReference =
+        (transfer as unknown as { data?: { reference?: string; id?: number | string } }).data?.reference ??
+        String((transfer as unknown as { data?: { id?: number | string } }).data?.id ?? retry.id);
+      retry.status = "PENDING";
+      retry.processedAt = new Date().toISOString();
+      retry.updatedAt = retry.processedAt;
+      loan.providerTransfer = transfer;
+      loan.updatedAt = new Date().toISOString();
+      const transferId = String((transfer as { data?: { id?: number | string } }).data?.id ?? "");
+      const verification = await verifyTransferWithRetry(transferId, retry.providerReference, 3, 500, Number(loan.principalNaira));
+      if (verification.settled) {
+        const settledAt = new Date().toISOString();
+        const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+        loan.status = "ACTIVE";
+        loan.disbursedAt = settledAt;
+        loan.updatedAt = settledAt;
+        if (application) {
+          application.status = "ACTIVE";
+          application.updatedAt = settledAt;
+        }
+        loan.providerReference = String(verification.data?.id ?? verification.data?.flw_ref ?? retry.providerReference);
+        retry.status = "SUCCESSFUL";
+        retry.processedAt = settledAt;
+        retry.updatedAt = settledAt;
+        creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave ${loan.providerReference}`, occurredAt: settledAt, createdAt: settledAt });
+        recordAdminAudit(req, "LOAN_DISBURSED", "LOAN", loan.id, { applicationId: application?.applicationId, retryOfId: prev.id, disbursementId: retry.id, providerReference: loan.providerReference });
+        const borrower = users.find((user) => user.id === loan.borrowerId);
+        if (borrower) {
+          const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.applicationId, amountNaira: Number(loan.principalNaira) });
+          void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+        }
       }
+      schedulePersist();
+    } catch (error) {
+      const fwResponse = (error as { providerResponse?: Record<string, unknown> })?.providerResponse;
+      const fwStatus = (error as { httpStatus?: number })?.httpStatus;
+      const baseMsg = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
+      const errMsg = fwResponse
+        ? `${baseMsg}${fwStatus ? ` (HTTP ${fwStatus})` : ""}${(fwResponse as { code?: string }).code ? ` [code: ${(fwResponse as { code?: string }).code}]` : ""}`
+        : baseMsg;
+      console.error(`[routes] disbursement retry for loan ${loan.id} failed:`, errMsg);
+      retry.status = "FAILED";
+      retry.error = errMsg;
+      if (fwResponse) retry.providerTransfer = fwResponse;
+      retry.updatedAt = new Date().toISOString();
+      // Give the loan back to the admin so the disbursement can be retried.
+      if (loan.status === "DISBURSEMENT_PENDING") {
+        loan.status = "APPROVED";
+        loan.updatedAt = new Date().toISOString();
+      }
+      schedulePersist();
     }
-    if (!await persistMutation(res)) return;
-    res.status(verification.settled ? 200 : 202).json({ ok: true, loan, disbursement: retry, providerResponse: transfer });
-  } catch (error) {
-    retry.status = "FAILED";
-    retry.error = error instanceof Error ? error.message : "Flutterwave transfer unavailable";
-    retry.updatedAt = new Date().toISOString();
-    if (!await persistMutation(res)) return;
-    res.status(503).json({ ok: false, disbursement: retry, error: retry.error });
-  }
+  })();
 });
 
 export default router;

@@ -567,7 +567,8 @@ export async function adminDecideKycRequirement(id: string, requirement: "bvn" |
   return request(`/api/v1/admin/kyc-cases/${encodeURIComponent(id)}/requirement`, { method: "POST", body: JSON.stringify({ requirement, approved, note }) });
 }
 
-export interface AdminLoansResponse { ok: true; loans: unknown[]; disbursedLoans: unknown[]; meta?: PaginationMeta; }
+export interface AdminLoanRecordSummary { id: string; applicationId: string; status: string; disbursedAt?: string | null; updatedAt?: string; }
+export interface AdminLoansResponse { ok: true; loans: unknown[]; loanRecords?: AdminLoanRecordSummary[]; disbursedLoans?: unknown[]; meta?: PaginationMeta; }
 export async function adminListLoans(limit = 50, offset = 0, status?: LoanStatus, borrowerId?: string): Promise<AdminLoansResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) params.set("status", status);
