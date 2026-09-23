@@ -99,7 +99,10 @@ async function main(): Promise<void> {
   }
 
   function completeKyc(userId: string) {
-    const kyc = store.findOrCreateKycCase(userId) as { checklist: Record<string, boolean>; status: string };
+    const kyc = store.findOrCreateKycCase(userId) as { checklist: Record<string, boolean>; status: string; bvn?: string };
+    // BVN is mandatory platform-wide — the submission gate requires a FULL
+    // 11-digit BVN on file, not just the checklist flag.
+    kyc.bvn = "22212345678";
     kyc.checklist.bvn = true;
     kyc.checklist.nin = true;
     kyc.checklist.liveness = true;

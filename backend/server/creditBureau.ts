@@ -18,12 +18,19 @@
 //      yields an RC number + company name.
 //   3. Consumer fallback via the KYC case: verified BVN (+ verified name and
 //      date of birth from the BVN lookup), then the account profile.
+//
+// BVN is the ONLY identifier the Prembly consumer credit-bureau endpoint
+// accepts, and BVN is MANDATORY for every borrower. The pipeline therefore
+// always resolves the FULL, unmasked 11-digit BVN (resolveFullBvn) from every
+// raw source we hold and passes exactly that to the bureau — masked display
+// values ("***-***-1234") and NINs are never sent to the credit endpoint.
 // ============================================================================
 
 import { randomUUID } from "node:crypto";
 import {
   creditReports,
   creditScores,
+  identityVerificationEvents,
   kycCases,
   loanApplications,
   loans,
@@ -59,7 +66,7 @@ function digitsOnly(value: unknown): string {
 
 /** A usable government identifier: exactly 11 digits (masked values like
  *  "***-***-1234" stored for display do NOT qualify). */
-function fullIdentifier(value: unknown): string | undefined {
+export function fullIdentifier(value: unknown): string | undefined {
   const digits = digitsOnly(value);
   return /^\d{11}$/.test(digits) ? digits : undefined;
 }
@@ -89,7 +96,7 @@ function bvnVerifiedName(kycRaw: Record<string, unknown> | undefined): string | 
 }
 
 /** Identity payload from the NIN Advance verification (providerRaw.nin). */
-function ninIdentity(kycRaw: Record<string, unknown> | undefined): { nin?: string; fullName?: string; dateOfBirth?: string } {
+function ninIdentity(kycRaw: Record<string, unknown> | undefined): { nin?: string; fullName?: string; dateOfBirth?: string; bvn?: string } {
   const ninNode = (kycRaw as { nin?: Record<string, unknown> | undefined } | undefined)?.nin;
   if (!ninNode || typeof ninNode !== "object") return {};
   const data = ((ninNode.nin_data ?? ninNode.data ?? {}) as Record<string, unknown>);
@@ -99,9 +106,154 @@ function ninIdentity(kycRaw: Record<string, unknown> | undefined): { nin?: strin
     .join(" ").trim() || undefined;
   return {
     nin: fullIdentifier(data.nin ?? data.vnin ?? ninNode.nin_number),
+    bvn: fullIdentifier(data.bvn),
     fullName,
     dateOfBirth: normalizeDob(data.birthdate ?? data.dateOfBirth ?? data.dob),
   };
+}
+
+/* =========================================================================
+   FULL-IDENTIFIER RESOLUTION ("unmask during information pooling")
+
+   The display BVN stored on a KYC case / application snapshot is often
+   masked ("***-***-1234") and legacy rows may hold either identifier alone.
+   These resolvers walk EVERY raw source we hold — KYC case columns, the
+   NIBSS/NIMC provider raw blocks, the per-verification event raw responses
+   and the application snapshots — and return the FULL 11-digit number.
+   Masked values never qualify. Pooling surfaces (reapply-prefill, KYC
+   prefill, /me/kyc) and the credit bureau pipeline all go through here so
+   the real BVN is always what gets pooled and passed to Prembly.
+   ========================================================================= */
+
+function kycRawNode(userId: string): { kyc?: Record<string, unknown>; raw?: Record<string, unknown> } {
+  const kyc = kycCases.find((k) => k.userId === userId);
+  return {
+    kyc: kyc as unknown as Record<string, unknown> | undefined,
+    raw: kyc?.providerRaw as Record<string, unknown> | undefined,
+  };
+}
+
+/** Newest-first successful verification events of a given type. */
+function verificationEventRaw(userId: string, type: "BVN" | "NIN"): Array<Record<string, unknown>> {
+  return identityVerificationEvents
+    .filter((e) => {
+      const caseKyc = kycCases.find((k) => k.id === (e as { kycCaseId?: string }).kycCaseId);
+      return caseKyc?.userId === userId && (e as { verificationType?: string }).verificationType === type && (e as { status?: string }).status === "SUCCESS";
+    })
+    .sort((a, b) => String((b as { createdAt?: string }).createdAt ?? "").localeCompare(String((a as { createdAt?: string }).createdAt ?? "")))
+    .map((e) => ((e as { rawResponse?: Record<string, unknown> }).rawResponse ?? {}) as Record<string, unknown>);
+}
+
+/** Application snapshots for the borrower, newest submitted first. */
+function snapshotKycLayers(userId: string): Array<Record<string, unknown>> {
+  return loanApplications
+    .filter((a) => a.borrowerId === userId)
+    .sort((a, b) =>
+      String(b.submittedAt ?? b.updatedAt ?? b.createdAt ?? "").localeCompare(
+        String(a.submittedAt ?? a.updatedAt ?? a.createdAt ?? "")
+      )
+    )
+    .map((a) => ((a.customerSnapshot ?? {}) as { kyc?: Record<string, unknown> }).kyc ?? {})
+    .filter((k) => k && typeof k === "object");
+}
+
+/**
+ * Resolve the borrower's FULL, unmasked 11-digit BVN from every source we
+ * hold. Order: KYC case column → NIBSS BVN raw block → NIMC raw block
+ * (the NIN Advance response carries the linked BVN when NIMC returns it) →
+ * successful BVN verification events → application snapshots.
+ */
+export function resolveFullBvn(userId: string): string | undefined {
+  const { kyc, raw } = kycRawNode(userId);
+  const fromCase = fullIdentifier(kyc?.bvn);
+  if (fromCase) return fromCase;
+  const bvnNode = (raw as { bvn?: { data?: Record<string, unknown>; bvn_data?: Record<string, unknown> } | undefined } | undefined)?.bvn;
+  const fromBvnRaw = fullIdentifier(bvnNode?.data?.bvn ?? bvnNode?.bvn_data?.bvn);
+  if (fromBvnRaw) return fromBvnRaw;
+  const fromNinRaw = ninIdentity(raw).bvn;
+  if (fromNinRaw) return fromNinRaw;
+  for (const eventRaw of verificationEventRaw(userId, "BVN")) {
+    const node = (eventRaw as { bvn?: { data?: Record<string, unknown>; bvn_data?: Record<string, unknown> } | undefined }).bvn;
+    const candidate = fullIdentifier(node?.data?.bvn ?? node?.bvn_data?.bvn);
+    if (candidate) return candidate;
+  }
+  for (const layer of snapshotKycLayers(userId)) {
+    const candidate = fullIdentifier(layer.bvn);
+    if (candidate) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the borrower's FULL, unmasked 11-digit NIN from every source we
+ * hold: KYC case column → NIMC raw block → NIBSS raw block (the BVN Advance
+ * response carries the linked NIN when NIBSS returns it) → successful NIN
+ * verification events → application snapshots.
+ */
+export function resolveFullNin(userId: string): string | undefined {
+  const { kyc, raw } = kycRawNode(userId);
+  const fromCase = fullIdentifier(kyc?.nin);
+  if (fromCase) return fromCase;
+  const fromNinRaw = ninIdentity(raw).nin;
+  if (fromNinRaw) return fromNinRaw;
+  const bvnNode = (raw as { bvn?: { data?: Record<string, unknown>; bvn_data?: Record<string, unknown> } | undefined } | undefined)?.bvn;
+  const fromBvnRaw = fullIdentifier(bvnNode?.data?.nin ?? bvnNode?.bvn_data?.nin);
+  if (fromBvnRaw) return fromBvnRaw;
+  for (const eventRaw of verificationEventRaw(userId, "NIN")) {
+    const node = (eventRaw as { nin?: Record<string, unknown> | undefined }).nin;
+    if (!node || typeof node !== "object") continue;
+    const data = ((node.nin_data ?? node.data ?? {}) as Record<string, unknown>);
+    const candidate = fullIdentifier(data.nin ?? data.vnin ?? node.nin_number);
+    if (candidate) return candidate;
+  }
+  for (const layer of snapshotKycLayers(userId)) {
+    const candidate = fullIdentifier(layer.nin);
+    if (candidate) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Self-healing unmask: write the resolved FULL identifiers back onto the KYC
+ * case whenever the stored column is masked or missing, and harvest the
+ * cross-identifier (NIBSS response → NIN, NIMC response → BVN) into the raw
+ * store so BOTH BVN and NIN are always on file. Legacy rows created before
+ * the raw-merge fix are repaired the first time any pooling surface touches
+ * the borrower. Returns the (possibly upgraded) identifiers.
+ */
+export function backfillIdentityNumbers(userId: string): { bvn?: string; nin?: string } {
+  const kyc = kycCases.find((k) => k.userId === userId);
+  if (!kyc) return {};
+  const kycRecord = kyc as unknown as Record<string, unknown>;
+  const raw = (kyc.providerRaw ?? {}) as Record<string, unknown>;
+  let changed = false;
+
+  const bvn = resolveFullBvn(userId);
+  if (bvn && !/^\d{11}$/.test(String(kycRecord.bvn ?? ""))) {
+    kycRecord.bvn = bvn;
+    changed = true;
+  }
+  const nin = resolveFullNin(userId);
+  if (nin && !/^\d{11}$/.test(String(kycRecord.nin ?? ""))) {
+    kycRecord.nin = nin;
+    changed = true;
+  }
+
+  // Harvest the cross-identifier into providerRaw so the raw store always
+  // holds BOTH the BVN and NIN blocks (never just the last-verified one).
+  if (bvn && !raw.bvn) {
+    raw.bvn = { data: { bvn }, source: "identity-backfill" };
+    changed = true;
+  }
+  if (nin && !raw.nin) {
+    raw.nin = { data: { nin }, source: "identity-backfill" };
+    changed = true;
+  }
+  if (changed) {
+    kyc.providerRaw = raw;
+    kyc.updatedAt = new Date().toISOString();
+  }
+  return { bvn, nin };
 }
 
 /**
@@ -110,10 +262,12 @@ function ninIdentity(kycRaw: Record<string, unknown> | undefined): { nin?: strin
  * so the bureau product is Commercial Advance); the consumer identity (full
  * BVN / NIN / verified name / DOB) is always attached as fallback.
  *
- * Consumer identifier priority: a FULL 11-digit BVN first (per Prembly docs),
- * then the NIN from the NIN-Advance verification. The display BVN stored on
- * the KYC case is often masked ("***-***-1234") and does NOT qualify — the
- * NIMC/NIBSS raw response is the source of truth for the real number.
+ * The consumer identifier is ALWAYS the FULL, unmasked 11-digit BVN — the
+ * Prembly consumer credit-bureau endpoint accepts nothing else, and BVN is
+ * mandatory for every borrower. resolveFullBvn() unmasks the display value
+ * by walking the NIBSS/NIMC raw responses, verification events and
+ * application snapshots; the NIN is attached for record-keeping only and is
+ * NEVER sent to the credit endpoint.
  */
 export function resolveCreditBureauIdentity(
   userId: string,
@@ -122,13 +276,16 @@ export function resolveCreditBureauIdentity(
   const user = users.find((u) => u.id === userId);
   const kyc = kycCases.find((k) => k.userId === userId);
   const kycRaw = kyc?.providerRaw as Record<string, unknown> | undefined;
-  const bvnFromKyc = fullIdentifier(kyc?.bvn);
-  const bvnFromRaw = fullIdentifier((kycRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data?.bvn);
+  // Unmask first: repairing masked/missing columns here also heals every
+  // downstream pooling surface (reapply-prefill, KYC prefill, /me/kyc).
+  backfillIdentityNumbers(userId);
+  const fullBvn = resolveFullBvn(userId);
+  const fullNin = resolveFullNin(userId);
   const fromNin = ninIdentity(kycRaw);
 
   const baseIdentity: CreditBureauIdentity = {
-    bvn: bvnFromKyc ?? bvnFromRaw,
-    nin: fromNin.nin,
+    bvn: fullBvn,
+    nin: fullNin ?? fromNin.nin,
     fullName: bvnVerifiedName(kycRaw) ?? fromNin.fullName ?? user?.fullName ?? undefined,
     dateOfBirth:
       normalizeDob((kycRaw as { bvn?: { data?: Record<string, unknown> } } | undefined)?.bvn?.data?.dateOfBirth) ??
@@ -325,18 +482,23 @@ export async function startCreditBureauCheck(
   const user = users.find((u) => u.id === userId);
   if (!user) return { ok: false, reason: "NO_USER", message: "Borrower account was not found." };
   const { identity, sourceApplicationId } = resolveCreditBureauIdentity(userId, opts);
-  if (!identity.rcNumber && !identity.bvn && !identity.nin) {
+  // BVN is MANDATORY for the consumer product: the Prembly credit-bureau API
+  // is strictly BVN-driven, so a customer without a business RC number MUST
+  // have a full, unmasked 11-digit BVN on file. A NIN is never a substitute.
+  if (!identity.rcNumber && !identity.bvn) {
     return {
       ok: false,
       reason: "NO_IDENTITY",
       message:
-        "No usable identity for a credit bureau check — the customer needs a business RC number (commercial product) or a verified BVN/NIN (consumer product). Name-only profiles cannot be matched at the bureau.",
+        "No usable identity for a credit bureau check — the customer needs a business RC number (commercial product) or a verified 11-digit BVN (consumer product). BVN is mandatory: the Prembly credit bureau API does not accept a NIN, so ask the customer to complete BVN verification and retry.",
     };
   }
 
   recordConsent(userId, "CREDIT_REPORT");
   const now = new Date().toISOString();
   const reportType = identity.rcNumber && identity.companyName ? "COMMERCIAL_ADVANCE" : "CONSUMER_ADVANCE";
+  const maskId = (value: string | undefined): string | undefined =>
+    value && /^\d{11}$/.test(value) ? `***-***-${value.slice(-4)}` : undefined;
   const report: CreditReport = {
     id: randomUUID(),
     userId,
@@ -352,6 +514,10 @@ export async function startCreditBureauCheck(
       identitySource: sourceApplicationId,
       ...(identity.rcNumber ? { rcNumber: identity.rcNumber } : {}),
       ...(identity.companyName ? { companyName: identity.companyName } : {}),
+      // Identifiers on file for this check — masked here for display; the
+      // full values live in the KYC raw store and the provider rawResponse.
+      ...(identity.bvn ? { bvnMasked: maskId(identity.bvn), bvnProvided: true } : {}),
+      ...(identity.nin ? { ninMasked: maskId(identity.nin), ninOnFile: true } : {}),
       ...(opts.dataMode ? { dataMode: opts.dataMode } : {}),
       note: "Credit bureau lookup in progress — this report updates automatically when the provider responds.",
     },
@@ -388,30 +554,28 @@ async function executeCreditBureauCheck(
         dataMode: opts.dataMode,
       });
     } else if (identity.bvn) {
-      // Consumer product, ID mode with the full BVN (per Prembly docs).
+      // Consumer product, ID mode — ALWAYS the full BVN. The Prembly
+      // credit-bureau API is strictly BVN-driven, so the NIN is never passed
+      // here even when one is on file.
       result = await requestCreditReport({
         mode: "ID",
         number: identity.bvn,
         customer_name: identity.fullName,
         dob: identity.dateOfBirth,
       });
-    } else if (identity.nin) {
-      // Consumer product, ID mode with the NIN — verified working against the
-      // live API (2026-09): NIN-verified customers without a full BVN would
-      // otherwise have no path to a bureau check at all.
-      result = await requestCreditReport({
-        mode: "ID",
-        number: identity.nin,
-        customer_name: identity.fullName,
-        dob: identity.dateOfBirth,
-      });
     } else {
-      result = { status: "FAILED", errorMessage: "A verified BVN or NIN is required for a consumer credit bureau check." };
+      result = {
+        status: "FAILED",
+        errorMessage:
+          "A verified 11-digit BVN is mandatory for a consumer credit bureau check — the Prembly credit bureau API does not accept a NIN. Ask the customer to complete BVN verification and retry.",
+      };
     }
 
     const normalized = { ...(result.normalizedFields ?? {}) } as Record<string, unknown>;
-    // Preserve the trigger metadata stored at creation time.
-    for (const key of ["source", "identitySource", "rcNumber", "companyName", "dataMode"] as const) {
+    // Preserve the trigger metadata stored at creation time (including the
+    // masked identifier audit fields — the full numbers never enter the
+    // report metadata).
+    for (const key of ["source", "identitySource", "rcNumber", "companyName", "dataMode", "bvnMasked", "ninMasked", "bvnProvided", "ninOnFile"] as const) {
       const existing = (report.normalizedFields as Record<string, unknown> | undefined)?.[key];
       if (existing != null && normalized[key] == null) normalized[key] = existing;
     }
@@ -435,7 +599,9 @@ async function executeCreditBureauCheck(
 /**
  * Re-run the provider lookup for an existing (PENDING) report. Commercial
  * reports retry with the RC number / company name stored in the report;
- * consumer reports re-resolve the borrower's BVN / NIN + name + DOB.
+ * consumer reports re-resolve the borrower's FULL unmasked BVN (+ name + DOB)
+ * and always pass the BVN — the Prembly credit-bureau API is strictly
+ * BVN-driven, a NIN is never sent.
  */
 export async function retryCreditReport(report: CreditReport): Promise<VerificationResult> {
   const normalized = (report.normalizedFields ?? {}) as Record<string, unknown>;
@@ -455,15 +621,11 @@ export async function retryCreditReport(report: CreditReport): Promise<Verificat
       dob: identity.dateOfBirth,
     });
   }
-  if (identity.nin) {
-    return requestCreditReport({
-      mode: "ID",
-      number: identity.nin,
-      customer_name: identity.fullName,
-      dob: identity.dateOfBirth,
-    });
-  }
-  return { status: "FAILED", errorMessage: "A verified BVN or NIN is required to retry this consumer credit bureau check." };
+  return {
+    status: "FAILED",
+    errorMessage:
+      "A verified 11-digit BVN is mandatory to retry this consumer credit bureau check — the Prembly credit bureau API does not accept a NIN. Ask the customer to complete BVN verification and retry.",
+  };
 }
 
 /**

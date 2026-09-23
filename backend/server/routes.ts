@@ -90,8 +90,12 @@ import { sql } from "./db.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
 import { calculateCreditScore } from "./credit.js";
 import {
+  backfillIdentityNumbers,
   externalReportPayload,
+  fullIdentifier,
   recomputeInternalCreditScore,
+  resolveFullBvn,
+  resolveFullNin,
   startCreditBureauCheck,
   type CreditBureauCheckOutcome,
 } from "./creditBureau.js";
@@ -609,8 +613,19 @@ function pullKycFromSubmittedApplication(application: (typeof loanApplications)[
 // Standalone KYC prefill — expose the KYC details the customer gave during
 // their most recent loan application so the Verification page can pre-fill
 // identity numbers, personal details and reuse uploaded documents.
+//
+// UNMASKED POOLING: the identity numbers returned here are the FULL values
+// resolved from the KYC case / provider raw store (resolveFullBvn /
+// resolveFullNin) — never a masked display value. Masked leftovers in an
+// application snapshot are ignored. The *_masked variants are derived from
+// the resolved values purely for display placeholders.
 // ---------------------------------------------------------------------------
 function applicationKycPrefill(userId: string): Record<string, unknown> | null {
+  // Unmask + self-heal: pulls the full BVN/NIN out of the raw store and
+  // repairs masked KYC-case columns in place.
+  backfillIdentityNumbers(userId);
+  const resolvedBvn = resolveFullBvn(userId);
+  const resolvedNin = resolveFullNin(userId);
   const application = loanApplications
     .filter((item) => item.borrowerId === userId)
     .sort((a, b) => String(b.updatedAt ?? b.createdAt ?? "").localeCompare(String(a.updatedAt ?? a.createdAt ?? "")))
@@ -619,9 +634,13 @@ function applicationKycPrefill(userId: string): Record<string, unknown> | null {
       const kyc = (snap.kyc ?? {}) as Record<string, unknown>;
       return Boolean(kyc.bvn || kyc.nin || kyc.identificationNumber);
     });
-  if (!application) return null;
-  const snapshot = (application.customerSnapshot ?? {}) as Record<string, unknown>;
-  const appKyc = (snapshot.kyc ?? {}) as Record<string, unknown>;
+  const snapshotKyc = (() => {
+    if (!application) return {} as Record<string, unknown>;
+    return (((application.customerSnapshot ?? {}) as Record<string, unknown>).kyc ?? {}) as Record<string, unknown>;
+  })();
+  if (!application && !resolvedBvn && !resolvedNin) return null;
+  const snapshot = (application?.customerSnapshot ?? {}) as Record<string, unknown>;
+  const appKyc = snapshotKyc;
   const personalInfo = (snapshot.personalInfo ?? {}) as Record<string, unknown>;
   const appDocuments = (snapshot.documents ?? {}) as Record<string, { name?: string; type?: string; size?: number; data?: string }>;
   const documentSummaries: Array<Record<string, unknown>> = [];
@@ -636,19 +655,25 @@ function applicationKycPrefill(userId: string): Record<string, unknown> | null {
       mimeType: doc.type ?? "application/octet-stream",
       sizeBytes: doc.size ?? 0,
       available: Boolean(doc.data),
-      providerFileId: `snapshot:${application.id}:${slot}`,
+      providerFileId: `snapshot:${application?.id}:${slot}`,
     });
   }
   const maskId = (value: unknown) => (typeof value === "string" && value.length >= 6 ? `${"*".repeat(Math.max(0, value.length - 4))}${value.slice(-4)}` : typeof value === "string" ? value : undefined);
+  // Only trust a snapshot identity number when it is FULL — masked display
+  // leftovers ("***-***-1234") must never leak into a prefill.
+  const fullFromSnapshot = (value: unknown): string | undefined =>
+    typeof value === "string" && /^\d{11}$/.test(value) ? value : undefined;
+  const bvn = resolvedBvn ?? fullFromSnapshot(appKyc.bvn);
+  const nin = resolvedNin ?? fullFromSnapshot(appKyc.nin);
   return {
-    applicationId: application.applicationId || application.id,
-    submittedAt: application.submittedAt ?? application.createdAt,
-    bvn: typeof appKyc.bvn === "string" ? appKyc.bvn : undefined,
-    bvnMasked: maskId(appKyc.bvn),
-    bvnVerified: appKyc.bvnVerified === true,
-    nin: typeof appKyc.nin === "string" ? appKyc.nin : undefined,
-    ninMasked: maskId(appKyc.nin),
-    ninVerified: appKyc.ninVerified === true,
+    applicationId: application ? (application.applicationId || application.id) : undefined,
+    submittedAt: application?.submittedAt ?? application?.createdAt,
+    bvn,
+    bvnMasked: bvn ? maskId(bvn) : undefined,
+    bvnVerified: appKyc.bvnVerified === true || Boolean(resolvedBvn),
+    nin,
+    ninMasked: nin ? maskId(nin) : undefined,
+    ninVerified: appKyc.ninVerified === true || Boolean(resolvedNin),
     livenessVerified: appKyc.livenessVerified === true,
     identificationType: typeof appKyc.identificationType === "string" ? appKyc.identificationType : undefined,
     identificationNumber: maskId(appKyc.identificationNumber),
@@ -1785,15 +1810,21 @@ router.get("/me/kyc", requireAuth, (req: AuthRequest, res) => {
   // application (identity numbers, personal data, uploaded documents) so the
   // Verification page can reuse them instead of asking for everything again.
   const applicationPrefill = applicationKycPrefill(req.user!.id);
+  // Unmasked pooling: serve the FULL identity numbers (the masked display
+  // value is never what the verification page or wizard should pool), and
+  // self-heal masked/missing KYC-case columns from the raw store.
+  backfillIdentityNumbers(req.user!.id);
+  const pooledBvn = resolveFullBvn(req.user!.id) ?? (typeof kyc.bvn === "string" && kyc.bvn ? kyc.bvn : undefined);
+  const pooledNin = resolveFullNin(req.user!.id) ?? (typeof kyc.nin === "string" && kyc.nin ? kyc.nin : undefined);
   res.json({
     ok: true,
     status: kyc.status,
     checklist: kyc.checklist,
     categoryResults: kyc.categoryResults ?? {},
-    bvn: kyc.bvn,
-    nin: kyc.nin,
-    bvnLastFour: kyc.bvn ? kyc.bvn.slice(-4) : undefined,
-    ninLastFour: kyc.nin ? kyc.nin.slice(-4) : undefined,
+    bvn: pooledBvn,
+    nin: pooledNin,
+    bvnLastFour: pooledBvn ? pooledBvn.slice(-4) : undefined,
+    ninLastFour: pooledNin ? pooledNin.slice(-4) : undefined,
     submittedAt: kyc.submittedAt,
     rejectionReason: kyc.rejectionReason,
     documents: userDocs.map((doc) => ({
@@ -1994,7 +2025,17 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     kyc.bvn = parsed.data.bvn;
     if (kyc.status === "REJECTED") kyc.status = "IN_PROGRESS";
     kyc.providerRequestId = result.providerReference;
-    kyc.providerRaw = result.rawResponse;
+    // MERGE (never overwrite) the provider raw store so BOTH the BVN and NIN
+    // raw blocks are always retained — whichever verification ran last must
+    // not destroy the other identifier's NIBSS/NIMC raw response.
+    kyc.providerRaw = { ...(kyc.providerRaw ?? {}), ...(result.rawResponse ?? {}) };
+    // Cross-harvest: the NIBSS BVN Advance response can carry the customer's
+    // linked NIN — capture it so the raw store holds both identifiers.
+    const linkedNin =
+      fullIdentifier((result.normalizedFields as { nin?: unknown } | undefined)?.nin) ??
+      fullIdentifier(((result.rawResponse as { bvn?: { data?: Record<string, unknown> } | undefined } | undefined)?.bvn?.data as { nin?: unknown } | undefined)?.nin) ??
+      fullIdentifier(((result.rawResponse as { bvn?: { bvn_data?: Record<string, unknown> } | undefined } | undefined)?.bvn?.bvn_data as { nin?: unknown } | undefined)?.nin);
+    if (linkedNin && !/^\d{11}$/.test(kyc.nin ?? "")) kyc.nin = linkedNin;
     let identityPhone: string | undefined;
     if (user) {
       const details = result.normalizedFields ?? {};
@@ -2233,7 +2274,18 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     kyc.nin = parsed.data.nin;
     if (kyc.status === "REJECTED") kyc.status = "IN_PROGRESS";
     kyc.providerRequestId = result.providerReference;
-    kyc.providerRaw = result.rawResponse;
+    // MERGE (never overwrite) the provider raw store so BOTH the BVN and NIN
+    // raw blocks are always retained — whichever verification ran last must
+    // not destroy the other identifier's NIBSS/NIMC raw response.
+    kyc.providerRaw = { ...(kyc.providerRaw ?? {}), ...(result.rawResponse ?? {}) };
+    // Cross-harvest: the NIMC NIN Advance response can carry the customer's
+    // linked BVN — capture it so the raw store holds both identifiers. BVN is
+    // mandatory for the credit bureau pipeline, so every source of it counts.
+    const linkedBvn =
+      fullIdentifier((result.normalizedFields as { bvn?: unknown } | undefined)?.bvn) ??
+      fullIdentifier(((result.rawResponse as { nin?: { data?: Record<string, unknown> } | undefined } | undefined)?.nin?.data as { bvn?: unknown } | undefined)?.bvn) ??
+      fullIdentifier(((result.rawResponse as { nin?: { nin_data?: Record<string, unknown> } | undefined } | undefined)?.nin?.nin_data as { bvn?: unknown } | undefined)?.bvn);
+    if (linkedBvn && !/^\d{11}$/.test(kyc.bvn ?? "")) kyc.bvn = linkedBvn;
     let identityPhone: string | undefined;
     if (user) {
       const details = result.normalizedFields ?? {};
@@ -3322,7 +3374,8 @@ router.get("/borrower/dashboard", requireAuth, requireRole("BORROWER"), async (r
  *   1. Every previous loan application's customerSnapshot, oldest → newest
  *      (newest values win, so the last application's answers are authoritative)
  *   2. The account profile (fullName, email, phone, dateOfBirth)
- *   3. The verified KYC case (BVN/NIN win over typed-in application values)
+ *   3. The verified KYC case (FULL unmasked BVN/NIN from the raw store win
+ *      over typed-in application values; masked display leftovers are stripped)
  *   4. The saved disbursement account (admin-verified payout account wins)
  * The frontend fills every still-empty wizard field from this payload — a
  * returning customer must never have to re-type information we already hold.
@@ -3379,12 +3432,28 @@ router.get("/borrower/applications/reapply-prefill", requireAuth, requireRole("B
         }]
       : []),
   ];
+  // UNMASKED POOLING: masked identity leftovers ("***-***-1234") stored in
+  // old snapshots are stripped so they can never win the merge and leak into
+  // the wizard; the authoritative FULL BVN/NIN resolved from the KYC raw
+  // store (self-healed on read) is layered last so it always wins.
+  const unmaskKycLayer = (layer: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
+    if (!layer || typeof layer !== "object" || Array.isArray(layer)) return undefined;
+    const clean = { ...layer };
+    for (const key of ["bvn", "nin"] as const) {
+      const value = clean[key];
+      if (typeof value === "string" && value.trim() && !/^\d{11}$/.test(value.trim())) delete clean[key];
+    }
+    return Object.keys(clean).length ? clean : undefined;
+  };
+  backfillIdentityNumbers(req.user!.id);
+  const pooledBvn = resolveFullBvn(req.user!.id);
+  const pooledNin = resolveFullNin(req.user!.id);
   const kycLayers: Array<Record<string, unknown> | undefined> = [
-    ...snapshots.map((s) => s.kyc as Record<string, unknown> | undefined),
+    ...snapshots.map((s) => unmaskKycLayer(s.kyc as Record<string, unknown> | undefined)),
     ...(kyc
       ? [{
-          bvn: kyc.bvn ?? "",
-          nin: kyc.nin ?? "",
+          ...(pooledBvn ? { bvn: pooledBvn } : {}),
+          ...(pooledNin ? { nin: pooledNin } : {}),
           bvnVerified: kyc.checklist.bvn === true,
           ninVerified: kyc.checklist.nin === true,
           livenessVerified: kyc.checklist.liveness === true,
@@ -3714,8 +3783,14 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       return;
     }
     const kyc = findOrCreateKycCase(req.user!.id);
-    if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
-      res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
+    // Self-heal legacy masked/missing identity columns from the raw store
+    // BEFORE the mandatory-BVN gate so genuinely-verified customers pass.
+    backfillIdentityNumbers(req.user!.id);
+    // BVN is MANDATORY: the checklist flag alone is not enough — a full
+    // 11-digit BVN must actually be on file (the client can set checklist
+    // flags, but the bureau pipeline requires the real number).
+    if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness || !/^\d{11}$/.test(kyc.bvn ?? "")) {
+      res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application. A verified 11-digit BVN is mandatory." });
       return;
     }
     const user = users.find((item) => item.id === req.user!.id);
@@ -4022,8 +4097,12 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
       return;
     }
     const kyc = findOrCreateKycCase(req.user!.id);
-    if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness) {
-      res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application." });
+    // Self-heal legacy masked/missing identity columns, then enforce the
+    // mandatory full 11-digit BVN (the checklist flag alone can be set by
+    // the client — the bureau pipeline needs the real number on file).
+    backfillIdentityNumbers(req.user!.id);
+    if (!kyc.checklist.bvn || !kyc.checklist.nin || !kyc.checklist.liveness || !/^\d{11}$/.test(kyc.bvn ?? "")) {
+      res.status(409).json({ ok: false, error: "BVN, NIN, and liveness verification must be completed before submitting a loan application. A verified 11-digit BVN is mandatory." });
       return;
     }
     let unresolvedBorrowing = false;

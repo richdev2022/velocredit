@@ -879,8 +879,17 @@ function mergePrefillIntoDraft(
 
   // KYC: carry the identifiers AND their verification status — the same
   // person already passed BVN/NIN/liveness in a previous application.
+  // Masked display leftovers ("***-***-1234") are rejected: only a FULL
+  // 11-digit identifier may be pooled into the draft. BVN is mandatory and
+  // is what the credit bureau pipeline passes to Prembly.
+  const fullId = (value: unknown): string => {
+    const s = str(value);
+    return /^\d{11}$/.test(s) ? s : "";
+  };
   const kyc: ApplicationData["kyc"] = { ...current.kyc };
-  for (const field of ["bvn", "nin", "identificationType", "identificationNumber"] as const) {
+  if (String(kyc.bvn ?? "").trim() === "" && fullId(prevKyc.bvn)) kyc.bvn = fullId(prevKyc.bvn);
+  if (String(kyc.nin ?? "").trim() === "" && fullId(prevKyc.nin)) kyc.nin = fullId(prevKyc.nin);
+  for (const field of ["identificationType", "identificationNumber"] as const) {
     if (String(kyc[field] ?? "").trim() === "" && str(prevKyc[field])) {
       (kyc as unknown as Record<string, unknown>)[field] = str(prevKyc[field]);
     }

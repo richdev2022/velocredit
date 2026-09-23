@@ -1,11 +1,16 @@
 // ============================================================================
 // scripts/e2eCreditBureauLiveTest.ts
 // LIVE end-to-end test: local API + REAL Prembly credit bureau (consumer
-// advance, ID mode with the NIN-verified identity of the production test
-// customer sundayitodo500@gmail.com). Proves the full admin-trigger path —
-// background execution, 90s credit timeout, report persistence, snapshot
-// sync — against the real provider. One bureau lookup (~350 NGN wallet
-// charge, authorized by the owner for verification).
+// advance, ID mode — strictly BVN-driven). The bureau check requires the
+// customer's FULL 11-digit BVN (BVN is mandatory); a NIN-only borrower is
+// rejected with 409 "BVN is mandatory" WITHOUT spending wallet balance.
+//
+// Behavior:
+//   • If /home/z/my-project/scripts/.testIdentity.json contains `bvn`, the
+//     script runs the FULL live admin-trigger flow with that BVN (one real
+//     bureau lookup, ~350 NGN wallet charge, authorized by the owner).
+//   • Without a BVN it asserts the mandatory-BVN gate: the trigger returns
+//     409, no provider call is made, no wallet charge.
 // ============================================================================
 
 process.env.NODE_ENV = "development";
@@ -32,10 +37,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
   const identity = JSON.parse(readFileSync("/home/z/my-project/scripts/.testIdentity.json", "utf8")) as {
-    fullName?: string; dob?: string; nin?: string;
+    fullName?: string; dob?: string; nin?: string; bvn?: string;
   };
-  if (!identity.nin || !/^\d{11}$/.test(identity.nin)) throw new Error("live identity (NIN) not available");
-  console.log(`Live identity: ${identity.fullName} / NIN ${identity.nin.slice(0, 3)}***${identity.nin.slice(-2)} / DOB ${identity.dob}`);
+  const hasBvn = Boolean(identity.bvn && /^\d{11}$/.test(identity.bvn));
+  console.log(
+    `Live identity: ${identity.fullName} / ` +
+    (hasBvn ? `BVN ${identity.bvn!.slice(0, 3)}***${identity.bvn!.slice(-2)}` : "NO full BVN on file") +
+    ` / NIN ${identity.nin ? `${identity.nin.slice(0, 3)}***${identity.nin.slice(-2)}` : "-"} / DOB ${identity.dob}`,
+  );
 
   await import("../backend/server/index.js");
   const store = await import("../backend/server/store.js");
@@ -70,8 +79,9 @@ async function main(): Promise<void> {
   (store.users as unknown as Array<Record<string, unknown>>).push(borrower);
   (store.kycCases as unknown as Array<Record<string, unknown>>).push({
     id: randomUUID(), userId: borrower.id, status: "VERIFIED",
-    bvn: "***-***-6804", // masked display value — must NOT be sent to the bureau
-    checklist: { bvn: false, nin: true, liveness: true },
+    ...(hasBvn ? { bvn: identity.bvn } : { bvn: "***-***-6804" }), // masked display value when no full BVN is provided
+    nin: identity.nin,
+    checklist: { bvn: hasBvn, nin: true, liveness: true },
     providerRaw: {
       nin: {
         nin_data: {
@@ -118,6 +128,17 @@ async function main(): Promise<void> {
     creditReportSnapshot?: Record<string, any>; message?: string; error?: string;
   };
   const elapsedInitial = ((Date.now() - startedAt) / 1000).toFixed(1);
+
+  if (!hasBvn) {
+    // BVN is mandatory — the gate must reject BEFORE any provider call so no
+    // wallet balance is spent.
+    report("NIN-only borrower → 409 BVN mandatory (no wallet charge)", res.status === 409 && /BVN is mandatory/i.test(out.error ?? ""), `${res.status} ${out.error ?? ""}`);
+    report("no report row created", !out.report?.id, "");
+    const pass = results.filter((r) => r.ok).length;
+    console.log(`\n${pass}/${results.length} checks passed`);
+    process.exit(pass === results.length ? 0 : 1);
+  }
+
   report("admin trigger returns 200", res.ok && out.ok === true, `${res.status} ${JSON.stringify(out).slice(0, 220)}`);
   report("report row created (id present)", Boolean(out.report?.id), out.report?.id ?? "");
   report(

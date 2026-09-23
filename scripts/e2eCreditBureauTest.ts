@@ -15,8 +15,10 @@
 //      the stored commercial identity and resolves the report.
 //   4. Consumer fallback: a borrower with a full 11-digit BVN goes through
 //      the consumer advance endpoint in ID mode.
-//   5. NIN-verified borrower (masked BVN only) → consumer advance in ID mode
-//      with the NIN from the NIN-Advance verification raw response.
+//   5. Masked-BVN borrower whose NIMC raw carries the LINKED BVN → the full
+//      unmasked BVN is recovered and passed to the bureau (NEVER the NIN —
+//      Prembly's credit API is strictly BVN-driven); a NIN-only borrower
+//      with no recoverable BVN → 409 "BVN is mandatory".
 //   6. A borrower with NO identity at all → 409 with a helpful message.
 //   7. Provider timeout → report PENDING (NOT failed) + cron retry resolves.
 //   8. Submission-time background pull for a business applicant also hits
@@ -389,10 +391,12 @@ async function main(): Promise<void> {
   report("consumer ID mode with the full BVN", String(state.consumerCalls[0]?.mode ?? "") === "ID" && state.consumerCalls[0]?.number === "22299988877", JSON.stringify(state.consumerCalls[0] ?? {}));
   report("consumer report RECEIVED with provider score 680", stored4?.status === "RECEIVED" && stored4?.score === 680, `status=${stored4?.status} score=${stored4?.score}`);
 
-  // ============ TEST 5: NIN-verified borrower (masked BVN only) ============
+  // ============ TEST 5a: masked BVN recovered from the NIMC raw ============
   // Production reality: the KYC case stores a DISPLAY-masked BVN and the
-  // verification raw response is NIN-Advance. The consumer bureau lookup
-  // must use the NIN from providerRaw (verified working live).
+  // verification raw response is NIN-Advance. The bureau pipeline must
+  // UNMASK the full BVN from the raw store (NIMC nin_data.bvn) and pass
+  // THAT — the Prembly credit API is strictly BVN-driven, the NIN is never
+  // sent.
   const ninBorrower = {
     id: randomUUID(), email: "nin@example.com", phone: "08100000007",
     fullName: "Sunday Itodo", passwordHash: "x", roles: ["BORROWER"],
@@ -401,12 +405,14 @@ async function main(): Promise<void> {
   (store.users as unknown as Array<Record<string, unknown>>).push(ninBorrower);
   (store.kycCases as unknown as Array<Record<string, unknown>>).push({
     id: randomUUID(), userId: ninBorrower.id, status: "VERIFIED",
-    bvn: "***-***-6804", // display-masked — must NOT be used as the bureau ID
+    bvn: "***-***-6804", // display-masked — must be unmasked from the raw
+    nin: "52312345678",
     checklist: { bvn: false, nin: true, liveness: true },
     providerRaw: {
       nin: {
         nin_data: {
           nin: "52312345678",
+          bvn: "22212346804", // the linked BVN harvested from NIMC
           firstname: "SUNDAY",
           middlename: "GIDEON",
           surname: "ITODO",
@@ -432,10 +438,41 @@ async function main(): Promise<void> {
     for (let i = 0; i < 50 && creditBureau.isCreditBureauCheckInFlight(out5.report.id!); i++) await sleep(100);
   }
   const stored5 = (store.creditReports as unknown as Array<{ id?: string; status?: string; score?: number; normalizedFields?: Record<string, unknown> }>).find((r) => r.id === out5.report?.id);
-  report("NIN borrower resolved (not 409)", res5.status === 200 && Boolean(out5.report?.id), `${res5.status} ${JSON.stringify(out5).slice(0, 160)}`);
-  report("NIN lookup in ID mode with the NIN number", String(state.consumerCalls[1]?.mode ?? "") === "ID" && state.consumerCalls[1]?.number === "52312345678", JSON.stringify(state.consumerCalls[1] ?? {}));
+  report("masked-BVN borrower resolved (not 409)", res5.status === 200 && Boolean(out5.report?.id), `${res5.status} ${JSON.stringify(out5).slice(0, 160)}`);
+  report("bureau lookup in ID mode with the FULL unmasked BVN", String(state.consumerCalls[1]?.mode ?? "") === "ID" && state.consumerCalls[1]?.number === "22212346804", JSON.stringify(state.consumerCalls[1] ?? {}));
+  report("NIN never passed to the bureau", state.consumerCalls[1]?.number !== "52312345678", String(state.consumerCalls[1]?.number ?? ""));
   report("NIN-verified name passed as customer_name", state.consumerCalls[1]?.customer_name === "SUNDAY GIDEON ITODO", String(state.consumerCalls[1]?.customer_name ?? ""));
-  report("NIN borrower report RECEIVED", stored5?.status === "RECEIVED", JSON.stringify({ status: stored5?.status, reason: stored5?.normalizedFields?.reason }));
+  report("masked-BVN borrower report RECEIVED", stored5?.status === "RECEIVED", JSON.stringify({ status: stored5?.status, reason: stored5?.normalizedFields?.reason }));
+
+  // ============ TEST 5b: NIN-only borrower, no recoverable BVN → 409 ======
+  // BVN is mandatory: the Prembly consumer credit endpoint does not accept
+  // a NIN, so a borrower with no recoverable full BVN cannot be checked.
+  const ninOnlyBorrower = {
+    id: randomUUID(), email: "ninonly@example.com", phone: "08100000008",
+    fullName: "Nin Only", passwordHash: "x", roles: ["BORROWER"],
+    kycStatus: "VERIFIED", createdAt: now, isActive: true,
+  } as never;
+  (store.users as unknown as Array<Record<string, unknown>>).push(ninOnlyBorrower);
+  (store.kycCases as unknown as Array<Record<string, unknown>>).push({
+    id: randomUUID(), userId: ninOnlyBorrower.id, status: "VERIFIED",
+    nin: "52312345699",
+    checklist: { bvn: false, nin: true, liveness: true },
+    providerRaw: { nin: { nin_data: { nin: "52312345699", firstname: "NIN", surname: "ONLY" } } },
+    createdAt: now,
+  });
+  const ninOnlyAppId = "VEL-LN-2026-000783";
+  (store.loanApplications as unknown as Array<Record<string, unknown>>).push({
+    id: randomUUID(), applicationId: ninOnlyAppId, borrowerId: ninOnlyBorrower.id,
+    applicantType: "PERSONAL", customerSnapshot: { personalInfo: { fullName: "Nin Only" } },
+    amountNaira: 90000, tenureDays: 30, status: "UNDER_REVIEW",
+    creditReportSnapshot: {}, stageStatuses: {}, stageRejectionNotes: {}, manualDecision: "PENDING",
+    createdAt: now, updatedAt: now, submittedAt: now,
+  });
+  const res5b = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(ninOnlyAppId)}/credit-bureau`, {
+    method: "POST", headers: adminHeaders, body: JSON.stringify({}),
+  });
+  const out5b = (await res5b.json()) as { ok?: boolean; error?: string };
+  report("NIN-only borrower → 409 BVN mandatory", res5b.status === 409 && /BVN is mandatory/i.test(out5b.error ?? ""), `${res5b.status} ${out5b.error ?? ""}`);
 
   // ============ TEST 6: no usable identity → 409 ============
   const res6 = await fetch(`${BASE}/api/v1/admin/loan-applications/${encodeURIComponent(bareAppId)}/credit-bureau`, {
@@ -448,7 +485,7 @@ async function main(): Promise<void> {
   // The mock sleeps 2.5s; the credit timeout is 800ms → fetch aborts → the
   // report must land PENDING (bureau still processing), NOT FAILED, and the
   // reconciliation sweep must resolve it on the next pass.
-  const timeoutAppId = "VEL-LN-2026-000783";
+  const timeoutAppId = "VEL-LN-2026-000784";
   (store.loanApplications as unknown as Array<Record<string, unknown>>).push({
     id: randomUUID(), applicationId: timeoutAppId, borrowerId: consumerBorrower.id,
     applicantType: "PERSONAL", customerSnapshot: { personalInfo: { fullName: "John Doe" } },
