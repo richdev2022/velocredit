@@ -580,7 +580,11 @@ export default function BorrowerDashboard() {
             <BorrowerDisbursementSection
               userId={user?.id}
               initial={data?.disbursementAccount ?? null}
-              locked={hasSubmittedApplication}
+              // Lock ONLY when a saved account already exists (edits require
+              // admin approval). If no account exists anywhere, the borrower
+              // MUST be able to add one — even with a submitted application —
+              // otherwise disbursement would be impossible.
+              locked={hasSubmittedApplication && Boolean(data?.disbursementAccount)}
               onSaved={(acc) => {
                 setData((d) => (d ? { ...d, disbursementAccount: acc } : d));
                 setSuccessMsg(

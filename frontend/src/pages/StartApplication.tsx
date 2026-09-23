@@ -667,7 +667,7 @@ export default function StartApplication() {
                     </Link>
                   </div>
                   <Link
-                    to="/account?mode=login"
+                    to="/account?mode=login#signin"
                     className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-2xl bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold transition-all duration-200 hover:border-velo-300 hover:text-velo-700 dark:hover:text-velo-300 hover:bg-slate-50 dark:hover:bg-slate-700 group"
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="group-hover:rotate-12 transition-transform"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -813,7 +813,7 @@ export default function StartApplication() {
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="group-hover/btn:translate-x-1 transition-transform"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                   </Link>
                   <Link
-                    to="/account?mode=login"
+                    to="/account?mode=login#signin"
                     className="w-full text-center px-3 py-2.5 rounded-lg text-sm font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors"
                   >
                     Already an investor? Sign in

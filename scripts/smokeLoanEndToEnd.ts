@@ -101,9 +101,18 @@ async function main(): Promise<void> {
       loanRequest: { amount: 100_000, tenure: 90, purpose: "Smoke test loan application purpose" },
       calculation: seenCalculation,
       personalInfo: { fullName: "Smoke Borrower" },
+      // Disbursement account is REQUIRED since the disbursement-account fix —
+      // applications without a complete payout account are rejected outright.
+      disbursementAccount: {
+        accountName: "Smoke Borrower",
+        accountNumber: "0123456789",
+        bankCode: "058",
+        bankName: "Guaranty Trust Bank",
+      },
     });
   check("application created (201)", createRes.status === 201, createRes.body);
   const application = createRes.body.application;
+  check("application carries disbursement account", application?.disbursementAccount?.accountNumber === "0123456789", application?.disbursementAccount);
   check("application stamped with loanProductId", application?.loanProductId === personal.id, application?.loanProductId);
   check("application captured productSnapshot", application?.productSnapshot?.productName === personal.name, application?.productSnapshot);
 

@@ -149,7 +149,7 @@ function Dashboard() {
 function ApplyRoute() {
   const [params] = useSearchParams();
   const nav = useNavigate();
-  const { application, startNewApplication } = useApplication();
+  const { application, startNewApplication, prefillFromPrevious } = useApplication();
 
   // If `?type=PERSONAL|BUSINESS` was passed and we don't have an application of
   // that type yet, auto-create one. This lets the landing page link directly
@@ -159,6 +159,9 @@ function ApplyRoute() {
     if (t === "PERSONAL" || t === "BUSINESS") {
       if (!application || application.applicantType !== t) {
         startNewApplication(t);
+        // Returning borrower: prefill every section from their most recent
+        // previous application so nothing has to be re-entered.
+        void prefillFromPrevious();
       }
       // clear the query string so a refresh doesn't re-trigger creation
       nav("/apply", { replace: true });

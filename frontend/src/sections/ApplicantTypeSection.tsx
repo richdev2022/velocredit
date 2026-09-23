@@ -29,7 +29,7 @@ function deriveStatusForSection(app: ApplicationData, key: SectionKey, applicant
       if (applicantType === "PERSONAL") {
         const p = app.personalInfo;
         const account = app.disbursementAccount;
-        const ok = Boolean(p.fullName && p.phone && p.email && p.dateOfBirth && p.residentialAddress && p.state && p.lga && account.accountName && account.bankName && account.accountNumber);
+        const ok = Boolean(p.fullName && p.phone && p.email && p.dateOfBirth && p.residentialAddress && p.state && p.lga && account.accountName && account.bankName && account.bankCode && account.accountNumber);
         return ok ? "completed" : "not_started";
       }
       const b = app.businessInfo;
@@ -40,7 +40,7 @@ function deriveStatusForSection(app: ApplicationData, key: SectionKey, applicant
       if (applicantType !== "BUSINESS") return "locked";
       const r = app.businessRep;
       const account = app.disbursementAccount;
-      const ok = Boolean(r.fullName && r.position && r.phone && r.email && r.residentialAddress && account.accountName && account.bankName && account.accountNumber);
+      const ok = Boolean(r.fullName && r.position && r.phone && r.email && r.residentialAddress && account.accountName && account.bankName && account.bankCode && account.accountNumber);
       return ok ? "completed" : "not_started";
     }
     case "kyc": {
@@ -98,7 +98,7 @@ function computeResumeSectionIndex(app: ApplicationData, applicantType: Applican
 }
 
 export default function ApplicantTypeSection() {
-  const { application, update, markSectionStatus, navigate, next, saveNow, startNewApplication, currentIndex, sections } = useApplication();
+  const { application, update, markSectionStatus, navigate, next, saveNow, startNewApplication, prefillFromPrevious, currentIndex, sections } = useApplication();
   const [busyResuming, setBusyResuming] = useState(false);
   const [selected, setSelected] = useState<ApplicantType | null>(application?.applicantType || null);
 
@@ -118,6 +118,15 @@ export default function ApplicantTypeSection() {
     let workingApp = application;
     if (!workingApp) {
       workingApp = startNewApplication(selected);
+      // Returning borrower: pull their previous application details into this
+      // fresh draft BEFORE computing where to resume, so prefilled sections
+      // count as complete and they skip straight to what's missing.
+      setBusyResuming(true);
+      try {
+        workingApp = (await prefillFromPrevious()) ?? workingApp;
+      } finally {
+        setBusyResuming(false);
+      }
     } else {
       if (workingApp.applicantType !== selected) {
         update("applicantType", selected);
