@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import Layout from "../components/Layout";
+import CsvExportButton from "../components/CsvExportButton";
 import { getBorrowerLoans } from "../services/apiClient";
 
 function statusLabel(status?: string): string {
@@ -41,7 +42,10 @@ export default function BorrowerLoanDetail() {
           </div>
         </section>
         <section className="velo-card overflow-hidden">
-          <h2 className="border-b border-slate-100 px-5 py-4 font-bold dark:border-slate-800">Repayment schedule</h2>
+          <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-slate-800">
+            <h2 className="font-bold">Repayment schedule</h2>
+            <CsvExportButton path="/api/v1/borrower/export/schedule" params={{ loanId }} compact />
+          </div>
           <div className="overflow-x-auto"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-slate-500"><tr><th className="px-5 py-3">Installment</th><th className="px-5 py-3">Due date</th><th className="px-5 py-3 text-right">Due</th><th className="px-5 py-3 text-right">Paid</th><th className="px-5 py-3 text-right">Status</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(data.schedule ?? []).map((item) => <tr key={item.id ?? item.installmentNumber}><td className="px-5 py-4">{item.installmentNumber ?? "—"}</td><td className="px-5 py-4">{item.dueDate ? new Date(item.dueDate).toLocaleDateString("en-NG") : "—"}</td><td className="px-5 py-4 text-right">₦{Number(item.totalDueNaira ?? 0).toLocaleString("en-NG")}</td><td className="px-5 py-4 text-right">₦{Number(item.totalPaidNaira ?? 0).toLocaleString("en-NG")}</td><td className="px-5 py-4 text-right">{statusLabel(item.status)}</td></tr>)}</tbody></table></div>
         </section>
         <section className="velo-card overflow-hidden">

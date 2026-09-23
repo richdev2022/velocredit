@@ -1,6 +1,18 @@
 // ============================================================================
 // src/components/AgreementPreview.tsx
-// On-screen preview of the generated agreement. Styled with print-friendly CSS.
+// On-screen preview of the generated agreement + bullet-proof A4 printing.
+//
+// PRINTING (v2): the old implementation used the "visibility:hidden on #root"
+// trick with window.print(). Hidden elements still OCCUPY LAYOUT SPACE, so
+// every page outside the agreement printed as a BLANK PAGE — and ancestor
+// scroll containers could clip content mid-page. The new implementation prints
+// from a dedicated hidden <iframe> loaded with a STANDALONE document:
+//   • @page { size: A4 portrait } — exact A4 geometry, browser-independent
+//   • zero interference from app layout (no blank pages, no clipping)
+//   • images + fonts awaited before the dialog opens
+//   • print-color-adjust so brand panels still render in the PDF
+// The same component is used by the borrower flow AND the admin detail page,
+// so both sides get identical, correct output.
 // ============================================================================
 
 import { useEffect, useRef, useState } from "react";
@@ -10,25 +22,16 @@ interface AgreementPreviewProps {
   onReadToEnd?: (read: boolean) => void;
 }
 
+/** A4 at 96dpi — used for the off-screen iframe so % widths resolve correctly. */
+const A4_WIDTH_PX = 794;
+const A4_HEIGHT_PX = 1123;
+
 export default function AgreementPreview({ html, onReadToEnd }: AgreementPreviewProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [readToEnd, setReadToEnd] = useState(false);
 
   function handlePrint() {
-    const images = Array.from(contentRef.current?.querySelectorAll("img") ?? []);
-    const waitForImages = images.map((image) => image.complete
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => {
-        image.addEventListener("load", () => resolve(), { once: true });
-        image.addEventListener("error", () => resolve(), { once: true });
-      }));
-
-    void Promise.all(waitForImages).then(async () => {
-      await document.fonts?.ready;
-      document.body.classList.add("printing-agreement");
-      window.addEventListener("afterprint", () => document.body.classList.remove("printing-agreement"), { once: true });
-      window.print();
-    });
+    printHtmlAsA4(html);
   }
 
   useEffect(() => {
@@ -60,7 +63,7 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
       <div
         ref={contentRef}
         className="agreement-print max-h-[70vh] overflow-y-auto p-4 sm:p-6 bg-white text-[13px] leading-relaxed text-slate-700 agreement-content dark:bg-slate-950 dark:text-slate-200"
-        dangerouslySetInnerHTML={{ __html: agreementCss() + html }}
+        dangerouslySetInnerHTML={{ __html: `<style>${agreementCssText()}</style>` + html }}
       />
       <div className="no-print border-t border-slate-100 px-4 py-2 text-xs text-slate-500" aria-live="polite">
 {readToEnd ? "You have reviewed the complete agreement." : "Review the complete agreement to enable acknowledgement."}
@@ -69,8 +72,111 @@ export default function AgreementPreview({ html, onReadToEnd }: AgreementPreview
   );
 }
 
-function agreementCss(): string {
-  return `<style>
+// ---------------------------------------------------------------------------
+// A4 print engine (shared): loads `html` into a hidden iframe as a standalone
+// document and prints it. Resolves when the print dialog has been dismissed
+// (or after a generous fallback timeout). Safe to call from anywhere.
+// ---------------------------------------------------------------------------
+
+export function printHtmlAsA4(html: string, documentTitle = "Loan Agreement"): void {
+  const previousTitle = document.title;
+  document.title = documentTitle;
+
+  const iframe = document.createElement("iframe");
+  // Off-screen but rendered (display:none would make some browsers skip print
+  // layout). Sized to A4 so percentage-based content lays out like the paper.
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = `${A4_WIDTH_PX}px`;
+  iframe.style.height = `${A4_HEIGHT_PX}px`;
+  iframe.style.border = "0";
+  iframe.style.visibility = "hidden";
+  iframe.style.zIndex = "-1";
+
+  let cleanupDone = false;
+  const cleanup = () => {
+    if (cleanupDone) return;
+    cleanupDone = true;
+    document.title = previousTitle;
+    window.removeEventListener("afterprint", onAfterPrint);
+    window.setTimeout(() => iframe.remove(), 200);
+  };
+  const onAfterPrint = () => cleanup();
+  window.addEventListener("afterprint", onAfterPrint);
+
+  iframe.onload = () => {
+    const doc = iframe.contentDocument;
+    if (!doc) {
+      cleanup();
+      return;
+    }
+    const images = Array.from(doc.querySelectorAll("img"));
+    const waitForImages = images.map((image) => image.complete
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+        image.addEventListener("load", () => resolve(), { once: true });
+        image.addEventListener("error", () => resolve(), { once: true });
+      }));
+    void Promise.all([
+      ...waitForImages,
+      (iframe.contentWindow as (Window & { fonts?: { ready: Promise<unknown> } }) | null)?.fonts?.ready ?? Promise.resolve(),
+    ]).then(() => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } finally {
+        // Some browsers never fire `afterprint` for iframe printing — make sure
+        // the iframe is always removed.
+        window.setTimeout(cleanup, 60_000);
+      }
+    });
+  };
+
+  iframe.srcdoc = buildAgreementPrintDocument(html);
+  document.body.appendChild(iframe);
+}
+
+/** Builds the standalone, print-ready A4 document for an agreement fragment. */
+export function buildAgreementPrintDocument(html: string, documentTitle = "Loan Agreement"): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>${documentTitle}</title>
+<style>
+  ${agreementCssText()}
+  /* ===== STANDALONE PAGE GEOMETRY ===== */
+  @page {
+    size: A4 portrait;
+    margin: 14mm 12mm 16mm 12mm;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+  body {
+    width: 186mm; /* 210mm - 2×12mm margins */
+    box-sizing: border-box;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #print-root { width: 100%; }
+  img { max-width: 100% !important; height: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  tr, td, th { page-break-inside: avoid; break-inside: avoid; }
+</style>
+</head>
+<body>
+  <div id="print-root" class="agreement-doc">${html}</div>
+</body>
+</html>`;
+}
+
+function agreementCssText(): string {
+  return `
     .agreement-doc { font-family: 'Poppins', system-ui, -apple-system, sans-serif; color: #1f2937; line-height: 1.65; }
     .dark .agreement-doc { color: #e2e8f0; }
     .dark .agreement-doc .agr-p, .dark .agreement-doc .pn-line { color: #cbd5e1; }
@@ -233,80 +339,45 @@ function agreementCss(): string {
     .agreement-media-link { display: inline-block; color: #1976D2; font-size: 12px; font-weight: 600; margin: 8px 0; text-decoration: underline; }
     .media-placeholder { color: #64748b; font-size: 11px; font-style: italic; margin: 8px 0; }
 
-    /* ===== A4 PRINT STYLES =====
-       When printing, force A4 page size with sensible margins, prevent
-       elements from being cut off across pages, and ensure images fit
-       within the page width. */
+    /* ===== SCREEN PRESENTATION ===== */
+    /* On screen the document is rendered inside the scrollable preview; the
+       standalone iframe document applies its own page geometry. */
+    .agreement-doc { font-size: 13px; }
+
+    /* ===== A4 PRINT RULES (apply inside the print iframe too) ===== */
     @media print {
-      @page {
-        size: A4 portrait;
-        margin: 14mm 12mm 14mm 12mm;
-      }
       html, body {
         background: #fff !important;
         margin: 0 !important;
         padding: 0 !important;
       }
-      body.printing-agreement #root,
-      body.printing-agreement #root * { visibility: hidden !important; }
-      body.printing-agreement #root .agreement-print-target,
-      body.printing-agreement #root .agreement-print-target * { visibility: visible !important; }
-      body.printing-agreement .agreement-print-target {
-        position: static !important;
-        display: block !important;
-        width: auto !important;
-        max-width: none !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        border: 0 !important;
-        border-radius: 0 !important;
-        box-shadow: none !important;
-      }
-      body.printing-agreement .agreement-print {
-        max-height: none !important;
-        overflow: visible !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        background: #fff !important;
-        color: #1f2937 !important;
-      }
       body.printing-agreement .no-print { display: none !important; }
-      /* Reset dark-mode backgrounds when printing so the PDF is readable. */
-      body.printing-agreement .agreement-doc,
-      body.printing-agreement .agreement-doc * {
-        color: #1f2937 !important;
-      }
-      body.printing-agreement .agr-header,
-      body.printing-agreement .party-lender,
-      body.printing-agreement .party-borrower,
-      body.printing-agreement .summary,
-      body.printing-agreement .lender-brand-panel,
-      body.printing-agreement .end-note,
-      body.printing-agreement .collateral-card { background: #F8FAFC !important; }
-      /* Ensure images fit within the printable width. */
-      body.printing-agreement .agreement-media {
-        max-width: 100% !important;
-        max-height: 180px !important;
-        page-break-inside: avoid;
-      }
-      body.printing-agreement .agr-logo,
-      body.printing-agreement .exec-logo { max-height: 44px !important; }
       /* Headings stay with their following content. */
-      body.printing-agreement .agr-h2,
-      body.printing-agreement .agr-h3 {
+      .agr-h1, .agr-h2, .agr-h3 {
         page-break-after: avoid;
         break-after: avoid;
       }
-      body.printing-agreement .agr-p,
-      body.printing-agreement .pn-line,
-      body.printing-agreement .sr-row { page-break-inside: avoid; }
-      /* The execution grid should not be split awkwardly. */
-      body.printing-agreement .exec-lender,
-      body.printing-agreement .exec-borrower,
-      body.printing-agreement .exec-witness {
+      .agr-p,
+      .pn-line,
+      .sr-row { page-break-inside: avoid; }
+      /* No orphaned section titles at the bottom of a page. */
+      .agr-title-block,
+      .summary,
+      .collateral-card,
+      .party-lender,
+      .party-borrower,
+      .lender-brand-panel,
+      .end-note,
+      .sign-block {
         page-break-inside: avoid;
         break-inside: avoid;
       }
+      /* Force the execution/signature page onto its own sheet when the
+         agreement body fills the previous pages. */
+      .page-break { page-break-before: always; }
+      /* Images always fit within the printable width. */
+      .agreement-media { max-width: 100% !important; max-height: 180px !important; }
+      .agr-logo, .exec-logo { max-height: 44px !important; }
     }
-  </style>`;
+  `;
 }

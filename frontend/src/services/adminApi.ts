@@ -301,19 +301,64 @@ export interface InvestorWithdrawal {
   lastAttemptAt?: string;
 }
 
-export async function adminListWithdrawals(opts: { investorId?: string; status?: string; limit?: number; offset?: number } = {}): Promise<{
+export interface WithdrawalSummary {
+  count: number;
+  grossNaira: number;
+  feeNaira: number;
+  netNaira: number;
+  successful: number;
+  failed: number;
+  pending: number;
+}
+
+export async function adminListWithdrawals(opts: { investorId?: string; status?: string; search?: string; from?: string; to?: string; limit?: number; offset?: number } = {}): Promise<{
   ok: true;
   total: number;
-  withdrawals: InvestorWithdrawal[];
+  withdrawals: Array<InvestorWithdrawal & { investor?: { id: string; fullName: string; email: string; phone: string | null } | null }>;
+  summary?: WithdrawalSummary;
 }> {
   const params = new URLSearchParams();
   if (opts.status) params.set("status", opts.status);
+  if (opts.search) params.set("search", opts.search);
+  if (opts.from) params.set("from", opts.from);
+  if (opts.to) params.set("to", opts.to);
   if (opts.limit) params.set("limit", String(opts.limit));
   if (opts.offset) params.set("offset", String(opts.offset));
   const basePath = opts.investorId
     ? `/api/v1/admin/investors/${encodeURIComponent(opts.investorId)}/withdrawals`
     : "/api/v1/admin/withdrawals";
   return request(`${basePath}?${params.toString()}`);
+}
+
+export interface AdminWithdrawalDetail {
+  ok: true;
+  withdrawal: InvestorWithdrawal;
+  investor: { id: string; fullName: string; email: string; phone: string | null; kycStatus: string | null } | null;
+  wallet: { id: string; availableMinor: number; heldMinor: number } | null;
+  investorLedger: Array<{
+    id: string;
+    entryType: string;
+    direction: "CREDIT" | "DEBIT";
+    amountMinor: number;
+    description?: string;
+    referenceId?: string;
+    balanceAfterMinor?: number;
+    createdAt: string;
+  }>;
+  adminLedger: Array<{
+    id: string;
+    entryType: string;
+    direction: "CREDIT" | "DEBIT";
+    amountMinor: number;
+    description?: string;
+    referenceId?: string;
+    balanceAfterMinor?: number;
+    createdAt: string;
+  }>;
+}
+
+export async function adminGetWithdrawalDetail(withdrawalId: string): Promise<AdminWithdrawalDetail> {
+  return request(`/api/v1/admin/withdrawals/${encodeURIComponent(withdrawalId)}/detail`);
 }
 
 export async function adminRetryWithdrawal(withdrawalId: string): Promise<{ ok: true; withdrawal: InvestorWithdrawal; providerResponse?: unknown; message?: string }> {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { adminListApplications, adminListStats, type AdminApplicationSummary, type AdminStats } from "../../services/adminApi";
 import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
+import CsvExportButton from "../CsvExportButton";
 
 const STATUS_BADGES: Record<string, string> = {
   DRAFT: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
@@ -114,9 +115,12 @@ export default function AdminApplicationsTable({ onSelect }: { onSelect: (id: st
             <option value="BUSINESS">Business</option>
           </select>
         </div>
-        <div className="mt-2 flex justify-between text-xs text-slate-500 dark:text-slate-400">
+        <div className="mt-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
           <span>{total} applications · page {page + 1} of {pages}</span>
-          <button className="btn-ghost text-xs" onClick={load}>Refresh</button>
+          <span className="flex items-center gap-2">
+            <CsvExportButton path="/api/v1/admin/export/loans" params={{ status: status || undefined }} compact />
+            <button className="btn-ghost text-xs" onClick={load}>Refresh</button>
+          </span>
         </div>
       </div>
 

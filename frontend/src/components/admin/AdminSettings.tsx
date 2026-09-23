@@ -32,8 +32,6 @@ import {
   adminCreditInvestorWallet,
   adminGetLedger,
   adminListInvestors,
-  adminListWithdrawals,
-  adminRetryWithdrawal,
   adminUpdateMaintenanceMode,
   adminListAnnouncements,
   adminCreateAnnouncement,
@@ -53,6 +51,8 @@ import { calculateLoan } from "../../utils/loanCalculator";
 import type { TenureOption, FeeConfiguration, FeeKey, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey } from "../../types/loan";
 import ProgramEditor from "./ProgramEditor";
 import ProductCatalogCard from "./ProductCatalogCard";
+import AdminWithdrawalHistory from "./AdminWithdrawalHistory";
+import CsvExportButton from "../CsvExportButton";
 import Icon from "../Icon";
 import { Pill, Toggle, SettingRow, NairaField, FeeEditor, Chip, PanelCard, type FeeValue } from "./settingsUI";
 
@@ -179,9 +179,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
   const [investors, setInvestors] = useState<any[]>([]);
   const [investorsLoading, setInvestorsLoading] = useState(true);
-  const [withdrawals, setWithdrawals] = useState<any[]>([]);
-  const [withdrawalsLoading, setWithdrawalsLoading] = useState(true);
-  const [withdrawalActioning, setWithdrawalActioning] = useState<string | null>(null);
 
   const [ledgerEntries, setLedgerEntries] = useState<any[]>([]);
   const [ledgerLoading, setLedgerLoading] = useState(true);
@@ -214,12 +211,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
         setInvestors(inv.investors ?? []);
       } finally {
         setInvestorsLoading(false);
-      }
-      try {
-        const wd = await adminListWithdrawals({ limit: 50 });
-        setWithdrawals(wd.withdrawals ?? []);
-      } finally {
-        setWithdrawalsLoading(false);
       }
       try {
         const ledger = await adminGetLedger({ limit: LEDGER_LIMIT, offset: 0 });
@@ -317,16 +308,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       setCreditMsg("Error: " + (e.message || "Failed"));
     } finally {
       setCreditSaving(false);
-    }
-  }
-
-  async function handleRetryWithdrawal(id: string) {
-    setWithdrawalActioning(id);
-    try {
-      const res = await adminRetryWithdrawal(id);
-      setWithdrawals(current => current.map(w => (w.id === id ? res.withdrawal : w)));
-    } finally {
-      setWithdrawalActioning(null);
     }
   }
 
@@ -1251,71 +1232,16 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
             </div>
           )}
 
-          {/* ============ PENDING WITHDRAWALS ============ */}
+          {/* ============ WITHDRAWAL HISTORY ============ */}
           {showWithdrawals && (
-            <div className={`min-w-0 space-y-5 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
-              <PanelCard
-                title="Pending investor withdrawals"
-                description="Monitor investor withdrawals. Failed payouts can be retried from here."
-                icon={<Icon name="clock" size={18} />}
-                tone="violet"
-                action={<Pill tone={withdrawals.filter(w => w.status === "FAILED").length > 0 ? "warning" : "neutral"}>{withdrawals.filter(w => w.status === "FAILED").length} failed</Pill>}
-              >
-                {withdrawalsLoading ? (
-                  <div className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">Loading withdrawals…</div>
-                ) : withdrawals.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-slate-200 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">No withdrawal requests yet.</div>
-                ) : (
-                  <div className="scrollable-sm overflow-x-auto py-2">
-                    <table className="w-full min-w-[640px] text-sm">
-                      <thead className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        <tr className="border-b border-slate-200 dark:border-slate-700">
-                          <th className="p-3 text-left font-bold">Investor</th>
-                          <th className="p-3 text-right font-bold">Amount</th>
-                          <th className="p-3 text-right font-bold">Fee</th>
-                          <th className="p-3 text-right font-bold">Net</th>
-                          <th className="p-3 text-left font-bold">Bank</th>
-                          <th className="p-3 text-left font-bold">Status</th>
-                          <th className="p-3 text-right font-bold">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {withdrawals.slice(0, 20).map((w) => (
-                          <tr key={w.id} className="transition hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                            <td className="p-3">
-                              <div className="font-semibold text-velo-900 dark:text-white">{investors.find(i => i.id === w.investorId)?.fullName || w.investorId.slice(0, 8)}</div>
-                              <div className="text-[10px] text-slate-500 dark:text-slate-400">{new Date(w.createdAt).toLocaleDateString()}</div>
-                            </td>
-                            <td className="p-3 text-right font-semibold dark:text-slate-200">₦{Number(w.amountNaira).toLocaleString("en-NG")}</td>
-                            <td className="p-3 text-right font-semibold text-red-600 dark:text-red-400">-₦{Number(w.feeNaira).toLocaleString("en-NG")}</td>
-                            <td className="p-3 text-right font-bold text-emerald-700 dark:text-emerald-400">₦{Number(w.netNaira).toLocaleString("en-NG")}</td>
-                            <td className="p-3 dark:text-slate-200">
-                              <div className="font-semibold">{w.bankName}</div>
-                              <div className="text-[11px] text-slate-500 dark:text-slate-400">••••{w.accountNumber.slice(-4)}</div>
-                            </td>
-                            <td className="p-3">
-                              <Pill tone={w.status === "SUCCESSFUL" ? "success" : w.status === "FAILED" || w.status === "REJECTED" ? "danger" : w.status === "PENDING_APPROVAL" || w.status === "PROCESSING" ? "info" : "neutral"}>
-                                {String(w.status).replace(/_/g, " ")}
-                              </Pill>
-                            </td>
-                            <td className="p-3 text-right">
-                              {w.status === "FAILED" && (
-                                <button
-                                  onClick={() => handleRetryWithdrawal(w.id)}
-                                  disabled={withdrawalActioning === w.id}
-                                  className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-amber-600"
-                                >
-                                  <Icon name="history" size={13} />{withdrawalActioning === w.id ? "Retrying…" : "Retry"}
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </PanelCard>
+            <div className="min-w-0 lg:col-span-3">
+              <div className="mb-4">
+                <h2 className="text-lg font-bold text-velo-900 dark:text-white">Withdrawal history</h2>
+                <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+                  Search, filter and audit every investor withdrawal. Click a row for the complete transaction trail.
+                </p>
+              </div>
+              <AdminWithdrawalHistory />
             </div>
           )}
 
@@ -1351,20 +1277,23 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 description="Debit/credit entries for all investment operations."
                 icon={<Icon name="history" size={18} />}
                 action={
-                  <select
-                    value={ledgerFilter}
-                    onChange={(e) => setLedgerFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-600 focus:outline-none focus:ring-1 focus:ring-velo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                  >
-                    <option value="">All</option>
-                    <option value="INVESTOR_FUNDING">Investor Funding</option>
-                    <option value="INVESTMENT_PAYOUT">Investment Payouts</option>
-                    <option value="WITHDRAWAL_OUT">Withdrawals (wallet debited)</option>
-                    <option value="WITHDRAWAL_FEE">Withdrawal Fees</option>
-                    <option value="LOAN_DISBURSEMENT">Loan Disbursements</option>
-                    <option value="LOAN_REPAYMENT_IN">Loan Repayments</option>
-                    <option value="REVERSAL">Reversals</option>
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={ledgerFilter}
+                      onChange={(e) => setLedgerFilter(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-600 focus:outline-none focus:ring-1 focus:ring-velo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                    >
+                      <option value="">All</option>
+                      <option value="INVESTOR_FUNDING">Investor Funding</option>
+                      <option value="INVESTMENT_PAYOUT">Investment Payouts</option>
+                      <option value="WITHDRAWAL_OUT">Withdrawals (wallet debited)</option>
+                      <option value="WITHDRAWAL_FEE">Withdrawal Fees</option>
+                      <option value="LOAN_DISBURSEMENT">Loan Disbursements</option>
+                      <option value="LOAN_REPAYMENT_IN">Loan Repayments</option>
+                      <option value="REVERSAL">Reversals</option>
+                    </select>
+                    <CsvExportButton path="/api/v1/admin/export/ledger" params={{ status: ledgerFilter || undefined }} compact />
+                  </div>
                 }
               >
                 {ledgerLoading ? (

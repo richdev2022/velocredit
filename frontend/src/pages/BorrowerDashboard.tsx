@@ -14,6 +14,7 @@ import {
 import BorrowerDisbursementSection from "../components/BorrowerDisbursementSection";
 import OtpLoginSettings from "../components/OtpLoginSettings";
 import ProfileSettings from "../components/ProfileSettings";
+import CsvExportButton from "../components/CsvExportButton";
 import Icon from "../components/Icon";
 
 function formatLoanStatus(status?: string): string {
@@ -1718,6 +1719,7 @@ function BorrowerRepayments(props: any) {
             <h2 className="section-heading">Repayment records</h2>
             <p className="section-subheading">{safeRepayments.length} record(s)</p>
           </div>
+          <CsvExportButton path="/api/v1/borrower/export/repayments" compact />
         </header>
         {safeRepayments.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">

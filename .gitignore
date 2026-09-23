@@ -77,3 +77,6 @@ vite.config.js.timestamp-*.mjs
 
 # TypeScript incremental build info
 tsconfig.tsbuildinfo
+
+# Generated test artifacts (agreement print test output)
+scripts/output/

@@ -31,6 +31,7 @@ import {
 import { config } from "../utils/config";
 import { documentDownloadUrl, documentPreviewUrl } from "../utils/documentLinks";
 import Icon from "../components/Icon";
+import CsvExportButton from "../components/CsvExportButton";
 import { AnnouncementSlider, BannerCarousel } from "../components/EngagementWidgets";
 
 const money = new Intl.NumberFormat("en-NG", {
@@ -1500,8 +1501,13 @@ function InvestorInvestments(props: any) {
         ) : <Empty text="No investment plans available at this time." />}
       </section>
       <section className="velo-card p-4 sm:p-5 lg:p-6">
-        <h2 className="section-heading">Investment history</h2>
-        <p className="section-subheading">All your positions.</p>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="section-heading">Investment history</h2>
+            <p className="section-subheading">All your positions.</p>
+          </div>
+          <CsvExportButton path="/api/v1/investor/export/investments" compact />
+        </div>
         {investments.length ? (
           <div className="mt-5 space-y-3">
             {investments.map((inv: any, idx: number) => (
@@ -2080,6 +2086,11 @@ function buildUnifiedTxs(data: TransactionData | null): UnifiedTx[] {
     // initiated withdrawals inherit the LIVE withdrawal status when available
     // (matched via referenceId), reversals are reversed.
     const linkedWithdrawal = entry.referenceId ? withdrawalById.get(String(entry.referenceId)) : undefined;
+    // DEDUP: when a withdrawal RECORD exists for this ledger entry, the
+    // first-class withdrawal row below already renders it (with the live
+    // transfer status). Pushing the WITHDRAWAL_INITIATED ledger row as well
+    // made every withdrawal appear TWICE in the history — skip it here.
+    if (linkedWithdrawal && /WITHDRAWAL_INITIATED/.test(entryType)) return;
     const ledgerStatus = linkedWithdrawal
       ? txStatus(linkedWithdrawal.status) ?? (/WITHDRAWAL_INITIATED/.test(entryType) ? "PROCESSING" : "COMPLETED")
       : /WITHDRAWAL_INITIATED/.test(entryType)
@@ -2286,6 +2297,7 @@ function InvestorTransactions(props: InvestorTransactionsProps) {
                 {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </label>
+            <CsvExportButton path="/api/v1/investor/export/transactions" compact />
           </div>
         </div>
         {all.length ? (

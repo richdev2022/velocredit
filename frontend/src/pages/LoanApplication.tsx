@@ -251,8 +251,14 @@ function ApplyRoute() {
       if (!application || application.applicantType !== t) {
         startNewApplication(t);
         // Returning borrower: prefill every section from their most recent
-        // previous application so nothing has to be re-entered.
-        void prefillFromPrevious();
+        // previous application so nothing has to be re-entered. Awaited BEFORE
+        // entering the wizard so sections render already populated (and the
+        // resume index skips completed sections).
+        void (async () => {
+          await prefillFromPrevious();
+          nav("/apply", { replace: true });
+        })();
+        return;
       }
       // clear the query string so a refresh doesn't re-trigger creation
       nav("/apply", { replace: true });

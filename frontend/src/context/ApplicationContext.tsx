@@ -491,8 +491,13 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
         loanRequest: { amount, tenure, purpose },
         calculation: calculateLoan(amount, tenure, { loanType: current.applicantType || "PERSONAL" }),
       });
+      // Commit the prefill ONLY if the fresh draft we started from is still
+      // the active application — if the dashboard call raced with another
+      // start/resume, silently dropping the prefill would leave the wizard
+      // empty and the returning borrower would have to re-type everything.
+      if (applicationRef.current?.applicationId !== current.applicationId) return null;
       applicationRef.current = updated;
-      setApplication((existing) => (existing?.applicationId === updated.applicationId ? updated : existing));
+      setApplication(updated);
       return updated;
     } catch (_e) {
       return null;
