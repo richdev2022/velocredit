@@ -22,7 +22,13 @@ import { formatNaira, formatDateLabel } from "../../utils/loanCalculator";
 import { documentDownloadUrl, documentPreviewUrl } from "../../utils/documentLinks";
 import AgreementPreview from "../AgreementPreview";
 import { generateLoanAgreement } from "../../services/agreementGenerator";
+import CreditBureauReportModal from "./CreditBureauReportModal";
 import Icon from "../Icon";
+
+// Once a loan has been disbursed and is live (or anything downstream of
+// disbursed), the disbursement CTA must disappear — money leaves the platform
+// exactly once per application ID.
+const DISBURSED_LIKE_STATUSES = new Set(["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF"]);
 
 interface AdminDetailProps {
   applicationId: string;
@@ -39,6 +45,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [bureauBusy, setBureauBusy] = useState(false);
   const [bureauMsg, setBureauMsg] = useState<string | null>(null);
+  const [bureauModalOpen, setBureauModalOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,6 +188,8 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
   const isPersonal = app.applicantType === "PERSONAL";
   const loan = app.loan || {};
   const terminalLoan = ["DISBURSEMENT_PENDING", "DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF", "CANCELLED"].includes(String(app.status).toUpperCase());
+  const loanRecordStatus = String((loan as { status?: string }).status || app.status || "").toUpperCase();
+  const disburseBlocked = DISBURSED_LIKE_STATUSES.has(loanRecordStatus);
   const personalInfo = app.personalInfo || {};
   const businessInfo = app.businessInfo || {};
   const businessRep = app.businessRep || {};
@@ -287,7 +296,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
               </button>
             </>
           )}
-          {app.status === "APPROVED" && !terminalLoan && (
+          {app.status === "APPROVED" && !terminalLoan && !disburseBlocked && (
             <button type="button" onClick={handleDisburse} disabled={saving} className="btn-primary">
               {saving ? "Submitting…" : "Disburse via Flutterwave"}
             </button>
@@ -304,6 +313,9 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
           the account-update CTA live HERE so the main loan table stays lean. */}
       <LoanTransfersSection
         applicationId={app.applicationId || (app as unknown as { id?: string }).id || ""}
+        loanStatus={loanRecordStatus}
+        loanRecordId={(loan as { id?: string }).id ? String((loan as { id?: string }).id) : undefined}
+        applicationInternalId={(loan as { applicationId?: string }).applicationId ? String((loan as { applicationId?: string }).applicationId) : undefined}
         onActionMessage={(message) => setSaveMsg(message ?? null)}
       />
 
@@ -501,14 +513,14 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
               <p className="mt-2 text-xs text-slate-500">{app.creditReportSnapshot.external.reason}</p>
             )}
             {app.creditReportSnapshot?.external?.normalizedFields && (
-              <details className="mt-3 text-xs">
-                <summary className="cursor-pointer font-medium text-slate-700 select-none">
-                  View raw external details
-                </summary>
-                <pre className="mt-2 p-2 rounded bg-slate-50 border border-slate-100 overflow-auto max-h-64 text-[10px] text-slate-700">
-{JSON.stringify(app.creditReportSnapshot.external.normalizedFields, null, 2)}
-                </pre>
-              </details>
+              <button
+                type="button"
+                onClick={() => setBureauModalOpen(true)}
+                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-900/50"
+              >
+                <Icon name="shield" size={14} />
+                View full bureau report
+              </button>
             )}
           </div>
         </div>
@@ -580,6 +592,16 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         <Row label="Decision Reasons" value={Array.isArray(app.systemDecision?.reasons) ? app.systemDecision.reasons.join("; ") : ""} />
         {Object.entries(app.stageStatuses || {}).map(([stage, status]) => <Row key={stage} label={stage.replace(/_/g, " ")} value={status} />)}
       </Card>
+
+      {/* Full credit-bureau report — beautiful structured rendering of the
+          provider response (opens from the “View full bureau report” button). */}
+      <CreditBureauReportModal
+        open={bureauModalOpen}
+        onClose={() => setBureauModalOpen(false)}
+        external={app.creditReportSnapshot?.external ?? null}
+        borrowerName={isPersonal ? app.personalInfo?.fullName : app.businessInfo?.businessName}
+        applicationId={app.applicationId}
+      />
     </div>
   );
 }
@@ -864,7 +886,19 @@ function DetailRow({ label, value }: { label: string; value: any }) {
 // account" CTA. Moved here from the main loan table so the table stays a
 // lean overview and the detail page holds the operational depth.
 // ---------------------------------------------------------------------------
-function LoanTransfersSection({ applicationId, onActionMessage }: { applicationId: string; onActionMessage?: (message: string | undefined) => void }) {
+function LoanTransfersSection({
+  applicationId,
+  loanStatus,
+  loanRecordId,
+  applicationInternalId,
+  onActionMessage,
+}: {
+  applicationId: string;
+  loanStatus?: string;
+  loanRecordId?: string;
+  applicationInternalId?: string;
+  onActionMessage?: (message: string | undefined) => void;
+}) {
   const [transfers, setTransfers] = useState<LoanDisbursement[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
@@ -874,8 +908,17 @@ function LoanTransfersSection({ applicationId, onActionMessage }: { applicationI
   async function load() {
     try {
       const response = await adminListDisbursements({ limit: 200 });
+      // Disbursement rows store the application's INTERNAL id, not the public
+      // applicationId string — match on every key we know so an active loan
+      // always finds its transfers (an empty list here used to re-expose the
+      // "Disburse via Flutterwave" CTA on already-disbursed loans).
       const matches = response.disbursements
-        .filter((d) => (d.loanId && d.applicationId === applicationId) || d.applicationId === applicationId)
+        .filter(
+          (d) =>
+            (applicationId && d.applicationId === applicationId) ||
+            (applicationInternalId && d.applicationId === applicationInternalId) ||
+            (loanRecordId && d.loanId === loanRecordId)
+        )
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setTransfers(matches);
     } catch {
@@ -952,6 +995,12 @@ function LoanTransfersSection({ applicationId, onActionMessage }: { applicationI
   const latest = transfers[0];
   const hasSuccessful = transfers.some((t) => t.status === "SUCCESSFUL");
   const inFlight = transfers.some((t) => ["PROCESSING", "PENDING"].includes(t.status));
+  // Status-aware CTA gating: a disbursed/active loan must never show the
+  // disburse (or retry) CTA again, even if the transfer list failed to load —
+  // and a DISBURSEMENT_PENDING loan is mid-flight until the provider settles.
+  const loanStatusUpper = String(loanStatus || "").toUpperCase();
+  const disbursedLocked = DISBURSED_LIKE_STATUSES.has(loanStatusUpper);
+  const disbursementInFlight = loanStatusUpper === "DISBURSEMENT_PENDING";
 
   return (
     <div className="velo-card p-4 sm:p-5 lg:p-6">
@@ -965,17 +1014,17 @@ function LoanTransfersSection({ applicationId, onActionMessage }: { applicationI
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {latest && latest.status === "FAILED" && (
+          {latest && latest.status === "FAILED" && !disbursedLocked && (
             <button type="button" className="btn-secondary text-xs" disabled={busy !== "" || inFlight} onClick={() => void retry(latest.id)}>
               {busy === latest.id ? "Retrying…" : "Retry disbursement"}
             </button>
           )}
-          {!hasSuccessful && !inFlight && latest?.status !== "FAILED" && (
+          {!hasSuccessful && !inFlight && latest?.status !== "FAILED" && !disbursedLocked && !disbursementInFlight && (
             <button type="button" className="btn-primary text-xs" disabled={busy !== ""} onClick={() => void disburse()}>
               {busy === "disburse" ? "Disbursing…" : "Disburse via Flutterwave"}
             </button>
           )}
-          {(latest?.status === "FAILED" || (!hasSuccessful && !inFlight)) && (
+          {(latest?.status === "FAILED" || (!hasSuccessful && !inFlight)) && !disbursedLocked && !disbursementInFlight && (
             <button
               type="button"
               className="text-[11px] font-semibold text-amber-700 underline decoration-amber-400 underline-offset-2 hover:text-amber-800 disabled:opacity-50 dark:text-amber-400"
@@ -999,6 +1048,29 @@ function LoanTransfersSection({ applicationId, onActionMessage }: { applicationI
         <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300">
           <span>{notice}</span>
           <button type="button" className="text-xs font-semibold underline" onClick={() => setNotice("")}>Dismiss</button>
+        </div>
+      )}
+
+      {disbursedLocked && (
+        <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-xs text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300">
+          <svg className="mt-0.5 flex-shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+            <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="2" />
+          </svg>
+          <span>
+            <strong>Loan already disbursed and active</strong> — duplicate disbursement is blocked for this application ID. Repayments, reconciliation and the repayment schedule continue automatically.
+          </span>
+        </div>
+      )}
+      {disbursementInFlight && !disbursedLocked && (
+        <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+          <svg className="mt-0.5 flex-shrink-0 animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.25" />
+            <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+          </svg>
+          <span>
+            <strong>Disbursement in progress</strong> — the transfer's final status is confirmed automatically. A second disbursement is blocked while this one is unresolved.
+          </span>
         </div>
       )}
 

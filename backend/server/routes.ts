@@ -5662,6 +5662,19 @@ export function guessBankCodeFromName(bankName: string): string | undefined {
 type DisbursementAttemptOutcome = { outcome: "SUCCESSFUL" | "FAILED" | "PENDING"; message: string; error?: string };
 type DisbursementAccountView = { accountName?: string; accountNumber?: string; bankCode?: string; bankName?: string };
 
+// Duplicate-disbursement protection: once money has actually left the
+// platform for a loan (DISBURSED/ACTIVE and everything downstream of it),
+// that loan can NEVER be disbursed again — the admin UI hides the CTA and
+// this set backs the API-level guard so a direct API attempt gets a precise
+// 409 instead of a second transfer for the same application ID.
+const DISBURSED_LIKE_LOAN_STATUSES = new Set(["DISBURSED", "ACTIVE", "PAST_DUE", "DEFAULTED", "REPAID", "WRITTEN_OFF"]);
+
+function loanAlreadyDisbursed(loan: { status?: string } | undefined | null, application?: { status?: string } | null): boolean {
+  const loanStatus = String(loan?.status ?? "").toUpperCase();
+  const applicationStatus = String(application?.status ?? "").toUpperCase();
+  return DISBURSED_LIKE_LOAN_STATUSES.has(loanStatus) || DISBURSED_LIKE_LOAN_STATUSES.has(applicationStatus);
+}
+
 function describeTransferProviderFailure(error: unknown): { message: string; providerResponse: Record<string, unknown> | null } {
   if (error instanceof FlutterwaveError) {
     const payload = error.providerResponse as { message?: string; data?: { complete_message?: string; processor_message?: string } };
@@ -6006,6 +6019,18 @@ router.post("/admin/loans/:loanId/disburse", requireAuth, requireRole("ADMIN"), 
   const loan = loans.find((l) => l.applicationId === req.params.loanId || l.applicationId === application?.id || l.id === req.params.loanId);
   if (!loan) {
     res.status(404).json({ ok: false, error: "Loan record not found. Approve the application first." });
+    return;
+  }
+  // HARD duplicate-disbursement guard: a loan that has already been disbursed
+  // and is now live can never be disbursed again. The admin UI hides the CTA
+  // for these statuses; this is the API backstop so a direct attempt returns
+  // a precise 409 instead of pushing a second transfer out of the door.
+  if (loanAlreadyDisbursed(loan, application)) {
+    res.status(409).json({
+      ok: false,
+      code: "ALREADY_DISBURSED",
+      error: "Loan already disbursed and active, can't disburse duplicate loan.",
+    });
     return;
   }
   if (application && application.manualDecision !== "APPROVED") {
@@ -8616,6 +8641,18 @@ router.post("/admin/disbursements/:disbursementId/retry", requireAuth, requireRo
   const loan = loans.find((l) => l.id === prev.loanId);
   if (!loan) {
     res.status(404).json({ ok: false, error: "Loan not found" });
+    return;
+  }
+  // Same duplicate-disbursement protection as the initiate route: a loan that
+  // already settled (SUCCESSFUL transfer / ACTIVE+) must never be re-funded
+  // via a retry of an older failed attempt.
+  const retryApplication = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
+  if (loanAlreadyDisbursed(loan, retryApplication)) {
+    res.status(409).json({
+      ok: false,
+      code: "ALREADY_DISBURSED",
+      error: "Loan already disbursed and active, can't disburse duplicate loan.",
+    });
     return;
   }
   // Account freshness: prefer the borrower's CURRENT saved disbursement account
