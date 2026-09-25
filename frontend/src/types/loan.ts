@@ -30,6 +30,12 @@ export interface AppliedLoanProductInfo {
   defaultTenureDays?: number;
   /** Allowed tenor list (days) — the tenure picker renders exactly this. */
   tenureDays?: number[];
+  /**
+   * Per-tenor MONTHLY interest rates (easimoney style). When the borrower picks
+   * tenor T and an entry exists for T, interest = principal × monthlyRate% ×
+   * (T/30). Tenors WITHOUT an entry use the base interestRatePercent + type.
+   */
+  tenorInterestRates?: Array<{ tenorDays: number; monthlyRatePercent: number }>;
   interestRatePercent: number;
   interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
   processingFeePercent: number;

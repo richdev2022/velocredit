@@ -83,6 +83,9 @@ import {
   normalizeLoanProducts,
   ensureLoanProductsLoaded,
   purgeGhostCatalogRows,
+  normalizeTenorInterestRates,
+  resolveTenorMonthlyRate,
+  type TenorInterestRate,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { env } from "./config.js";
@@ -5089,6 +5092,7 @@ export function captureProductSnapshot(product: LoanProductRow | null): LoanProd
     defaultAmountNaira: product.defaultAmountNaira !== undefined ? Number(product.defaultAmountNaira) : undefined,
     defaultTenureDays: product.defaultTenureDays,
     tenureDays: product.tenureDays ? [...product.tenureDays] : undefined,
+    tenorInterestRates: product.tenorInterestRates ? product.tenorInterestRates.map((r) => ({ ...r })) : undefined,
     interestRatePercent: Number(product.interestRatePercent),
     interestType: product.interestType,
     processingFeePercent: Number(product.processingFeePercent),
@@ -5138,6 +5142,7 @@ function applicationProductPayload(application: {
     productDefaultAmountNaira: sourceRecord.defaultAmountNaira ?? snapshot?.defaultAmountNaira,
     productDefaultTenureDays: sourceRecord.defaultTenureDays ?? snapshot?.defaultTenureDays,
     productTenureDays: (sourceRecord.tenureDays ?? snapshot?.tenureDays) as number[] | undefined,
+    productTenorInterestRates: (sourceRecord.tenorInterestRates ?? snapshot?.tenorInterestRates) as TenorInterestRate[] | undefined,
   };
 }
 
@@ -5185,8 +5190,16 @@ function ensureApprovedLoanRecord(application: (typeof loanApplications)[number]
     interest = Number(savedCalc.interest);
     processing = Number(savedCalc.processingFee ?? 0) + Number(savedCalc.serviceFee ?? 0);
   } else {
-    const rate = Number(product?.interestRatePercent ?? snapshot?.interestRatePercent ?? 18) / 100;
-    interest = principal * rate * (tenure / 365);
+    // Per-tenor monthly rate (easimoney style) wins: interest for tenor T =
+    // principal × monthlyRate% × (T/30). Without an entry the base-rate math
+    // applies (unchanged legacy behaviour).
+    const tenorMonthlyRate = resolveTenorMonthlyRate(product ?? null, snapshot ?? null, tenure);
+    if (tenorMonthlyRate !== undefined) {
+      interest = principal * (tenorMonthlyRate / 100) * (tenure / 30);
+    } else {
+      const rate = Number(product?.interestRatePercent ?? snapshot?.interestRatePercent ?? 18) / 100;
+      interest = principal * rate * (tenure / 365);
+    }
     processing = principal * (Number(product?.processingFeePercent ?? snapshot?.processingFeePercent ?? 2) / 100);
   }
   const totalRepayment = principal + interest + processing;
@@ -6456,6 +6469,10 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     defaultAmountNaira: z.number().positive().optional(),
     defaultTenureDays: z.number().int().positive().optional(),
     tenureDays: z.array(z.number().int().positive()).max(24).optional(),
+    tenorInterestRates: z.array(z.object({
+      tenorDays: z.number().int().positive(),
+      monthlyRatePercent: z.number().min(0),
+    })).max(24).optional(),
     interestRatePercent: z.number().nonnegative(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).default("SIMPLE_FLAT"),
     processingFeePercent: z.number().nonnegative().default(2),
@@ -6481,6 +6498,17 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     .refine((data) => data.tenureDays === undefined || data.tenureDays.length === 0 || data.defaultTenureDays === undefined || data.tenureDays.includes(data.defaultTenureDays), {
       message: "defaultTenureDays must be one of the allowed tenureDays",
       path: ["defaultTenureDays"],
+    })
+    // A per-tenor rate can only pin a tenor the product actually offers —
+    // otherwise the admin would configure a rate borrowers can never select.
+    .refine((data) => {
+      if (!data.tenorInterestRates || data.tenorInterestRates.length === 0) return true;
+      if (!data.tenureDays || data.tenureDays.length === 0) return true;
+      const allowed = new Set(data.tenureDays.map((d) => Math.trunc(Number(d))));
+      return data.tenorInterestRates.every((entry) => allowed.has(Math.trunc(Number(entry.tenorDays))));
+    }, {
+      message: "tenorInterestRates entries must reference tenors from the tenureDays list",
+      path: ["tenorInterestRates"],
     });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -6500,13 +6528,14 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     return;
   }
   const now = new Date().toISOString();
-  const { tenureDays, ...rest } = parsed.data;
+  const { tenureDays, tenorInterestRates, ...rest } = parsed.data;
   const product: (typeof loanProducts)[number] = {
     id: randomUUID(),
     version: 1,
     createdAt: now,
     ...rest,
     ...(tenureDays && tenureDays.length > 0 ? { tenureDays: normalizeTenureDays(tenureDays) } : {}),
+    ...(tenorInterestRates && tenorInterestRates.length > 0 ? { tenorInterestRates: normalizeTenorInterestRates(tenorInterestRates) } : {}),
   };
   loanProducts.push(product);
   if (!(await persistMutation(res))) return;
@@ -6528,6 +6557,10 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
     defaultAmountNaira: z.number().positive().nullable().optional(),
     defaultTenureDays: z.number().int().positive().optional(),
     tenureDays: z.array(z.number().int().positive()).max(24).optional(),
+    tenorInterestRates: z.array(z.object({
+      tenorDays: z.number().int().positive(),
+      monthlyRatePercent: z.number().min(0),
+    })).max(24).nullable().optional(),
     interestRatePercent: z.number().nonnegative().optional(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).optional(),
     processingFeePercent: z.number().nonnegative().optional(),
@@ -6600,18 +6633,51 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
     });
     return;
   }
+  // Per-tenor monthly rates: validate the MERGED product — every effective
+  // rate entry must reference a tenor the product still offers. A patch that
+  // shrinks the tenor list prunes orphaned rate entries below.
+  if (parsed.data.tenorInterestRates !== undefined && parsed.data.tenorInterestRates !== null && parsed.data.tenorInterestRates.length > 0 && effectiveTenureDays && effectiveTenureDays.length > 0) {
+    const allowedTenors = new Set(effectiveTenureDays);
+    const orphans = parsed.data.tenorInterestRates.map((entry) => Math.trunc(Number(entry.tenorDays))).filter((tenorDays) => !allowedTenors.has(tenorDays));
+    if (orphans.length > 0) {
+      res.status(400).json({
+        ok: false,
+        error: {
+          formErrors: [],
+          fieldErrors: { tenorInterestRates: [`tenorInterestRates entries (${orphans.join(", ")}) must reference tenors from the tenureDays list (${effectiveTenureDays.join(", ")})`] },
+        },
+      });
+      return;
+    }
+  }
   product.version += 1;
   product.updatedAt = new Date().toISOString();
-  const { tenureDays, defaultAmountNaira, ...rest } = parsed.data;
+  const { tenureDays, defaultAmountNaira, tenorInterestRates, ...rest } = parsed.data;
   Object.assign(product, rest);
   if (tenureDays !== undefined) {
     const normalized = normalizeTenureDays(tenureDays);
     if (normalized.length > 0) (product as LoanProductRow).tenureDays = normalized;
     else delete (product as LoanProductRow).tenureDays;
+    // The tenor list shrank: drop rate entries for tenors the product no
+    // longer offers (explicitly-patched rates were validated above).
+    if (tenorInterestRates === undefined && (product as LoanProductRow).tenorInterestRates && normalized.length > 0) {
+      const allowedTenors = new Set(normalized);
+      const pruned = normalizeTenorInterestRates(((product as LoanProductRow).tenorInterestRates ?? []).filter((entry) => allowedTenors.has(entry.tenorDays)));
+      if (pruned && pruned.length > 0) (product as LoanProductRow).tenorInterestRates = pruned;
+      else delete (product as LoanProductRow).tenorInterestRates;
+    }
   }
   if (defaultAmountNaira !== undefined) {
     if (defaultAmountNaira === null) delete (product as LoanProductRow).defaultAmountNaira;
     else (product as LoanProductRow).defaultAmountNaira = defaultAmountNaira;
+  }
+  if (tenorInterestRates !== undefined) {
+    if (tenorInterestRates === null || tenorInterestRates.length === 0) delete (product as LoanProductRow).tenorInterestRates;
+    else {
+      const normalized = normalizeTenorInterestRates(tenorInterestRates);
+      if (normalized && normalized.length > 0) (product as LoanProductRow).tenorInterestRates = normalized;
+      else delete (product as LoanProductRow).tenorInterestRates;
+    }
   }
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, product });

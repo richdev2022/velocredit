@@ -19,8 +19,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
  *      list, collateral, default amount) so agreed loans survive edits.
  *   7. seedLoanProducts self-heals: a catalog missing a Personal or
  *      Business product gets the matching default added; a fresh catalog
- *      seeds "Personal Loan" + "Business Loan" (the Moniepoint-style
- *      baseline, ₦100,000–₦30,000,000 @ 5% annualized).
+ *      seeds "Personal Loan" + "Business Loan" (the easimoney-style
+ *      baseline, ₦100,000–₦30,000,000 @ 5% monthly per tenor).
+ *   8. Per-tenor MONTHLY interest rates (easimoney style): POST/PATCH
+ *      accept a tenorInterestRates matrix (validated against the tenor
+ *      list, normalized, clearable); the approval fallback prices a tenor
+ *      with principal × monthlyRate% × (tenor/30) when an entry exists.
  */
 
 const TEST_PREFIX = `test-loanprod-${Date.now()}`;
@@ -328,6 +332,119 @@ describe("Loan product full configuration — catalog is the single source of tr
         expect(product.programType).toBeDefined();
         expect(product.tenureDays.length).toBeGreaterThan(0);
         expect(product.tenureDays).toContain(product.defaultTenureDays);
+      }
+    } finally {
+      loanProducts.splice(0, loanProducts.length, ...before);
+    }
+  });
+
+  it("10. POST accepts per-tenor monthly interest rates and echoes them normalized", async () => {
+    const response = await request(app)
+      .post("/api/v1/admin/loan-products")
+      .send({
+        name: `${TEST_PREFIX} Tenor Rates`,
+        programType: "PERSONAL",
+        minAmountNaira: 100_000,
+        maxAmountNaira: 30_000_000,
+        defaultTenureDays: 30,
+        tenureDays: [30, 60, 90, 180],
+        tenorInterestRates: [
+          { tenorDays: 90, monthlyRatePercent: 6 },
+          { tenorDays: 30, monthlyRatePercent: 5 },
+          { tenorDays: 60, monthlyRatePercent: 5 },
+          { tenorDays: 90, monthlyRatePercent: 5.5 }, // duplicate tenor: last wins
+          { tenorDays: 180, monthlyRatePercent: 0 },  // interest-free tenor is legitimate
+        ],
+        interestRatePercent: 5,
+        interestType: "SIMPLE_FLAT",
+      });
+    expect(response.status).toBe(201);
+    const product = response.body.product;
+    createdProductIds.push(product.id);
+    expect(product.tenorInterestRates).toEqual([
+      { tenorDays: 30, monthlyRatePercent: 5 },
+      { tenorDays: 60, monthlyRatePercent: 5 },
+      { tenorDays: 90, monthlyRatePercent: 5.5 },
+      { tenorDays: 180, monthlyRatePercent: 0 },
+    ]);
+    // The effective monthly rate for a tenor resolves from the matrix.
+    expect(storeMod.resolveTenorMonthlyRate(product, null, 90)).toBe(5.5);
+    expect(storeMod.resolveTenorMonthlyRate(product, null, 60)).toBe(5);
+    expect(storeMod.resolveTenorMonthlyRate(product, null, 365)).toBeUndefined();
+  });
+
+  it("11. POST rejects a per-tenor rate referencing a tenor outside the tenureDays list", async () => {
+    const response = await request(app)
+      .post("/api/v1/admin/loan-products")
+      .send({
+        name: `${TEST_PREFIX} Orphan Tenor Rate`,
+        minAmountNaira: 100_000,
+        maxAmountNaira: 1_000_000,
+        tenureDays: [30, 60],
+        tenorInterestRates: [{ tenorDays: 120, monthlyRatePercent: 4 }],
+        interestRatePercent: 5,
+      });
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body.error)).toContain("tenorInterestRates");
+  });
+
+  it("12. PATCH sets, prunes and clears per-tenor rates; the approval fallback uses the tenor math", async () => {
+    const created = await request(app)
+      .post("/api/v1/admin/loan-products")
+      .send({
+        name: `${TEST_PREFIX} Tenor Patch`,
+        programType: "BUSINESS",
+        minAmountNaira: 100_000,
+        maxAmountNaira: 5_000_000,
+        defaultTenureDays: 30,
+        tenureDays: [30, 60, 90],
+        tenorInterestRates: [{ tenorDays: 30, monthlyRatePercent: 4 }, { tenorDays: 60, monthlyRatePercent: 4.5 }, { tenorDays: 90, monthlyRatePercent: 5 }],
+        interestRatePercent: 4,
+        interestType: "SIMPLE_FLAT",
+      });
+    expect(created.status).toBe(201);
+    const product = created.body.product;
+    createdProductIds.push(product.id);
+
+    // Shrinking the tenor list prunes the orphaned 90d rate entry.
+    const shrunk = await request(app)
+      .patch(`/api/v1/admin/loan-products/${product.id}`)
+      .send({ tenureDays: [30, 60] });
+    expect(shrunk.status).toBe(200);
+    expect(shrunk.body.product.tenorInterestRates).toEqual([
+      { tenorDays: 30, monthlyRatePercent: 4 },
+      { tenorDays: 60, monthlyRatePercent: 4.5 },
+    ]);
+
+    // Explicitly patching the matrix replaces it wholesale.
+    const repatched = await request(app)
+      .patch(`/api/v1/admin/loan-products/${product.id}`)
+      .send({ tenorInterestRates: [{ tenorDays: 60, monthlyRatePercent: 6 }] });
+    expect(repatched.status).toBe(200);
+    expect(repatched.body.product.tenorInterestRates).toEqual([{ tenorDays: 60, monthlyRatePercent: 6 }]);
+
+    // An empty array clears the map — the base-rate math applies again.
+    const cleared = await request(app)
+      .patch(`/api/v1/admin/loan-products/${product.id}`)
+      .send({ tenorInterestRates: [] });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.product.tenorInterestRates).toBeUndefined();
+    expect(storeMod.resolveTenorMonthlyRate(cleared.body.product, null, 60)).toBeUndefined();
+  });
+
+  it("13. seeded defaults carry the easimoney per-tenor matrix (5% monthly on every tenor)", () => {
+    const before = loanProducts.slice();
+    try {
+      loanProducts.splice(0, loanProducts.length);
+      storeMod.seedLoanProducts();
+      for (const product of loanProducts) {
+        expect(product.interestType).toBe("SIMPLE_FLAT");
+        expect(product.tenorInterestRates).toEqual([
+          { tenorDays: 30, monthlyRatePercent: 5 },
+          { tenorDays: 60, monthlyRatePercent: 5 },
+          { tenorDays: 90, monthlyRatePercent: 5 },
+          { tenorDays: 180, monthlyRatePercent: 5 },
+        ]);
       }
     } finally {
       loanProducts.splice(0, loanProducts.length, ...before);

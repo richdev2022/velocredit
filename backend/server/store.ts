@@ -335,6 +335,8 @@ export interface LoanProductSnapshot {
   defaultTenureDays?: number;
   /** Allowed tenor list (days) at capture time — drives the borrower tenure picker. */
   tenureDays?: number[];
+  /** Per-tenor monthly interest rates (easimoney style) at capture time. */
+  tenorInterestRates?: TenorInterestRate[];
   interestRatePercent?: number;
   interestType?: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
   processingFeePercent?: number;
@@ -664,6 +666,16 @@ export interface PlatformSettings {
 
 export type LoanProductProgramType = "PERSONAL" | "BUSINESS" | "BOTH";
 
+/**
+ * ONE per-tenor monthly interest rate (easimoney style): pins the MONTHLY
+ * interest rate for a single tenor of the product's tenor list. Interest for
+ * that tenor = principal × monthlyRatePercent/100 × (tenorDays / 30).
+ */
+export interface TenorInterestRate {
+  tenorDays: number;
+  monthlyRatePercent: number;
+}
+
 export interface LoanProduct {
   id: string;
   name: string;
@@ -681,6 +693,13 @@ export interface LoanProduct {
   defaultTenureDays?: number;
   /** Allowed tenor list in days — the borrower tenure picker renders EXACTLY this. */
   tenureDays?: number[];
+  /**
+   * Per-tenor MONTHLY interest rates (easimoney style). When the borrower picks
+   * tenor T and an entry exists for T, interest = principal × monthlyRate/100 ×
+   * (T/30) regardless of interestType. Tenors WITHOUT an entry fall back to the
+   * base interestRatePercent + interestType math.
+   */
+  tenorInterestRates?: TenorInterestRate[];
   interestRatePercent: number;
   interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
   processingFeePercent: number;
@@ -1525,10 +1544,58 @@ export function seedInvestmentPlans(): void {
 // as real, fully-configured catalog products. Legacy seeds used vendor-ish
 // names ("Velo Personal Quick") that the admin never asked for; the defaults
 // below are the plain "Personal Loan" / "Business Loan" products the borrower
-// flow and landing page promise (₦100,000 – ₦30,000,000 @ 5% p.a.).
+// flow and landing page promise (₦100,000 – ₦30,000,000 @ 5% monthly per
+// tenor, easimoney style).
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_TENURE_DAYS = [30, 60, 90, 180];
+
+/**
+ * easimoney-style default: every seeded tenor carries the SAME 5% monthly
+ * interest rate, and the base rate (5, SIMPLE_FLAT) matches — so the whole
+ * matrix is coherent AND fully editable per tenor in the admin console.
+ */
+export const DEFAULT_TENOR_INTEREST_RATES = DEFAULT_TENURE_DAYS.map((tenorDays) => ({ tenorDays, monthlyRatePercent: 5 }));
+
+/**
+ * Normalize a per-tenor rate list: drop invalid entries, dedupe by tenorDays
+ * (last entry wins), sort ascending. A 0% monthly rate is legitimate
+ * (interest-free tenor) and is preserved.
+ */
+export function normalizeTenorInterestRates(rates: TenorInterestRate[] | null | undefined): TenorInterestRate[] | undefined {
+  if (!Array.isArray(rates)) return undefined;
+  const byTenor = new Map<number, number>();
+  for (const entry of rates) {
+    const tenorDays = Math.trunc(Number(entry?.tenorDays));
+    const monthlyRatePercent = Number(entry?.monthlyRatePercent);
+    if (!Number.isFinite(tenorDays) || tenorDays <= 0) continue;
+    if (!Number.isFinite(monthlyRatePercent) || monthlyRatePercent < 0) continue;
+    byTenor.set(tenorDays, monthlyRatePercent);
+  }
+  if (byTenor.size === 0) return undefined;
+  return [...byTenor.entries()]
+    .map(([tenorDays, monthlyRatePercent]) => ({ tenorDays, monthlyRatePercent }))
+    .sort((a, b) => a.tenorDays - b.tenorDays);
+}
+
+/**
+ * The effective MONTHLY interest rate for one tenor: the explicit per-tenor
+ * entry when one exists, otherwise undefined (the caller falls back to the
+ * product's base interestRatePercent + interestType math).
+ */
+export function resolveTenorMonthlyRate(
+  product: Pick<LoanProduct, "tenorInterestRates"> | null | undefined,
+  snapshot: Pick<LoanProductSnapshot, "tenorInterestRates"> | null | undefined,
+  tenureDays: number,
+): number | undefined {
+  const sources = [product?.tenorInterestRates, snapshot?.tenorInterestRates];
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue;
+    const match = source.find((entry) => Number(entry?.tenorDays) === Number(tenureDays));
+    if (match && Number.isFinite(Number(match.monthlyRatePercent))) return Number(match.monthlyRatePercent);
+  }
+  return undefined;
+}
 
 export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<LoanProduct, "id" | "createdAt" | "updatedAt"> {
   if (type === "BUSINESS") {
@@ -1541,8 +1608,9 @@ export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<Loa
       defaultAmountNaira: 500_000,
       defaultTenureDays: 90,
       tenureDays: [...DEFAULT_TENURE_DAYS],
+      tenorInterestRates: DEFAULT_TENOR_INTEREST_RATES.map((r) => ({ ...r })),
       interestRatePercent: 5,
-      interestType: "ANNUALIZED",
+      interestType: "SIMPLE_FLAT",
       processingFeePercent: 2,
       serviceFeePercent: 0,
       lateFeePercent: 1,
@@ -1563,8 +1631,9 @@ export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<Loa
     defaultAmountNaira: 100_000,
     defaultTenureDays: 30,
     tenureDays: [...DEFAULT_TENURE_DAYS],
+    tenorInterestRates: DEFAULT_TENOR_INTEREST_RATES.map((r) => ({ ...r })),
     interestRatePercent: 5,
-    interestType: "ANNUALIZED",
+    interestType: "SIMPLE_FLAT",
     processingFeePercent: 2,
     serviceFeePercent: 0,
     lateFeePercent: 1,

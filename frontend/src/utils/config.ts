@@ -444,6 +444,28 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
       ? Math.min(max, Math.max(min, productDefaultAmount))
       : Math.min(max, Math.max(min, program.loanLimits.defaultAmount)),
   };
+  // Per-tenor MONTHLY interest rates (easimoney style): each entry becomes a
+  // tenure-scoped interest override so the calculator prices that tenor with
+  // principal × monthlyRate% × (tenor/30). Tenors without an entry keep the
+  // base interest math (interestRatePercent + interestType).
+  const tenorFees: TenureFeeOverrides = {};
+  if (Array.isArray(product.tenorInterestRates)) {
+    for (const entry of product.tenorInterestRates) {
+      const tenorDays = Math.trunc(Number(entry?.tenorDays));
+      const monthlyRatePercent = Number(entry?.monthlyRatePercent);
+      if (!Number.isFinite(tenorDays) || tenorDays <= 0) continue;
+      if (!Number.isFinite(monthlyRatePercent) || monthlyRatePercent < 0) continue;
+      tenorFees[tenorDays] = {
+        interest: {
+          ...program.fees.interest,
+          type: "percentage",
+          value: monthlyRatePercent,
+          // Monthly math: percent of principal per 30-day month.
+          interestType: "SIMPLE_FLAT",
+        },
+      };
+    }
+  }
   const appliedInfo: AppliedLoanProductInfo = {
     id: product.id,
     name: product.name,
@@ -454,6 +476,11 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
     defaultAmountNaira: limits.defaultAmount,
     defaultTenureDays: product.defaultTenureDays,
     tenureDays: productTenures ? productTenures.map((t) => t.value) : undefined,
+    tenorInterestRates: Object.keys(tenorFees).length > 0
+      ? Object.entries(tenorFees)
+        .map(([days, fee]) => ({ tenorDays: Number(days), monthlyRatePercent: Number(fee.interest?.value ?? 0) }))
+        .sort((a, b) => a.tenorDays - b.tenorDays)
+      : undefined,
     interestRatePercent: Number.isFinite(interestRate) ? interestRate : 0,
     interestType,
     processingFeePercent: Number.isFinite(processingFee) ? processingFee : 0,
@@ -472,6 +499,11 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
     tenures: productTenures ?? program.tenures,
     productName: product.name,
     product: appliedInfo,
+    // Per-tenor monthly rates (easimoney style) land here as tenure-scoped
+    // interest overrides — resolveFeesForTenure merges them at calculation
+    // time. Rebuilt from THIS product on every apply so a re-pricing never
+    // leaks the previous product's overrides.
+    tenureFees: tenorFees,
     fees: {
       ...program.fees,
       interest: {

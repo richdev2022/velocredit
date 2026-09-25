@@ -105,6 +105,33 @@ const tenureDays = (row: Row): number[] | undefined => {
   return days.length > 0 ? days : undefined;
 };
 
+/**
+ * Parse the tenor_interest_rates JSONB column into a clean per-tenor monthly
+ * rate list (deduped by tenorDays, ascending, invalid entries dropped).
+ */
+const tenorInterestRates = (row: Row): LoanProduct["tenorInterestRates"] => {
+  const raw = row["tenor_interest_rates"];
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try { parsed = JSON.parse(raw); } catch { parsed = undefined; }
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const byTenor = new Map<number, number>();
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const tenorDays = Math.trunc(Number(record.tenorDays));
+    const monthlyRatePercent = Number(record.monthlyRatePercent);
+    if (!Number.isFinite(tenorDays) || tenorDays <= 0) continue;
+    if (!Number.isFinite(monthlyRatePercent) || monthlyRatePercent < 0) continue;
+    byTenor.set(tenorDays, monthlyRatePercent);
+  }
+  if (byTenor.size === 0) return undefined;
+  return [...byTenor.entries()]
+    .map(([tenorDays, monthlyRatePercent]) => ({ tenorDays, monthlyRatePercent }))
+    .sort((a, b) => a.tenorDays - b.tenorDays);
+};
+
 export function mapLoanProductRow(row: Row): LoanProduct {
   const product: LoanProduct = {
     id: str(row, "id"), name: str(row, "name"), description: strNull(row, "description"),
@@ -113,6 +140,7 @@ export function mapLoanProductRow(row: Row): LoanProduct {
     defaultAmountNaira: numberOrNull(row, "default_amount_naira") ?? undefined,
     defaultTenureDays: nullableNumber(row, "default_tenure_days"),
     tenureDays: tenureDays(row),
+    tenorInterestRates: tenorInterestRates(row),
     interestRatePercent: number(row, "interest_rate_percent"),
     interestType: str(row, "interest_type") as LoanProduct["interestType"], processingFeePercent: number(row, "processing_fee_percent"),
     serviceFeePercent: number(row, "service_fee_percent"),
@@ -491,6 +519,7 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
         defaultAmountNaira: numberOrNull(row, "default_amount_naira") ?? undefined,
         defaultTenureDays: nullableNumber(row, "default_tenure_days"),
         tenureDays: tenureDays(row),
+        tenorInterestRates: tenorInterestRates(row),
         interestRatePercent: number(row, "interest_rate_percent"),
         interestType: str(row, "interest_type") as LoanProduct["interestType"], processingFeePercent: number(row, "processing_fee_percent"),
         serviceFeePercent: number(row, "service_fee_percent"),

@@ -400,6 +400,81 @@ describe("product-driven configuration (catalog = single source of truth)", () =
     expect(config.tenures.map((t) => t.value)).toEqual([30, 60, 90]);
   });
 
+  it("per-tenor monthly rates (easimoney style) land in tenureFees and drive the tenor math", () => {
+    refreshTestConfig();
+    const applied = applyLoanProduct({
+      id: "p-tenor",
+      name: "Personal Loan",
+      programType: "PERSONAL",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 30_000_000,
+      defaultAmountNaira: 100_000,
+      tenureDays: [30, 60, 90, 180],
+      interestRatePercent: 5,
+      interestType: "SIMPLE_FLAT",
+      tenorInterestRates: [
+        { tenorDays: 30, monthlyRatePercent: 5 },
+        { tenorDays: 60, monthlyRatePercent: 4.5 },
+        { tenorDays: 90, monthlyRatePercent: 6 },
+      ],
+      processingFeePercent: 2,
+      serviceFeePercent: 0,
+      lateFeePercent: 1,
+    }, "PERSONAL");
+    expect(applied).toBe(true);
+    const program = config.loanPrograms.PERSONAL;
+    // The matrix is carried on the applied product for rendering.
+    expect(program.product?.tenorInterestRates).toEqual([
+      { tenorDays: 30, monthlyRatePercent: 5 },
+      { tenorDays: 60, monthlyRatePercent: 4.5 },
+      { tenorDays: 90, monthlyRatePercent: 6 },
+    ]);
+    // …AND as tenure-scoped overrides the calculator merges.
+    expect(program.tenureFees[60]?.interest?.value).toBe(4.5);
+    expect(program.tenureFees[60]?.interest?.interestType).toBe("SIMPLE_FLAT");
+    // 180d has NO explicit entry — no override for it.
+    expect(program.tenureFees[180]).toBeUndefined();
+    // easimoney math: 60d @ 4.5%/month = principal × 4.5% × 2.
+    expect(calculateTermInterest(100_000, program.tenureFees[60]!.interest!, 60)).toBe(9_000);
+    // 90d @ 6%/month = principal × 6% × 3.
+    expect(calculateTermInterest(100_000, program.tenureFees[90]!.interest!, 90)).toBe(18_000);
+    // Tenors without an entry keep the BASE rate + type math (5% annualized here would differ).
+    const baseInterest = program.fees.interest;
+    expect(baseInterest.value).toBe(5);
+  });
+
+  it("a product WITHOUT per-tenor rates resets tenureFees (no stale overrides leak between products)", () => {
+    refreshTestConfig();
+    applyLoanProduct({
+      id: "p-with-rates",
+      name: "Personal Loan",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 30_000_000,
+      tenureDays: [30, 60],
+      interestRatePercent: 5,
+      interestType: "SIMPLE_FLAT",
+      tenorInterestRates: [{ tenorDays: 30, monthlyRatePercent: 8 }],
+      processingFeePercent: 0,
+      serviceFeePercent: 0,
+      lateFeePercent: 0,
+    }, "PERSONAL");
+    expect(config.loanPrograms.PERSONAL.tenureFees[30]?.interest?.value).toBe(8);
+    // Now apply a product with NO matrix — the 8% override must NOT survive.
+    applyLoanProduct({
+      id: "p-plain",
+      name: "Personal Loan",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 30_000_000,
+      tenureDays: [30, 60],
+      interestRatePercent: 5,
+      interestType: "SIMPLE_FLAT",
+      processingFeePercent: 0,
+      serviceFeePercent: 0,
+      lateFeePercent: 0,
+    }, "PERSONAL");
+    expect(config.loanPrograms.PERSONAL.tenureFees).toEqual({});
+  });
+
   it("legacy localStorage loan overrides are stripped — branding/access overrides survive", () => {
     const stripped = stripLegacyLoanOverrides({
       loanLimits: { min: 1, max: 2, defaultAmount: 1 },

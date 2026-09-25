@@ -265,6 +265,20 @@ export default function LoanRequestSection() {
                 })}
               </div>
               {errors.tenure && <p className="velo-error-text">{errors.tenure.message}</p>}
+              {/* Per-tenor pricing (easimoney style): when the admin pinned a
+                  dedicated monthly rate to the selected tenor, say so — the
+                  live summary below already shows the naira impact. */}
+              {(() => {
+                const tenorRate = tenureWatch
+                  ? program.tenureFees?.[Number(tenureWatch)]?.interest?.value
+                  : undefined;
+                if (tenorRate === undefined || tenureWatch === undefined) return null;
+                return (
+                  <p className="velo-helper">
+                    This tenor is priced at <span className="font-semibold text-velo-700 dark:text-velo-300">{tenorRate}% per month</span> ({tenorRate}% × {(Number(tenureWatch) / 30).toString()} month{(Number(tenureWatch) / 30) === 1 ? "" : "s"}).
+                  </p>
+                );
+              })()}
               <p className="velo-helper">Choose how long you need to repay the loan.</p>
             </div>
 

@@ -152,6 +152,7 @@ export async function decomposeAndUpsertAll(
         { snake: "default_amount_naira", get: (row) => (row as LoanProduct).defaultAmountNaira },
         { snake: "default_tenure_days", get: (row) => row.defaultTenureDays },
         { snake: "tenure_days", get: (row) => (row as LoanProduct).tenureDays, json: true },
+        { snake: "tenor_interest_rates", get: (row) => (row as LoanProduct).tenorInterestRates, json: true },
         { snake: "interest_rate_percent", get: (row) => row.interestRatePercent },
         { snake: "interest_type", get: (row) => row.interestType },
         { snake: "processing_fee_percent", get: (row) => row.processingFeePercent },

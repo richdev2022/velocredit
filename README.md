@@ -316,13 +316,16 @@ Every loan term lives ON the loan product (PostgreSQL table `loan_products`); no
 | `defaultAmountNaira` | Pre-selected amount on the borrower form (validated inside the range) |
 | `tenureDays` | Allowed tenor list (days) — the borrower tenure picker renders EXACTLY this |
 | `defaultTenureDays` | Pre-selected tenor (validated to be one of `tenureDays`) |
-| `interestRatePercent` + `interestType` | Rate with `SIMPLE_FLAT` / `REDUCING_BALANCE` / `ANNUALIZED` semantics |
+| `tenorInterestRates` | **Per-tenor MONTHLY interest rates (easimoney style)**: `[{ tenorDays, monthlyRatePercent }]` — interest for tenor T = principal × monthlyRate% × (T ÷ 30). Tenors without an entry use the base `interestRatePercent` + `interestType` math |
+| `interestRatePercent` + `interestType` | Base rate with `SIMPLE_FLAT` / `REDUCING_BALANCE` / `ANNUALIZED` semantics (used for tenors with no explicit per-tenor rate) |
 | `processingFeePercent` / `serviceFeePercent` / `lateFeePercent` + `lateFeeType` | Full fee schedule |
 | `gracePeriodDays` | Days before late fees engage |
 | `collateralEnabled` / `collateralRequired` | Whether the collateral section is shown / media is mandatory |
 | `isActive` | Inactive products are hidden (with a resilient all-inactive fallback) |
 
-Defaults: a fresh platform seeds **Personal Loan** and **Business Loan** (₦100,000 – ₦30,000,000 @ 5% annualized, tenors 30/60/90/180); a catalog missing one of the two flows is self-healed with the matching default at boot. Applications capture an immutable product snapshot (full terms incl. tenor list and service fee) so later product edits never change agreed loans. The borrower screen fetches `GET /borrower/loan-products?type=…` and renders exactly the one returned product.
+Defaults: a fresh platform seeds **Personal Loan** and **Business Loan** (₦100,000 – ₦30,000,000, tenors 30/60/90/180, **5% monthly on every tenor** via the per-tenor matrix + a matching 5% `SIMPLE_FLAT` base rate — the easimoney configuration); a catalog missing one of the two flows is self-healed with the matching default at boot. Applications capture an immutable product snapshot (full terms incl. tenor list, per-tenor rates and service fee) so later product edits never change agreed loans. The borrower screen fetches `GET /borrower/loan-products?type=…` and renders exactly the one returned product, including a "priced at X% per month" note for the selected tenor when an explicit rate exists.
+
+**Per-tenor rates in the admin console:** every product editor shows a "Monthly interest rate per tenor" grid — one editable monthly rate per selected tenor, with *Fill all with base* / *Clear all* quick actions. Entries must reference tenors from the product's tenor list (rejected at the API boundary otherwise); shrinking the tenor list prunes orphaned entries; an empty matrix (or `[]` on PATCH) reverts the product to pure base-rate math. Existing products keep their previous pricing until per-tenor rates are saved — nothing is silently re-priced by the migration.
 
 Loan products are created/edited with cross-field guards (e.g. `minAmountNaira` must be less than `maxAmountNaira`, `defaultAmountNaira` must fall within the range, `defaultTenureDays` must be one of `tenureDays` — all rejected at the API boundary) and late-fee semantics (`ONE_TIME`, `COMPOUNDING_DAILY`, `COMPOUNDING_MONTHLY`). The admin console's "Loan Products" tab is the only place loan configuration is edited; the former "Loan programs" / "Global limits & fees" editors (which only wrote to the editing admin's browser) were removed, and any leftover localStorage loan overrides from older builds are stripped automatically on load.
 

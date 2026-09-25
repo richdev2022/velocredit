@@ -63,6 +63,8 @@ interface ProductDraft {
   defaultTenureDays: number;
   interestRatePercent: string;
   interestType: InterestType;
+  /** Per-tenor MONTHLY interest rates (easimoney style): tenor days -> "" (unset, base rate) or rate string. */
+  tenorRates: Record<number, string>;
   processingFeePercent: string;
   serviceFeePercent: string;
   lateFeePercent: string;
@@ -78,6 +80,14 @@ function draftFromProduct(product: LoanProduct): ProductDraft {
     ? [...product.tenureDays].sort((a, b) => a - b)
     : [];
   const defaultTenure = Number(product.defaultTenureDays ?? 30) || 30;
+  const tenorRates: Record<number, string> = {};
+  if (Array.isArray(product.tenorInterestRates)) {
+    for (const entry of product.tenorInterestRates) {
+      const days = Number(entry?.tenorDays);
+      const rate = Number(entry?.monthlyRatePercent);
+      if (Number.isFinite(days) && days > 0 && Number.isFinite(rate) && rate >= 0) tenorRates[days] = String(rate);
+    }
+  }
   return {
     name: product.name,
     description: product.description ?? "",
@@ -89,6 +99,7 @@ function draftFromProduct(product: LoanProduct): ProductDraft {
     defaultTenureDays: defaultTenure,
     interestRatePercent: String(product.interestRatePercent ?? 0),
     interestType: product.interestType ?? "SIMPLE_FLAT",
+    tenorRates,
     processingFeePercent: String(product.processingFeePercent ?? 0),
     serviceFeePercent: String(product.serviceFeePercent ?? 0),
     lateFeePercent: String(product.lateFeePercent ?? 0),
@@ -111,7 +122,9 @@ function emptyDraft(): ProductDraft {
     tenures: [30, 60, 90, 180],
     defaultTenureDays: 30,
     interestRatePercent: "5",
-    interestType: "ANNUALIZED",
+    interestType: "SIMPLE_FLAT",
+    // easimoney-style default: every tenor starts at the same 5% monthly rate.
+    tenorRates: { 30: "5", 60: "5", 90: "5", 180: "5" },
     processingFeePercent: "2",
     serviceFeePercent: "0",
     lateFeePercent: "1",
@@ -154,11 +167,24 @@ function validateDraft(draft: ProductDraft): Record<string, string> {
     if (!Number.isFinite(value) || value < 0) errors[key] = `${label} cannot be negative.`;
     else if (value > 100) errors[key] = `${label} cannot exceed 100%.`;
   }
+  // Per-tenor monthly rates: every filled entry must be a valid percent.
+  for (const [days, raw] of Object.entries(draft.tenorRates)) {
+    if (raw === undefined || raw.trim() === "") continue;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) errors.tenorRates = `Monthly rate for ${days} days must be a valid number.`;
+    else if (value > 100) errors.tenorRates = `Monthly rate for ${days} days cannot exceed 100%.`;
+  }
   if (!Number.isFinite(Number(draft.gracePeriodDays)) || Number(draft.gracePeriodDays) < 0) errors.gracePeriodDays = "Grace period cannot be negative.";
   return errors;
 }
 
 function buildPayload(draft: ProductDraft) {
+  // Per-tenor monthly rates: keep only filled entries, sorted by tenor.
+  const tenorInterestRates = Object.entries(draft.tenorRates)
+    .map(([days, raw]) => ({ tenorDays: Number(days), raw }))
+    .filter(({ tenorDays, raw }) => Number.isFinite(tenorDays) && tenorDays > 0 && raw !== undefined && raw.trim() !== "")
+    .map(({ tenorDays, raw }) => ({ tenorDays, monthlyRatePercent: Number(raw) }))
+    .sort((a, b) => a.tenorDays - b.tenorDays);
   return {
     name: draft.name.trim(),
     description: draft.description.trim() || undefined,
@@ -168,6 +194,7 @@ function buildPayload(draft: ProductDraft) {
     defaultAmountNaira: Number(draft.defaultAmountNaira) > 0 ? Number(draft.defaultAmountNaira) : undefined,
     defaultTenureDays: Number(draft.defaultTenureDays),
     tenureDays: [...draft.tenures].sort((a, b) => a - b),
+    tenorInterestRates,
     interestRatePercent: Number(draft.interestRatePercent),
     interestType: draft.interestType,
     processingFeePercent: Number(draft.processingFeePercent),
@@ -323,6 +350,12 @@ function ProductEditor({
                   patch.defaultTenureDays = selected.sort((a, b) => a - b)[0];
                 }
                 if (selected.length === 0) patch.defaultTenureDays = draft.defaultTenureDays;
+                // Deselecting a tenor also drops its per-tenor monthly rate —
+                // rates may only reference tenors the product still offers.
+                if (draft.tenures.includes(days)) {
+                  const { [days]: _removed, ...restRates } = draft.tenorRates;
+                  patch.tenorRates = restRates;
+                }
                 onDraftChange(patch);
               }}
               className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
@@ -364,7 +397,7 @@ function ProductEditor({
       <div>
         <SectionLabel>Interest</SectionLabel>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <PercentField label="Interest rate" value={draft.interestRatePercent} onChange={(v) => onDraftChange({ interestRatePercent: v })} />
+          <PercentField label="Interest rate" value={draft.interestRatePercent} onChange={(v) => onDraftChange({ interestRatePercent: v })} helpText="Base rate — used when a tenor has no rate below" />
           <div>
             <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Interest type</span>
             <SegmentedOptions value={draft.interestType} options={INTEREST_TYPE_OPTIONS.map(({ value, label }) => ({ value, label }))} onChange={(v) => onDraftChange({ interestType: v })} />
@@ -373,6 +406,70 @@ function ProductEditor({
         </div>
         {errors.interestRatePercent && <p className="velo-error-text">{errors.interestRatePercent}</p>}
       </div>
+
+      {/* Per-tenor MONTHLY interest rates (easimoney style) */}
+      {tenures.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-3.5 dark:border-slate-700 dark:bg-slate-900">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-bold text-velo-900 dark:text-white">Monthly interest rate per tenor</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Charge each tenor its own monthly rate — interest = principal × rate × (tenor ÷ 30). Leave a tenor empty to use the base rate.
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-1.5">
+              <button
+                type="button"
+                onClick={() => onDraftChange({ tenorRates: Object.fromEntries(tenures.map((days) => [days, draft.interestRatePercent || "0"])) })}
+                className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] font-bold text-velo-700 transition hover:border-velo-300 hover:bg-velo-50 dark:border-slate-700 dark:text-velo-300 dark:hover:bg-slate-800"
+              >
+                Fill all with base
+              </button>
+              <button
+                type="button"
+                onClick={() => onDraftChange({ tenorRates: {} })}
+                className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] font-bold text-slate-500 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
+              >
+                Clear all
+              </button>
+            </div>
+          </div>
+          <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {tenures.map((days) => (
+              <div key={days} className="flex items-center gap-2 rounded-lg bg-slate-50 px-2.5 py-2 dark:bg-slate-800/60">
+                <span className="w-16 shrink-0 text-[11px] font-bold text-slate-600 dark:text-slate-300">{days} days</span>
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={draft.tenorRates[days] ?? ""}
+                    onChange={(e) => {
+                      const cleaned = e.target.value.replace(/[^\d.]/g, "");
+                      const firstDot = cleaned.indexOf(".");
+                      const normalized = firstDot >= 0
+                        ? cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "")
+                        : cleaned;
+                      onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: normalized } });
+                    }}
+                    onBlur={(e) => {
+                      const raw = e.target.value.trim();
+                      if (raw === "") { onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: "" } }); return; }
+                      const n = Number(raw);
+                      onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: String(Number.isFinite(n) ? Math.round(n * 100) / 100 : 0) } });
+                    }}
+                    placeholder={`${draft.interestRatePercent || 0} base`}
+                    className="velo-input !py-1.5 !pr-7 text-xs font-semibold"
+                    aria-label={`Monthly interest rate for ${days} days`}
+                  />
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400 select-none">%</span>
+                </div>
+                <span className="w-12 shrink-0 text-right text-[10px] font-medium text-slate-400 dark:text-slate-500">/ month</span>
+              </div>
+            ))}
+          </div>
+          {errors.tenorRates && <p className="velo-error-text mt-1.5">{errors.tenorRates}</p>}
+        </div>
+      )}
 
       {/* Fees */}
       <div>
@@ -671,6 +768,9 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                     <span>Default: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.defaultAmountNaira ? `₦${safeNaira(product.defaultAmountNaira)}` : "—"}</span></span>
                     <span>Interest: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.interestRatePercent}% {String(product.interestType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
                     <span>Tenures: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.tenureDays?.length ? product.tenureDays.map((d) => `${d}d`).join(" · ") : `${product.defaultTenureDays ?? "—"}d default`}</span></span>
+                    {product.tenorInterestRates && product.tenorInterestRates.length > 0 && (
+                      <span>Per-tenor monthly: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.tenorInterestRates.map((r) => `${r.tenorDays}d ${r.monthlyRatePercent}%`).join(" · ")}</span></span>
+                    )}
                     <span>Processing: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.processingFeePercent}%</span></span>
                     <span>Service: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.serviceFeePercent ?? 0}%</span></span>
                     <span>Late fee: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.lateFeePercent}% {String(product.lateFeeType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
