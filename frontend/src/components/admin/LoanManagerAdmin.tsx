@@ -8,7 +8,7 @@ export default function LoanManagerAdmin() {
   useEffect(() => { void load(); }, []);
   async function create() {
     setMessage(""); setError(""); if (!email.trim() || !name.trim() || !phone.trim() || password.length < 12) { setError("Enter name, email, phone, and a password of at least 12 characters."); return; }
-    setBusy(true); try { await adminCreateLoanManager(email.trim(), name.trim(), window.location.origin, phone.trim(), password, permissions); setMessage("Loan manager created with the selected permissions."); setName(""); setEmail(""); setPhone(""); setPassword(""); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to create account"); } finally { setBusy(false); }
+    setBusy(true); try { const createdEmail = email.trim(); const response = await adminCreateLoanManager(createdEmail, name.trim(), window.location.origin, phone.trim(), password, permissions); setMessage(response.notifiedByEmail === false ? `Loan manager created with the selected permissions. Email delivery is not configured — share the login details and sign-in instructions with ${createdEmail} manually.` : `Loan manager created with the selected permissions. An email with the login details and sign-in instructions is on its way to ${createdEmail}.`); setName(""); setEmail(""); setPhone(""); setPassword(""); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to create account"); } finally { setBusy(false); }
   }
   return <div className="max-w-3xl space-y-5">
     <div className="velo-card space-y-4 p-5"><div><h2 className="text-lg font-semibold text-velo-900">Loan Manager Accounts</h2><p className="mt-1 text-sm text-slate-500">Select the back-office areas this manager can access.</p></div>

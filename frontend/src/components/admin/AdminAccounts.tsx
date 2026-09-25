@@ -14,7 +14,7 @@ export default function AdminAccounts() {
     setError(""); setMessage("");
     if (!form.name || !form.email || !form.phone || form.password.length < 12 || !roles.length) { setError("Enter staff details, select a role, and use a password of at least 12 characters."); return; }
     setBusy(true);
-    try { await adminCreateAdministrator(form.email, form.name, form.phone, form.password, roles, permissions); setForm({ name: "", email: "", phone: "", password: "" }); setMessage("Staff account created. OTP verification is required at sign-in."); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to create staff account"); } finally { setBusy(false); }
+    try { const createdEmail = form.email.trim(); const response = await adminCreateAdministrator(form.email, form.name, form.phone, form.password, roles, permissions); setForm({ name: "", email: "", phone: "", password: "" }); setMessage(response.notifiedByEmail === false ? `Staff account created for ${createdEmail}. Email delivery is not configured — share the login details and sign-in instructions with them manually.` : `Staff account created for ${createdEmail}. An email with their login details and sign-in instructions is on the way; OTP verification is required at sign-in.`); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to create staff account"); } finally { setBusy(false); }
   }
   return <div className="space-y-5">
     <div className="velo-card max-w-3xl space-y-4 p-5">

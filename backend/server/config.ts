@@ -7,6 +7,9 @@ const envSchema = z.object({
   API_HOST: z.string().default("0.0.0.0"),
   API_PUBLIC_URL: z.string().default("http://localhost:4000"),
   API_ORIGIN: z.string().default("http://localhost:5173"),
+  // Explicit override for the back-office sign-in link included in the staff
+  // invite email; falls back to `${API_ORIGIN}/admin` when unset.
+  ADMIN_PORTAL_URL: z.string().url().optional(),
   DATABASE_URL: z.string().url().optional(),
   JWT_SECRET: z.string().min(32).optional(),
   JWT_EXPIRES_IN: z.string().default("2h"),

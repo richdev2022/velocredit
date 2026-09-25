@@ -771,12 +771,15 @@ app.post(
   }
 );
 
-app.use(express.json({ limit: "1mb" }));
+// 3 MB JSON envelope: banner uploads carry base64 images (the client
+// compresses to ~100-300 KB, the API caps banner payloads at 2M chars ≈ 1.5 MB
+// binary). Everything else is far below the old 1 MB limit anyway.
+app.use(express.json({ limit: "3mb" }));
 app.use((error: unknown, _req: unknown, res: unknown, next: unknown) => {
   if (typeof next !== "function") return;
   const err = error as { type?: string; message?: string; status?: number; statusCode?: number };
   if (err?.type === "entity.too.large" || /PayloadTooLarge|payload too large/i.test(err?.message ?? "")) {
-    (res as any).status?.(413)?.json?.({ ok: false, error: "Payload too large", maxBytes: err?.status === 413 ? "configured" : "1048576" });
+    (res as any).status?.(413)?.json?.({ ok: false, error: "Payload too large (3 MB JSON limit)" });
     return;
   }
   if (err && (err.status === 400 || err.statusCode === 400) && /Unexpected token|invalid json|JSON\.parse/i.test(err?.message ?? "")) {
