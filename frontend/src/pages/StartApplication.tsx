@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
-import { config, getLoanProgram, validateConfig } from "../utils/config";
+import { config, getLoanProgram, validateConfig, selectableTenures } from "../utils/config";
 import { calculateMonthlyInterest, calculateLoan, formatNaira, formatDateLabel, getSuggestedLoanAmounts } from "../utils/loanCalculator";
 import { resolveFeesForTenure } from "../utils/config";
 
@@ -52,6 +52,10 @@ export default function StartApplication() {
   const [testimonialIndex, setTestimonialIndex] = useState(0);
   const [openFaq, setOpenFaq] = useState(0);
   const personalProgram = getLoanProgram("PERSONAL");
+  // The landing calculator only offers SELECTABLE tenors — locked tenors are
+  // an in-wizard teaser (rendered by the loan request screen), not a
+  // marketing estimation option.
+  const selectableTenuresList = selectableTenures(personalProgram.tenures);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -67,7 +71,7 @@ export default function StartApplication() {
   const [loanAmount, setLoanAmount] = useState(personalProgram.loanLimits.defaultAmount);
   const [amountInput, setAmountInput] = useState(String(personalProgram.loanLimits.defaultAmount));
   const [amountError, setAmountError] = useState("");
-  const [selectedTenure, setSelectedTenure] = useState(personalProgram.tenures[0]?.value || 30);
+  const [selectedTenure, setSelectedTenure] = useState(personalProgram.tenures.find((t) => t.status !== "LOCKED")?.value || 30);
 
   const calculation = useMemo(() => {
     return calculateLoan(loanAmount, selectedTenure, { loanType: "PERSONAL" });
@@ -116,9 +120,9 @@ export default function StartApplication() {
 
   /* Explicit responsive grids for tenures (JIT-safe, no dynamic class names) */
   const tenureGridClass =
-    personalProgram.tenures.length <= 3 ? "grid-cols-3"
-    : personalProgram.tenures.length <= 4 ? "grid-cols-2 sm:grid-cols-4"
-    : personalProgram.tenures.length === 5 ? "grid-cols-3 sm:grid-cols-5"
+    selectableTenuresList.length <= 3 ? "grid-cols-3"
+    : selectableTenuresList.length <= 4 ? "grid-cols-2 sm:grid-cols-4"
+    : selectableTenuresList.length === 5 ? "grid-cols-3 sm:grid-cols-5"
     : "grid-cols-3 sm:grid-cols-6";
 
   return (
@@ -572,7 +576,7 @@ export default function StartApplication() {
                   <div className="flex-1 h-px bg-slate-100 dark:bg-slate-800" />
                 </div>
                 <div className={`grid gap-2.5 ${tenureGridClass}`}>
-                  {personalProgram.tenures.map((t) => {
+                  {selectableTenuresList.map((t) => {
                     const active = selectedTenure === t.value;
                     return (
                       <button
@@ -718,7 +722,7 @@ export default function StartApplication() {
                   {[
                     "Personal loans up to ₦5,000,000",
                     "Business loans tailored to your revenue",
-                    `Flexible tenors from ${personalProgram.tenures[0]?.value || 30} to ${personalProgram.tenures[personalProgram.tenures.length - 1]?.value || 180} days`,
+                    `Flexible tenors from ${selectableTenuresList[0]?.value || 30} to ${selectableTenuresList[selectableTenuresList.length - 1]?.value || 180} days`,
                     "No hidden fees — see everything upfront",
                     "Fast approval & disbursement to your bank",
                   ].map((item) => (

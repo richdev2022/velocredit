@@ -107,7 +107,9 @@ const tenureDays = (row: Row): number[] | undefined => {
 
 /**
  * Parse the tenor_interest_rates JSONB column into a clean per-tenor monthly
- * rate list (deduped by tenorDays, ascending, invalid entries dropped).
+ * rate list (deduped by tenorDays, ascending, invalid entries dropped,
+ * per-tenor availability status preserved — invalid statuses dropped,
+ * missing status = AVAILABLE downstream).
  */
 const tenorInterestRates = (row: Row): LoanProduct["tenorInterestRates"] => {
   const raw = row["tenor_interest_rates"];
@@ -116,7 +118,7 @@ const tenorInterestRates = (row: Row): LoanProduct["tenorInterestRates"] => {
     try { parsed = JSON.parse(raw); } catch { parsed = undefined; }
   }
   if (!Array.isArray(parsed)) return undefined;
-  const byTenor = new Map<number, number>();
+  const byTenor = new Map<number, NonNullable<LoanProduct["tenorInterestRates"]>[number]>();
   for (const entry of parsed) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
@@ -124,12 +126,13 @@ const tenorInterestRates = (row: Row): LoanProduct["tenorInterestRates"] => {
     const monthlyRatePercent = Number(record.monthlyRatePercent);
     if (!Number.isFinite(tenorDays) || tenorDays <= 0) continue;
     if (!Number.isFinite(monthlyRatePercent) || monthlyRatePercent < 0) continue;
-    byTenor.set(tenorDays, monthlyRatePercent);
+    const status = typeof record.status === "string" && ["AVAILABLE", "LOCKED", "HOT"].includes(record.status)
+      ? (record.status as "AVAILABLE" | "LOCKED" | "HOT")
+      : undefined;
+    byTenor.set(tenorDays, status ? { tenorDays, monthlyRatePercent, status } : { tenorDays, monthlyRatePercent });
   }
   if (byTenor.size === 0) return undefined;
-  return [...byTenor.entries()]
-    .map(([tenorDays, monthlyRatePercent]) => ({ tenorDays, monthlyRatePercent }))
-    .sort((a, b) => a.tenorDays - b.tenorDays);
+  return [...byTenor.values()].sort((a, b) => a.tenorDays - b.tenorDays);
 };
 
 export function mapLoanProductRow(row: Row): LoanProduct {

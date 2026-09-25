@@ -15,12 +15,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import type { Resolver } from "react-hook-form";
 import LoanAmountSelector from "../components/LoanAmountSelector";
 import LoanSummary from "../components/LoanSummary";
 import SectionShell from "../components/SectionShell";
 import { useApplication } from "../context/ApplicationContext";
 import { type LoanRequestForm } from "../utils/validation";
-import { getLoanProgram, applyLoanProduct, applyLoanProducts } from "../utils/config";
+import { getLoanProgram, applyLoanProduct, applyLoanProducts, selectableTenures, tenorDurationLabel } from "../utils/config";
 import { loanRequestSchemaFor } from "../utils/validation";
 import { clampTenure } from "../utils/loanCalculator";
 import { getLoanProducts, type LoanProduct } from "../services/apiClient";
@@ -86,12 +87,14 @@ export default function LoanRequestSection() {
   );
 
   // Preselect the product's default tenure for fresh applications (the saved
-  // value always wins once the customer has picked one).
+  // value always wins once the customer has picked one). Clamped against the
+  // SELECTABLE tenors only — a default pointing at a locked tenor falls back
+  // to the first tenor the customer can actually choose.
   useEffect(() => {
     const defaultTenure = appliedProduct?.defaultTenureDays;
     if (!defaultTenure) return;
     if (application?.loanRequest.tenure) return;
-    const resolved = clampTenure(defaultTenure, program.tenures);
+    const resolved = clampTenure(defaultTenure, selectableTenures(program.tenures));
     setValue("tenure", resolved, { shouldDirty: false, shouldValidate: false });
     patchLoanRequest({ tenure: resolved });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -104,7 +107,14 @@ export default function LoanRequestSection() {
     setValue,
     formState: { errors },
   } = useForm<LoanRequestForm>({
-    resolver: zodResolver(loanRequestSchemaFor(program.loanLimits, program.tenures)),
+    // Built AT VALIDATION TIME from the CURRENT program config: the product
+    // fetch lands AFTER mount, and a resolver captured at mount would validate
+    // against stale limits/tenors (rejecting e.g. newly seeded 91/360-day
+    // tenors). RHF reads the latest resolver on every render.
+    resolver: (async (values, context, options) => {
+      const schema = loanRequestSchemaFor(program.loanLimits, selectableTenures(program.tenures));
+      return zodResolver(schema)(values, context, options);
+    }) as Resolver<LoanRequestForm>,
     // FREE TYPING CONTRACT: the amount input accepts ANY number the user types
     // ("200", "45,000", clearing to retype…). Nothing is rejected mid-keystroke.
     // Validation runs on submit — a value below the product minimum or above
@@ -248,18 +258,38 @@ export default function LoanRequestSection() {
 
             <div>
               <label className="velo-label">Repayment Tenure <span className="text-red-500">*</span></label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                 {program.tenures.map((t) => {
-                  const active = tenureWatch === t.value;
+                  const locked = t.status === "LOCKED";
+                  const hot = t.status === "HOT";
+                  const active = tenureWatch === t.value && !locked;
                   return (
                     <button
                       key={t.value}
                       type="button"
+                      disabled={locked}
+                      aria-disabled={locked}
                       onClick={() => handleTenureChange(t.value)}
-                      className={`px-3 py-3 rounded-xl border-2 text-sm font-semibold transition
-                        ${active ? "border-velo-500 bg-velo-50 text-velo-700 dark:border-velo-500 dark:bg-velo-900/30 dark:text-velo-300" : "border-slate-200 bg-white text-slate-600 hover:border-velo-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-velo-700"}`}
+                      className={`relative px-3 py-2.5 rounded-xl border-2 text-sm font-semibold transition
+                        ${locked
+                          ? "border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-500"
+                          : active
+                            ? "border-velo-500 bg-velo-50 text-velo-700 dark:border-velo-500 dark:bg-velo-900/30 dark:text-velo-300"
+                            : "border-slate-200 bg-white text-slate-600 hover:border-velo-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-velo-700"}
+                        }`}
                     >
-                      {t.label}
+                      {hot && !locked && (
+                        <span className="absolute -top-2 right-2 rounded-full bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow" aria-label="Hot tenor">Hot</span>
+                      )}
+                      <span className="flex items-center justify-center gap-1.5">
+                        {locked && (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2" stroke="currentColor" strokeWidth="2" /><path d="M8 10V7a4 4 0 1 1 8 0v3" stroke="currentColor" strokeWidth="2" /></svg>
+                        )}
+                        {t.label}
+                      </span>
+                      <span className="mt-0.5 block text-[10px] font-medium tracking-wide text-slate-400 dark:text-slate-500">
+                        {locked ? "Locked" : tenorDurationLabel(t.value)}
+                      </span>
                     </button>
                   );
                 })}
@@ -272,7 +302,11 @@ export default function LoanRequestSection() {
                 const tenorRate = tenureWatch
                   ? program.tenureFees?.[Number(tenureWatch)]?.interest?.value
                   : undefined;
-                if (tenorRate === undefined || tenureWatch === undefined) return null;
+                const selectedTenor = program.tenures.find((t) => t.value === Number(tenureWatch));
+                // Locked tenors show NO pricing ("Not displayed") — and they
+                // cannot be selected in the first place; the guard is defense
+                // against a stale saved tenure.
+                if (tenorRate === undefined || tenureWatch === undefined || selectedTenor?.status === "LOCKED") return null;
                 return (
                   <p className="velo-helper">
                     This tenor is priced at <span className="font-semibold text-velo-700 dark:text-velo-300">{tenorRate}% per month</span> ({tenorRate}% × {(Number(tenureWatch) / 30).toString()} month{(Number(tenureWatch) / 30) === 1 ? "" : "s"}).

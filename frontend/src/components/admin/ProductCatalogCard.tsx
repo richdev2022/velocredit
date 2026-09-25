@@ -8,6 +8,8 @@
 //   amounts    — min, max AND default application amount
 //   tenures    — the exact tenor list borrowers can pick from + default tenor
 //   interest   — rate + type (SIMPLE_FLAT / REDUCING_BALANCE / ANNUALIZED)
+//                PLUS the per-tenor MONTHLY interest matrix with per-tenor
+//                availability (Available / Locked / Hot, easimoney style)
 //   fees       — processing fee, service fee, late fee + late fee type
 //   rules      — grace period, collateral shown / required, active state
 //
@@ -23,7 +25,7 @@ import {
   adminPatchLoanProduct,
   type LoanProduct,
 } from "../../services/apiClient";
-import { safeNaira } from "../../utils/config";
+import { safeNaira, tenorDurationLabel } from "../../utils/config";
 import { formatNaira } from "../../utils/loanCalculator";
 import Icon from "../Icon";
 import { Pill, Toggle, NairaField, PanelCard } from "./settingsUI";
@@ -31,6 +33,7 @@ import { Pill, Toggle, NairaField, PanelCard } from "./settingsUI";
 type InterestType = LoanProduct["interestType"];
 type LateFeeType = LoanProduct["lateFeeType"];
 type ProgramType = NonNullable<LoanProduct["programType"]>;
+type TenorStatus = NonNullable<LoanProduct["tenorInterestRates"]>[number]["status"];
 
 const INTEREST_TYPE_OPTIONS: Array<{ value: InterestType; label: string; hint: string }> = [
   { value: "SIMPLE_FLAT", label: "Simple flat", hint: "Percent of the principal per 30-day month, prorated over the tenure." },
@@ -50,7 +53,20 @@ const PROGRAM_TYPE_OPTIONS: Array<{ value: ProgramType; label: string; hint: str
   { value: "BOTH", label: "Both flows", hint: "One product serves Personal AND Business applicants." },
 ];
 
-const TENURE_PRESETS = [7, 14, 30, 60, 90, 120, 180, 270, 365];
+const TENURE_PRESETS = [7, 14, 30, 60, 90, 91, 120, 180, 270, 360, 365];
+
+const TENOR_STATUS_OPTIONS: Array<{ value: Exclude<TenorStatus, undefined>; label: string; hint: string }> = [
+  { value: "AVAILABLE", label: "Available", hint: "Selectable — rate shown." },
+  { value: "LOCKED", label: "Locked", hint: "Visible teaser — NOT selectable, rate hidden." },
+  { value: "HOT", label: "Hot", hint: "Selectable with a Hot badge (marketing highlight)." },
+];
+
+/** The owner-seeded default pricing table (easimoney configuration). */
+const EASIMONEY_PRESET = {
+  tenures: [30, 60, 91, 180, 360],
+  tenorRates: { 30: "18.9", 60: "17.1", 91: "15.9", 180: "10.5", 360: "8.7" } as Record<number, string>,
+  tenorStatuses: { 30: "AVAILABLE", 60: "AVAILABLE", 91: "LOCKED", 180: "AVAILABLE", 360: "HOT" } as Record<number, TenorStatus>,
+};
 
 interface ProductDraft {
   name: string;
@@ -65,6 +81,8 @@ interface ProductDraft {
   interestType: InterestType;
   /** Per-tenor MONTHLY interest rates (easimoney style): tenor days -> "" (unset, base rate) or rate string. */
   tenorRates: Record<number, string>;
+  /** Per-tenor availability (easimoney style): tenor days -> AVAILABLE / LOCKED / HOT. */
+  tenorStatuses: Record<number, TenorStatus>;
   processingFeePercent: string;
   serviceFeePercent: string;
   lateFeePercent: string;
@@ -81,11 +99,13 @@ function draftFromProduct(product: LoanProduct): ProductDraft {
     : [];
   const defaultTenure = Number(product.defaultTenureDays ?? 30) || 30;
   const tenorRates: Record<number, string> = {};
+  const tenorStatuses: Record<number, TenorStatus> = {};
   if (Array.isArray(product.tenorInterestRates)) {
     for (const entry of product.tenorInterestRates) {
       const days = Number(entry?.tenorDays);
       const rate = Number(entry?.monthlyRatePercent);
       if (Number.isFinite(days) && days > 0 && Number.isFinite(rate) && rate >= 0) tenorRates[days] = String(rate);
+      tenorStatuses[days] = (entry?.status ?? "AVAILABLE") as TenorStatus;
     }
   }
   return {
@@ -100,6 +120,7 @@ function draftFromProduct(product: LoanProduct): ProductDraft {
     interestRatePercent: String(product.interestRatePercent ?? 0),
     interestType: product.interestType ?? "SIMPLE_FLAT",
     tenorRates,
+    tenorStatuses,
     processingFeePercent: String(product.processingFeePercent ?? 0),
     serviceFeePercent: String(product.serviceFeePercent ?? 0),
     lateFeePercent: String(product.lateFeePercent ?? 0),
@@ -119,12 +140,13 @@ function emptyDraft(): ProductDraft {
     minAmountNaira: 100000,
     maxAmountNaira: 30000000,
     defaultAmountNaira: 100000,
-    tenures: [30, 60, 90, 180],
+    tenures: [...EASIMONEY_PRESET.tenures],
     defaultTenureDays: 30,
-    interestRatePercent: "5",
+    interestRatePercent: "18.9",
     interestType: "SIMPLE_FLAT",
-    // easimoney-style default: every tenor starts at the same 5% monthly rate.
-    tenorRates: { 30: "5", 60: "5", 90: "5", 180: "5" },
+    // easimoney default pricing table (owner-seeded configuration).
+    tenorRates: { ...EASIMONEY_PRESET.tenorRates },
+    tenorStatuses: { ...EASIMONEY_PRESET.tenorStatuses },
     processingFeePercent: "2",
     serviceFeePercent: "0",
     lateFeePercent: "1",
@@ -155,6 +177,8 @@ function validateDraft(draft: ProductDraft): Record<string, string> {
     errors.defaultTenureDays = "Default tenure must be at least 1 day.";
   } else if (draft.tenures.length > 0 && !draft.tenures.includes(Number(draft.defaultTenureDays))) {
     errors.defaultTenureDays = "Default tenure must be one of the selected tenures.";
+  } else if (draft.tenures.length > 0 && (draft.tenorStatuses[Number(draft.defaultTenureDays)] ?? "AVAILABLE") === "LOCKED") {
+    errors.defaultTenureDays = "Default tenure is LOCKED — borrowers can never select it. Pick an available tenor or unlock this one.";
   }
   const percentFields: Array<[string, string]> = [
     ["interestRatePercent", "Interest rate"],
@@ -174,16 +198,26 @@ function validateDraft(draft: ProductDraft): Record<string, string> {
     if (!Number.isFinite(value) || value < 0) errors.tenorRates = `Monthly rate for ${days} days must be a valid number.`;
     else if (value > 100) errors.tenorRates = `Monthly rate for ${days} days cannot exceed 100%.`;
   }
+  // A LOCKED tenor MUST carry its own rate: with no entry the tenor would
+  // silently fall back to AVAILABLE + base-rate pricing for borrowers.
+  for (const [days, status] of Object.entries(draft.tenorStatuses)) {
+    if (status !== "LOCKED") continue;
+    const raw = draft.tenorRates[Number(days)];
+    if (raw === undefined || String(raw).trim() === "") {
+      errors.tenorRates = `Set a monthly rate for the locked ${days}-day tenor — it is hidden while locked but prices the tenor once unlocked.`;
+    }
+  }
   if (!Number.isFinite(Number(draft.gracePeriodDays)) || Number(draft.gracePeriodDays) < 0) errors.gracePeriodDays = "Grace period cannot be negative.";
   return errors;
 }
 
 function buildPayload(draft: ProductDraft) {
-  // Per-tenor monthly rates: keep only filled entries, sorted by tenor.
+  // Per-tenor monthly rates + availability: keep only filled rate entries,
+  // sorted by tenor; the status rides on every entry (default AVAILABLE).
   const tenorInterestRates = Object.entries(draft.tenorRates)
-    .map(([days, raw]) => ({ tenorDays: Number(days), raw }))
+    .map(([days, raw]) => ({ tenorDays: Number(days), raw, status: (draft.tenorStatuses[Number(days)] ?? "AVAILABLE") as TenorStatus }))
     .filter(({ tenorDays, raw }) => Number.isFinite(tenorDays) && tenorDays > 0 && raw !== undefined && raw.trim() !== "")
-    .map(({ tenorDays, raw }) => ({ tenorDays, monthlyRatePercent: Number(raw) }))
+    .map(({ tenorDays, raw, status }) => ({ tenorDays, monthlyRatePercent: Number(raw), status }))
     .sort((a, b) => a.tenorDays - b.tenorDays);
   return {
     name: draft.name.trim(),
@@ -277,6 +311,51 @@ function ProductEditor({
   const interestHint = INTEREST_TYPE_OPTIONS.find((o) => o.value === draft.interestType)?.hint;
   const programHint = PROGRAM_TYPE_OPTIONS.find((o) => o.value === draft.programType)?.hint;
   const tenures = [...draft.tenures].sort((a, b) => a - b);
+  const [customTenorInput, setCustomTenorInput] = useState("");
+  const [customTenorError, setCustomTenorError] = useState("");
+
+  /** Remove a tenor AND its rate/status entries; keep the default tenure valid. */
+  function removeTenor(days: number) {
+    const selected = draft.tenures.filter((t) => t !== days);
+    const { [days]: _rate, ...restRates } = draft.tenorRates;
+    const { [days]: _status, ...restStatuses } = draft.tenorStatuses;
+    onDraftChange({
+      tenures: selected,
+      tenorRates: restRates,
+      tenorStatuses: restStatuses,
+      // Keep the default tenure valid as the list changes.
+      ...(selected.length > 0 && !selected.includes(Number(draft.defaultTenureDays))
+        ? { defaultTenureDays: [...selected].sort((a, b) => a - b)[0] }
+        : {}),
+    });
+  }
+
+  /** Add a tenor (1–3650 days, deduped); its rate starts at the base rate. */
+  function addTenor(days: number) {
+    const value = Math.trunc(Number(days));
+    if (!Number.isFinite(value) || value < 1 || value > 3650) {
+      setCustomTenorError("Tenor must be between 1 and 3650 days.");
+      return;
+    }
+    if (draft.tenures.includes(value)) {
+      setCustomTenorError(`${value} days is already on the tenor list.`);
+      return;
+    }
+    setCustomTenorError("");
+    setCustomTenorInput("");
+    onDraftChange({
+      tenures: [...draft.tenures, value].sort((a, b) => a - b),
+      tenorRates: { ...draft.tenorRates, [value]: draft.interestRatePercent || "" },
+    });
+  }
+
+  function commitCustomTenor() {
+    if (customTenorInput.trim() === "") {
+      setCustomTenorError("Enter a tenor in days first.");
+      return;
+    }
+    addTenor(Number(customTenorInput));
+  }
   return (
     <div className="space-y-4 rounded-xl border border-velo-100 bg-velo-50/40 p-4 dark:border-velo-800 dark:bg-velo-900/10">
       {/* Identity */}
@@ -332,7 +411,7 @@ function ProductEditor({
         </div>
       </div>
 
-      {/* Tenures */}
+      {/* Tenures + custom tenor */}
       <div>
         <SectionLabel>Repayment tenures</SectionLabel>
         <div className="flex flex-wrap gap-1.5">
@@ -340,24 +419,7 @@ function ProductEditor({
             <button
               key={days}
               type="button"
-              onClick={() => {
-                const selected = draft.tenures.includes(days)
-                  ? draft.tenures.filter((t) => t !== days)
-                  : [...draft.tenures, days];
-                const patch: Partial<ProductDraft> = { tenures: selected };
-                // Keep the default tenure valid as the list changes.
-                if (selected.length > 0 && !selected.includes(Number(draft.defaultTenureDays))) {
-                  patch.defaultTenureDays = selected.sort((a, b) => a - b)[0];
-                }
-                if (selected.length === 0) patch.defaultTenureDays = draft.defaultTenureDays;
-                // Deselecting a tenor also drops its per-tenor monthly rate —
-                // rates may only reference tenors the product still offers.
-                if (draft.tenures.includes(days)) {
-                  const { [days]: _removed, ...restRates } = draft.tenorRates;
-                  patch.tenorRates = restRates;
-                }
-                onDraftChange(patch);
-              }}
+              onClick={() => (draft.tenures.includes(days) ? removeTenor(days) : addTenor(days))}
               className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
                 draft.tenures.includes(days)
                   ? "border-velo-500 bg-velo-500 text-white"
@@ -367,7 +429,36 @@ function ProductEditor({
               {days}d
             </button>
           ))}
+          <span className="mx-1 hidden w-px self-stretch bg-slate-200 dark:bg-slate-700 sm:block" />
+          <div className="flex items-center gap-1.5">
+            <input
+              type="text"
+              inputMode="numeric"
+              value={customTenorInput}
+              onChange={(e) => {
+                setCustomTenorInput(e.target.value.replace(/\D/g, ""));
+                setCustomTenorError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitCustomTenor();
+                }
+              }}
+              placeholder="Custom days"
+              aria-label="Custom tenor in days"
+              className="velo-input !w-28 !py-1 text-[11px]"
+            />
+            <button
+              type="button"
+              onClick={commitCustomTenor}
+              className="rounded-full border border-velo-300 bg-white px-2.5 py-1 text-[10px] font-bold text-velo-700 transition hover:bg-velo-50 dark:border-velo-700 dark:bg-slate-900 dark:text-velo-300"
+            >
+              + Add
+            </button>
+          </div>
         </div>
+        {customTenorError && <p className="velo-error-text mt-1">{customTenorError}</p>}
         {errors.tenures && <p className="velo-error-text mt-1">{errors.tenures}</p>}
         {tenures.length > 0 && (
           <div className="mt-2.5">
@@ -407,17 +498,29 @@ function ProductEditor({
         {errors.interestRatePercent && <p className="velo-error-text">{errors.interestRatePercent}</p>}
       </div>
 
-      {/* Per-tenor MONTHLY interest rates (easimoney style) */}
+      {/* Per-tenor MONTHLY interest rates + availability (easimoney style) */}
       {tenures.length > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white p-3.5 dark:border-slate-700 dark:bg-slate-900">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-xs font-bold text-velo-900 dark:text-white">Monthly interest rate per tenor</p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Charge each tenor its own monthly rate — interest = principal × rate × (tenor ÷ 30). Leave a tenor empty to use the base rate.
+                Interest = principal × rate × (tenor ÷ 30). Leave a rate empty to use the base rate. Locked tenors stay visible to borrowers but cannot be selected and their rate is never shown.
               </p>
             </div>
-            <div className="flex shrink-0 gap-1.5">
+            <div className="flex shrink-0 flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => onDraftChange({
+                  tenures: [...EASIMONEY_PRESET.tenures],
+                  tenorRates: { ...EASIMONEY_PRESET.tenorRates },
+                  tenorStatuses: { ...EASIMONEY_PRESET.tenorStatuses },
+                  ...(!EASIMONEY_PRESET.tenures.includes(Number(draft.defaultTenureDays)) ? { defaultTenureDays: 30 } : {}),
+                })}
+                className="rounded-lg border border-velo-300 bg-velo-50 px-2.5 py-1.5 text-[10px] font-bold text-velo-700 transition hover:bg-velo-100 dark:border-velo-700 dark:bg-velo-900/40 dark:text-velo-200 dark:hover:bg-velo-900/70"
+              >
+                Load easimoney default
+              </button>
               <button
                 type="button"
                 onClick={() => onDraftChange({ tenorRates: Object.fromEntries(tenures.map((days) => [days, draft.interestRatePercent || "0"])) })}
@@ -427,45 +530,99 @@ function ProductEditor({
               </button>
               <button
                 type="button"
-                onClick={() => onDraftChange({ tenorRates: {} })}
+                onClick={() => onDraftChange({ tenorRates: {}, tenorStatuses: Object.fromEntries(tenures.map((days) => [days, "AVAILABLE"])) as Record<number, TenorStatus> })}
                 className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] font-bold text-slate-500 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
               >
                 Clear all
               </button>
             </div>
           </div>
-          <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {tenures.map((days) => (
-              <div key={days} className="flex items-center gap-2 rounded-lg bg-slate-50 px-2.5 py-2 dark:bg-slate-800/60">
-                <span className="w-16 shrink-0 text-[11px] font-bold text-slate-600 dark:text-slate-300">{days} days</span>
-                <div className="relative flex-1">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={draft.tenorRates[days] ?? ""}
-                    onChange={(e) => {
-                      const cleaned = e.target.value.replace(/[^\d.]/g, "");
-                      const firstDot = cleaned.indexOf(".");
-                      const normalized = firstDot >= 0
-                        ? cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "")
-                        : cleaned;
-                      onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: normalized } });
-                    }}
-                    onBlur={(e) => {
-                      const raw = e.target.value.trim();
-                      if (raw === "") { onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: "" } }); return; }
-                      const n = Number(raw);
-                      onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: String(Number.isFinite(n) ? Math.round(n * 100) / 100 : 0) } });
-                    }}
-                    placeholder={`${draft.interestRatePercent || 0} base`}
-                    className="velo-input !py-1.5 !pr-7 text-xs font-semibold"
-                    aria-label={`Monthly interest rate for ${days} days`}
-                  />
-                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400 select-none">%</span>
-                </div>
-                <span className="w-12 shrink-0 text-right text-[10px] font-medium text-slate-400 dark:text-slate-500">/ month</span>
-              </div>
-            ))}
+          <div className="mt-2.5 overflow-x-auto">
+            <table className="w-full min-w-[540px] text-left">
+              <thead>
+                <tr className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                  <th className="py-1.5 pr-3">Tenure</th>
+                  <th className="py-1.5 pr-3">Duration</th>
+                  <th className="py-1.5 pr-3">Monthly interest</th>
+                  <th className="py-1.5 pr-3">Status</th>
+                  <th className="py-1.5 text-right">Remove</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tenures.map((days) => {
+                  const status = (draft.tenorStatuses[days] ?? "AVAILABLE") as TenorStatus;
+                  const statusHint = TENOR_STATUS_OPTIONS.find((o) => o.value === status)?.hint;
+                  const isDefaultTenor = Number(draft.defaultTenureDays) === days;
+                  return (
+                    <tr key={days} className="border-t border-slate-100 align-top dark:border-slate-800">
+                      <td className="py-2 pr-3">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-xs font-bold text-slate-600 dark:text-slate-300">{days} Days</span>
+                          {isDefaultTenor && (
+                            <span className="rounded-full bg-velo-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-velo-700 dark:bg-velo-900/60 dark:text-velo-200">Default</span>
+                          )}
+                          {status === "HOT" && (
+                            <span className="rounded-full bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">Hot</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 text-xs text-slate-500 dark:text-slate-400">{tenorDurationLabel(days)}</td>
+                      <td className="py-2 pr-3">
+                        <div className="relative w-24">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={draft.tenorRates[days] ?? ""}
+                            onChange={(e) => {
+                              const cleaned = e.target.value.replace(/[^\d.]/g, "");
+                              const firstDot = cleaned.indexOf(".");
+                              const normalized = firstDot >= 0
+                                ? cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "")
+                                : cleaned;
+                              onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: normalized } });
+                            }}
+                            onBlur={(e) => {
+                              const raw = e.target.value.trim();
+                              if (raw === "") { onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: "" } }); return; }
+                              const n = Number(raw);
+                              onDraftChange({ tenorRates: { ...draft.tenorRates, [days]: String(Number.isFinite(n) ? Math.round(n * 100) / 100 : 0) } });
+                            }}
+                            placeholder={`${draft.interestRatePercent || 0} base`}
+                            className="velo-input !py-1.5 !pr-7 text-xs font-semibold"
+                            aria-label={`Monthly interest rate for ${days} days`}
+                          />
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400 select-none">%</span>
+                        </div>
+                        <p className="mt-1 text-[10px] font-medium text-slate-400 dark:text-slate-500">per month</p>
+                      </td>
+                      <td className="py-2 pr-3">
+                        <select
+                          value={status}
+                          onChange={(e) => onDraftChange({ tenorStatuses: { ...draft.tenorStatuses, [days]: e.target.value as TenorStatus } })}
+                          className="velo-input !py-1.5 text-xs font-semibold"
+                          aria-label={`Availability for ${days} days`}
+                        >
+                          {TENOR_STATUS_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                        <p className="mt-1 max-w-[200px] text-[10px] text-slate-400 dark:text-slate-500">{statusHint}</p>
+                      </td>
+                      <td className="py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => removeTenor(days)}
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:hover:border-red-900 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                          aria-label={`Remove the ${days}-day tenor`}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
           {errors.tenorRates && <p className="velo-error-text mt-1.5">{errors.tenorRates}</p>}
         </div>
@@ -769,7 +926,18 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                     <span>Interest: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.interestRatePercent}% {String(product.interestType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
                     <span>Tenures: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.tenureDays?.length ? product.tenureDays.map((d) => `${d}d`).join(" · ") : `${product.defaultTenureDays ?? "—"}d default`}</span></span>
                     {product.tenorInterestRates && product.tenorInterestRates.length > 0 && (
-                      <span>Per-tenor monthly: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.tenorInterestRates.map((r) => `${r.tenorDays}d ${r.monthlyRatePercent}%`).join(" · ")}</span></span>
+                      <span>
+                        Per-tenor monthly:{" "}
+                        <span className="font-semibold text-slate-700 dark:text-slate-200">
+                          {product.tenorInterestRates
+                            .map((r) =>
+                              r.status === "LOCKED"
+                                ? `${r.tenorDays}d locked`
+                                : `${r.tenorDays}d ${r.monthlyRatePercent}%${r.status === "HOT" ? " (Hot)" : ""}`
+                            )
+                            .join(" · ")}
+                        </span>
+                      </span>
                     )}
                     <span>Processing: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.processingFeePercent}%</span></span>
                     <span>Service: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.serviceFeePercent ?? 0}%</span></span>

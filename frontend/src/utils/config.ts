@@ -221,6 +221,26 @@ export function resolveFeesForTenure(
   };
 }
 
+/**
+ * Human duration label for a tenor in days, easimoney style:
+ * 30 -> "1 Month", 60 -> "2 Months", 91 -> "3 Months", 180 -> "6 Months",
+ * 360 -> "12 Months". Sub-month tenors get "< 1 Month".
+ */
+export function tenorDurationLabel(tenorDays: number): string {
+  const months = Math.round(Number(tenorDays) / 30);
+  if (!Number.isFinite(months) || months < 1) return "< 1 Month";
+  return months === 1 ? "1 Month" : `${months} Months`;
+}
+
+/**
+ * The tenors a borrower may actually SELECT: everything except LOCKED rows.
+ * Locked tenors stay in program.tenures (the wizard renders them disabled as
+ * an easimoney-style teaser); validation + defaults must use THIS list.
+ */
+export function selectableTenures(tenures: TenureOption[]): TenureOption[] {
+  return (tenures ?? []).filter((t) => t?.status !== "LOCKED");
+}
+
 function buildTenures(): TenureOption[] {
   const raw = getStr("VITE_LOAN_TENURES", "30,60,90,180");
   return raw
@@ -427,14 +447,29 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
   const serviceFee = Number(product.serviceFeePercent);
   const lateFee = Number(product.lateFeePercent);
   const interestType = product.interestType ?? "SIMPLE_FLAT";
+  // Per-tenor availability statuses (easimoney AVAILABLE/LOCKED/HOT) keyed by
+  // tenor days — missing entry = AVAILABLE.
+  const tenorStatusByTenor: Record<number, "AVAILABLE" | "LOCKED" | "HOT"> = {};
+  if (Array.isArray(product.tenorInterestRates)) {
+    for (const entry of product.tenorInterestRates) {
+      const tenorDays = Math.trunc(Number(entry?.tenorDays));
+      if (!Number.isFinite(tenorDays) || tenorDays <= 0) continue;
+      tenorStatusByTenor[tenorDays] = entry.status === "LOCKED" || entry.status === "HOT" ? entry.status : "AVAILABLE";
+    }
+  }
   // Allowed tenor list lives ON the product now — fall back to the configured
-  // program list only for legacy products without one.
+  // program list only for legacy products without one. Locked tenors stay in
+  // the list (rendered disabled by the wizard); they carry their status.
   const productTenures: TenureOption[] | null = Array.isArray(product.tenureDays) && product.tenureDays.length > 0
     ? product.tenureDays
       .map((days) => Math.trunc(Number(days)))
       .filter((days) => Number.isFinite(days) && days > 0)
       .sort((a, b) => a - b)
-      .map((days) => ({ value: days, label: `${days} Days` }))
+      .map((days) => ({
+        value: days,
+        label: `${days} Days`,
+        ...(tenorStatusByTenor[days] && tenorStatusByTenor[days] !== "AVAILABLE" ? { status: tenorStatusByTenor[days] } : {}),
+      }))
     : null;
   const productDefaultAmount = Number(product.defaultAmountNaira);
   const limits = {
@@ -474,11 +509,25 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
     minAmountNaira: min,
     maxAmountNaira: max,
     defaultAmountNaira: limits.defaultAmount,
-    defaultTenureDays: product.defaultTenureDays,
+    // Locked-aware default tenure: a default that points at a LOCKED tenor
+    // falls back to the first selectable one (locked tenors cannot be picked).
+    defaultTenureDays: (() => {
+      const raw = Number(product.defaultTenureDays);
+      if (!Number.isFinite(raw) || raw <= 0) return product.defaultTenureDays;
+      const selectable = (productTenures ?? program.tenures).filter((t) => t.status !== "LOCKED");
+      if (selectable.length === 0) return product.defaultTenureDays;
+      return selectable.some((t) => t.value === raw) ? raw : selectable[0].value;
+    })(),
     tenureDays: productTenures ? productTenures.map((t) => t.value) : undefined,
     tenorInterestRates: Object.keys(tenorFees).length > 0
       ? Object.entries(tenorFees)
-        .map(([days, fee]) => ({ tenorDays: Number(days), monthlyRatePercent: Number(fee.interest?.value ?? 0) }))
+        .map(([days, fee]) => ({
+          tenorDays: Number(days),
+          monthlyRatePercent: Number(fee.interest?.value ?? 0),
+          ...(tenorStatusByTenor[Number(days)] && tenorStatusByTenor[Number(days)] !== "AVAILABLE"
+            ? { status: tenorStatusByTenor[Number(days)] }
+            : {}),
+        }))
         .sort((a, b) => a.tenorDays - b.tenorDays)
       : undefined,
     interestRatePercent: Number.isFinite(interestRate) ? interestRate : 0,

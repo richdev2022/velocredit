@@ -34,8 +34,10 @@ export interface AppliedLoanProductInfo {
    * Per-tenor MONTHLY interest rates (easimoney style). When the borrower picks
    * tenor T and an entry exists for T, interest = principal × monthlyRate% ×
    * (T/30). Tenors WITHOUT an entry use the base interestRatePercent + type.
+   * status marks the tenor AVAILABLE (default) / LOCKED (visible but not
+   * selectable, rate hidden) / HOT (selectable + "Hot" badge).
    */
-  tenorInterestRates?: Array<{ tenorDays: number; monthlyRatePercent: number }>;
+  tenorInterestRates?: Array<{ tenorDays: number; monthlyRatePercent: number; status?: TenorStatus }>;
   interestRatePercent: number;
   interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
   processingFeePercent: number;
@@ -148,7 +150,12 @@ export interface LoanCalculation {
 export interface TenureOption {
   value: number;       // days
   label: string;       // "30 Days"
+  /** Borrower-facing availability from the product's per-tenor matrix (undefined = AVAILABLE). */
+  status?: TenorStatus;
 }
+
+/** Availability of ONE tenor on the borrower-facing picker (mirrors the backend catalog). */
+export type TenorStatus = "AVAILABLE" | "LOCKED" | "HOT";
 
 export interface LoanLimits {
   min: number;

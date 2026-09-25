@@ -85,6 +85,7 @@ import {
   purgeGhostCatalogRows,
   normalizeTenorInterestRates,
   resolveTenorMonthlyRate,
+  resolveTenorStatus,
   type TenorInterestRate,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
@@ -3797,6 +3798,24 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       return;
     }
     const user = users.find((item) => item.id === req.user!.id);
+    // Locked-tenor gate: a tenor the admin LOCKED on the governing product can
+    // never enter a NEW application (a stale draft may still carry it). The
+    // borrower picker hides locked tenors from selection; this is the server
+    // side backstop.
+    const gateTenure = Math.trunc(Number(input.loanRequest?.tenure));
+    if (Number.isFinite(gateTenure) && gateTenure > 0) {
+      const gateProduct = resolveLoanProductForApplication({
+        applicantType: input.applicantType,
+        amountNaira: Number(input.loanRequest?.amount) || 0,
+      });
+      if (gateProduct && resolveTenorStatus(gateProduct, null, gateTenure) === "LOCKED") {
+        res.status(400).json({
+          ok: false,
+          error: `The ${gateTenure}-day repayment tenor is currently locked for this product. Please choose one of the available tenors.`,
+        });
+        return;
+      }
+    }
     recordConsent(req.user!.id, "CREDIT_REPORT");
 
     const now = new Date().toISOString();
@@ -4038,6 +4057,20 @@ router.patch("/borrower/applications/:id", requireAuth, requireRole("BORROWER"),
       application.disbursementAccount = account;
     }
     if (parsed.data.loanRequest) {
+      // Locked-tenor guard for section saves: the product may have had a tenor
+      // LOCKED after this draft was started — reject the stale tenure instead
+      // of silently persisting a tenor borrowers can no longer select.
+      const sectionTenure = Math.trunc(Number(parsed.data.loanRequest.tenure));
+      if (Number.isFinite(sectionTenure) && sectionTenure > 0) {
+        const sectionProduct = resolveLoanProductForApplication(application);
+        if (sectionProduct && resolveTenorStatus(sectionProduct, application.productSnapshot ?? null, sectionTenure) === "LOCKED") {
+          res.status(400).json({
+            ok: false,
+            error: `The ${sectionTenure}-day repayment tenor is locked for this product. Please choose one of the available tenors.`,
+          });
+          return;
+        }
+      }
       Object.assign(snapshot, { loanRequest: parsed.data.loanRequest });
       application.amountNaira = parsed.data.loanRequest.amount;
       application.tenureDays = parsed.data.loanRequest.tenure;
@@ -6472,6 +6505,7 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     tenorInterestRates: z.array(z.object({
       tenorDays: z.number().int().positive(),
       monthlyRatePercent: z.number().min(0),
+      status: z.enum(["AVAILABLE", "LOCKED", "HOT"]).optional(),
     })).max(24).optional(),
     interestRatePercent: z.number().nonnegative(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).default("SIMPLE_FLAT"),
@@ -6560,6 +6594,7 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
     tenorInterestRates: z.array(z.object({
       tenorDays: z.number().int().positive(),
       monthlyRatePercent: z.number().min(0),
+      status: z.enum(["AVAILABLE", "LOCKED", "HOT"]).optional(),
     })).max(24).nullable().optional(),
     interestRatePercent: z.number().nonnegative().optional(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).optional(),

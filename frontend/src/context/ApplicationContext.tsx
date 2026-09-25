@@ -24,7 +24,7 @@ import type {
 } from "../types/application";
 import type { LoanCalculation } from "../types/loan";
 import { calculateLoan } from "../utils/loanCalculator";
-import { applyLoanProducts, config, getLoanProgram } from "../utils/config";
+import { applyLoanProducts, config, getLoanProgram, selectableTenures } from "../utils/config";
 import { generateDraftId } from "../utils/applicationId";
 import {
   loadApplication,
@@ -390,7 +390,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       businessRep: { fullName: "", dateOfBirth: "", position: "", phone: "", email: "", residentialAddress: "" },
       businessFinancial: { averageMonthlyRevenue: "", averageMonthlyExpenses: "", existingLoanObligations: "", expectedRepaymentSource: "" },
       kyc: { bvn: "", nin: "", identificationType: "", identificationNumber: "" },
-      loanRequest: { amount: getLoanProgram(type).loanLimits.defaultAmount, tenure: getLoanProgram(type).tenures[0]?.value || 30, purpose: "" },
+      loanRequest: { amount: getLoanProgram(type).loanLimits.defaultAmount, tenure: selectableTenures(getLoanProgram(type).tenures)[0]?.value || 30, purpose: "" },
       collateral: { provided: false, type: "", description: "", estimatedValue: "", ownership: "", location: "", documentReference: "" },
       calculation: null,
       documents: {},
@@ -872,7 +872,9 @@ function mergePrefillIntoDraft(
   const amount = Number.isFinite(prevAmount) && prevAmount > 0
     ? Math.min(program.loanLimits.max, Math.max(program.loanLimits.min, prevAmount))
     : current.loanRequest.amount;
-  const tenureValues = program.tenures.map((t) => t.value);
+  // Only SELECTABLE tenors may be restored — a tenor the admin has since
+  // LOCKED must not ride back into a brand-new application.
+  const tenureValues = selectableTenures(program.tenures).map((t) => t.value);
   const prevTenure = Number(prevLoan.tenure);
   const tenure = tenureValues.includes(prevTenure) ? prevTenure : current.loanRequest.tenure;
   const purpose = current.loanRequest.purpose || str(prevLoan.purpose);
@@ -1012,7 +1014,7 @@ function normalizeApplicationData(
   const rawLoanRequest = Object.assign(
     {
       amount: program.loanLimits.defaultAmount,
-      tenure: program.tenures[0]?.value || 30,
+      tenure: selectableTenures(program.tenures)[0]?.value || 30,
       purpose: "",
     },
     data.loanRequest || {}

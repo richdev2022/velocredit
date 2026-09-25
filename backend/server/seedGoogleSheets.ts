@@ -266,7 +266,17 @@ async function seedFallbackLoanProductIfEmpty(): Promise<void> {
     minAmountNaira: 50_000,
     maxAmountNaira: 5_000_000,
     defaultTenureDays: 30,
-    tenureDays: [30, 60, 90, 180],
+    tenureDays: [30, 60, 91, 180, 360],
+    // Per-tenor matrix pinned to the failsafe's own 18% flat rate (this row
+    // only exists so the export pipeline has a product when the table is
+    // empty — the REAL defaults come from store.seedLoanProducts()).
+    tenorInterestRates: [
+      { tenorDays: 30, monthlyRatePercent: 18 },
+      { tenorDays: 60, monthlyRatePercent: 18 },
+      { tenorDays: 91, monthlyRatePercent: 18 },
+      { tenorDays: 180, monthlyRatePercent: 18 },
+      { tenorDays: 360, monthlyRatePercent: 18 },
+    ],
     interestRatePercent: 18,
     interestType: "SIMPLE_FLAT",
     processingFeePercent: 3,

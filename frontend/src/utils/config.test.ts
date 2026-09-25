@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { getEffectiveConfig, resolveApiUrl, config, applyLoanProducts, applyLoanProduct, baseConfig, sanitizeLoanLimits, safeNaira, stripLegacyLoanOverrides, loadAdminOverrides, ADMIN_CONFIG_KEY } from "./config";
+import { getEffectiveConfig, resolveApiUrl, config, applyLoanProducts, applyLoanProduct, baseConfig, sanitizeLoanLimits, safeNaira, stripLegacyLoanOverrides, loadAdminOverrides, ADMIN_CONFIG_KEY, selectableTenures, tenorDurationLabel } from "./config";
 import { calculateTermInterest } from "./loanCalculator";
 
 describe("loan configuration", () => {
@@ -473,6 +473,58 @@ describe("product-driven configuration (catalog = single source of truth)", () =
       lateFeePercent: 0,
     }, "PERSONAL");
     expect(config.loanPrograms.PERSONAL.tenureFees).toEqual({});
+  });
+
+  it("per-tenor statuses (Available/Locked/Hot) flow through; locked default falls back to the first selectable tenor", () => {
+    refreshTestConfig();
+    const applied = applyLoanProduct({
+      id: "p-status",
+      name: "Personal Loan",
+      programType: "PERSONAL",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 30_000_000,
+      defaultAmountNaira: 100_000,
+      defaultTenureDays: 91, // LOCKED on the product — cannot be the effective default
+      tenureDays: [30, 60, 91, 180, 360],
+      interestRatePercent: 18.9,
+      interestType: "SIMPLE_FLAT",
+      tenorInterestRates: [
+        { tenorDays: 30, monthlyRatePercent: 18.9, status: "AVAILABLE" },
+        { tenorDays: 60, monthlyRatePercent: 17.1 },
+        { tenorDays: 91, monthlyRatePercent: 15.9, status: "LOCKED" },
+        { tenorDays: 180, monthlyRatePercent: 10.5, status: "AVAILABLE" },
+        { tenorDays: 360, monthlyRatePercent: 8.7, status: "HOT" },
+      ],
+      processingFeePercent: 2,
+      serviceFeePercent: 0,
+      lateFeePercent: 1,
+    }, "PERSONAL");
+    expect(applied).toBe(true);
+    const program = config.loanPrograms.PERSONAL;
+    // Locked stays LISTED (the wizard renders it as a disabled easimoney
+    // teaser) with its status; hot is flagged; plain entries carry no status.
+    expect(program.tenures.find((t) => t.value === 91)?.status).toBe("LOCKED");
+    expect(program.tenures.find((t) => t.value === 360)?.status).toBe("HOT");
+    expect(program.tenures.find((t) => t.value === 60)?.status).toBeUndefined();
+    // selectableTenures excludes ONLY the locked tenor.
+    expect(selectableTenures(program.tenures).map((t) => t.value)).toEqual([30, 60, 180, 360]);
+    // The locked default tenure falls back to the first selectable one.
+    expect(program.product?.defaultTenureDays).toBe(30);
+    // Statuses ride on the applied matrix.
+    expect(program.product?.tenorInterestRates?.find((r) => r.tenorDays === 91))
+      .toEqual({ tenorDays: 91, monthlyRatePercent: 15.9, status: "LOCKED" });
+    // Owner-seeded easimoney math on the full tenor table.
+    expect(calculateTermInterest(100_000, program.tenureFees[30]!.interest!, 30)).toBe(18_900);
+    expect(calculateTermInterest(100_000, program.tenureFees[60]!.interest!, 60)).toBe(34_200);
+    expect(calculateTermInterest(100_000, program.tenureFees[180]!.interest!, 180)).toBe(63_000);
+    expect(calculateTermInterest(100_000, program.tenureFees[360]!.interest!, 360)).toBe(104_400);
+    // easimoney duration labels.
+    expect(tenorDurationLabel(30)).toBe("1 Month");
+    expect(tenorDurationLabel(60)).toBe("2 Months");
+    expect(tenorDurationLabel(91)).toBe("3 Months");
+    expect(tenorDurationLabel(180)).toBe("6 Months");
+    expect(tenorDurationLabel(360)).toBe("12 Months");
+    expect(tenorDurationLabel(7)).toBe("< 1 Month");
   });
 
   it("legacy localStorage loan overrides are stripped — branding/access overrides survive", () => {

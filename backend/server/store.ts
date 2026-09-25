@@ -667,13 +667,29 @@ export interface PlatformSettings {
 export type LoanProductProgramType = "PERSONAL" | "BUSINESS" | "BOTH";
 
 /**
+ * Availability of ONE tenor on the borrower-facing picker.
+ *
+ *  - AVAILABLE — selectable, rate shown.
+ *  - LOCKED    — VISIBLE but not selectable (easimoney teaser row): the
+ *                borrower sees the tenor with a lock and NO rate.
+ *  - HOT       — selectable and badged "Hot" (easimoney marketing highlight).
+ */
+export type TenorInterestRateStatus = "AVAILABLE" | "LOCKED" | "HOT";
+
+export const TENOR_INTEREST_RATE_STATUSES: readonly TenorInterestRateStatus[] = ["AVAILABLE", "LOCKED", "HOT"];
+
+/**
  * ONE per-tenor monthly interest rate (easimoney style): pins the MONTHLY
  * interest rate for a single tenor of the product's tenor list. Interest for
  * that tenor = principal × monthlyRatePercent/100 × (tenorDays / 30).
+ *
+ * `status` drives the borrower-facing availability (missing/undefined =
+ * AVAILABLE for full backwards compatibility).
  */
 export interface TenorInterestRate {
   tenorDays: number;
   monthlyRatePercent: number;
+  status?: TenorInterestRateStatus;
 }
 
 export interface LoanProduct {
@@ -1544,18 +1560,46 @@ export function seedInvestmentPlans(): void {
 // as real, fully-configured catalog products. Legacy seeds used vendor-ish
 // names ("Velo Personal Quick") that the admin never asked for; the defaults
 // below are the plain "Personal Loan" / "Business Loan" products the borrower
-// flow and landing page promise (₦100,000 – ₦30,000,000 @ 5% monthly per
-// tenor, easimoney style).
+// flow and landing page promise (₦100,000 – ₦30,000,000 with the easimoney
+// per-tenor monthly matrix: 18.9% / 17.1% / locked 91d / 10.5% / hot 360d @ 8.7%).
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_TENURE_DAYS = [30, 60, 90, 180];
+export const DEFAULT_TENURE_DAYS = [30, 60, 91, 180, 360];
 
 /**
- * easimoney-style default: every seeded tenor carries the SAME 5% monthly
- * interest rate, and the base rate (5, SIMPLE_FLAT) matches — so the whole
- * matrix is coherent AND fully editable per tenor in the admin console.
+ * The DEFAULT per-tenor pricing table, seeded on every fresh catalog and on
+ * default-named products that never had per-tenor rates (owner instruction:
+ * "seed this as default", easimoney configuration):
+ *
+ *   Tenure  | Duration  | Monthly Interest | Status
+ *   --------|-----------|------------------|-------------------
+ *   30 Days | 1 Month   | 18.9%            | Available
+ *   60 Days | 2 Months  | 17.1%            | Available
+ *   91 Days | 3 Months  | (hidden)         | Locked
+ *   180 Days| 6 Months  | 10.5%            | Available
+ *   360 Days| 12 Months | 8.7%             | Available / Hot
+ *
+ * The locked 91-day tenor still carries an editable rate (15.9 — the natural
+ * continuation of the declining curve) so unlocking it in the admin console
+ * prices it sensibly immediately; borrowers never see a locked rate.
  */
-export const DEFAULT_TENOR_INTEREST_RATES = DEFAULT_TENURE_DAYS.map((tenorDays) => ({ tenorDays, monthlyRatePercent: 5 }));
+export const DEFAULT_TENOR_INTEREST_RATES: TenorInterestRate[] = [
+  { tenorDays: 30, monthlyRatePercent: 18.9, status: "AVAILABLE" },
+  { tenorDays: 60, monthlyRatePercent: 17.1, status: "AVAILABLE" },
+  { tenorDays: 91, monthlyRatePercent: 15.9, status: "LOCKED" },
+  { tenorDays: 180, monthlyRatePercent: 10.5, status: "AVAILABLE" },
+  { tenorDays: 360, monthlyRatePercent: 8.7, status: "HOT" },
+];
+
+/**
+ * Normalize a per-tenor status: keep it when it is one of the three known
+ * values, drop anything else (undefined = AVAILABLE downstream).
+ */
+function normalizeTenorStatus(status: unknown): TenorInterestRateStatus | undefined {
+  return typeof status === "string" && (TENOR_INTEREST_RATE_STATUSES as readonly string[]).includes(status)
+    ? (status as TenorInterestRateStatus)
+    : undefined;
+}
 
 /**
  * Normalize a per-tenor rate list: drop invalid entries, dedupe by tenorDays
@@ -1564,18 +1608,17 @@ export const DEFAULT_TENOR_INTEREST_RATES = DEFAULT_TENURE_DAYS.map((tenorDays) 
  */
 export function normalizeTenorInterestRates(rates: TenorInterestRate[] | null | undefined): TenorInterestRate[] | undefined {
   if (!Array.isArray(rates)) return undefined;
-  const byTenor = new Map<number, number>();
+  const byTenor = new Map<number, TenorInterestRate>();
   for (const entry of rates) {
     const tenorDays = Math.trunc(Number(entry?.tenorDays));
     const monthlyRatePercent = Number(entry?.monthlyRatePercent);
     if (!Number.isFinite(tenorDays) || tenorDays <= 0) continue;
     if (!Number.isFinite(monthlyRatePercent) || monthlyRatePercent < 0) continue;
-    byTenor.set(tenorDays, monthlyRatePercent);
+    const status = normalizeTenorStatus((entry as TenorInterestRate | undefined)?.status);
+    byTenor.set(tenorDays, status ? { tenorDays, monthlyRatePercent, status } : { tenorDays, monthlyRatePercent });
   }
   if (byTenor.size === 0) return undefined;
-  return [...byTenor.entries()]
-    .map(([tenorDays, monthlyRatePercent]) => ({ tenorDays, monthlyRatePercent }))
-    .sort((a, b) => a.tenorDays - b.tenorDays);
+  return [...byTenor.values()].sort((a, b) => a.tenorDays - b.tenorDays);
 }
 
 /**
@@ -1597,6 +1640,26 @@ export function resolveTenorMonthlyRate(
   return undefined;
 }
 
+/**
+ * The effective availability of one tenor: the explicit per-tenor entry's
+ * status when one exists (product first, then the captured snapshot),
+ * otherwise AVAILABLE (tenors without an entry have always been selectable).
+ */
+export function resolveTenorStatus(
+  product: Pick<LoanProduct, "tenorInterestRates"> | null | undefined,
+  snapshot: Pick<LoanProductSnapshot, "tenorInterestRates"> | null | undefined,
+  tenureDays: number,
+): TenorInterestRateStatus {
+  const sources = [product?.tenorInterestRates, snapshot?.tenorInterestRates];
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue;
+    const match = source.find((entry) => Number(entry?.tenorDays) === Number(tenureDays));
+    const status = normalizeTenorStatus(match?.status);
+    if (status) return status;
+  }
+  return "AVAILABLE";
+}
+
 export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<LoanProduct, "id" | "createdAt" | "updatedAt"> {
   if (type === "BUSINESS") {
     return {
@@ -1606,10 +1669,15 @@ export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<Loa
       minAmountNaira: 100_000,
       maxAmountNaira: 30_000_000,
       defaultAmountNaira: 500_000,
-      defaultTenureDays: 90,
+      // 91d is LOCKED by default so the default tenure must be a selectable
+      // tenor — 60 days fits business working capital.
+      defaultTenureDays: 60,
       tenureDays: [...DEFAULT_TENURE_DAYS],
       tenorInterestRates: DEFAULT_TENOR_INTEREST_RATES.map((r) => ({ ...r })),
-      interestRatePercent: 5,
+      // Base fallback rate: the TOP of the default matrix (18.9%/month,
+      // SIMPLE_FLAT) — any tenor an admin adds without its own rate prices at
+      // the same math as the shortest seeded tenor, never cheaper.
+      interestRatePercent: 18.9,
       interestType: "SIMPLE_FLAT",
       processingFeePercent: 2,
       serviceFeePercent: 0,
@@ -1632,7 +1700,8 @@ export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<Loa
     defaultTenureDays: 30,
     tenureDays: [...DEFAULT_TENURE_DAYS],
     tenorInterestRates: DEFAULT_TENOR_INTEREST_RATES.map((r) => ({ ...r })),
-    interestRatePercent: 5,
+    // Base fallback rate: see the BUSINESS branch comment (top of the matrix).
+    interestRatePercent: 18.9,
     interestType: "SIMPLE_FLAT",
     processingFeePercent: 2,
     serviceFeePercent: 0,
@@ -1644,6 +1713,38 @@ export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<Loa
     isActive: true,
     version: 1,
   };
+}
+
+/**
+ * "Seed this as default" upgrade (owner instruction).
+ *
+ * Production catalogs seeded BEFORE the per-tenor matrix existed carry the
+ * two default products with NO tenorInterestRates at all — the admin console
+ * would show an empty per-tenor table instead of the easimoney configuration
+ * the owner asked to have seeded. For EXACTLY those rows (default name AND
+ * never per-tenor-configured) this fills the full default pricing: tenor
+ * list, per-tenor monthly rates + statuses, and the coherent base rate.
+ *
+ * NEVER touched: products the admin renamed, and products with ANY matrix
+ * entry (they were per-tenor configured deliberately).
+ */
+function upgradeLegacyDefaultProducts(now: string): boolean {
+  const defaultNames = new Set(["personal loan", "business loan"]);
+  let upgraded = false;
+  for (const product of loanProducts) {
+    const name = String(product.name ?? "").trim().toLowerCase();
+    if (!defaultNames.has(name)) continue;
+    if (Array.isArray(product.tenorInterestRates) && product.tenorInterestRates.length > 0) continue;
+    const draft = defaultLoanProductDraft(name === "business loan" ? "BUSINESS" : "PERSONAL");
+    product.tenureDays = [...DEFAULT_TENURE_DAYS];
+    product.tenorInterestRates = DEFAULT_TENOR_INTEREST_RATES.map((r) => ({ ...r }));
+    product.interestRatePercent = draft.interestRatePercent;
+    product.interestType = draft.interestType;
+    product.updatedAt = now;
+    upgraded = true;
+    console.warn(`[store/seedLoanProducts] upgraded "${product.name}" to the default easimoney per-tenor pricing (18.9/17.1/locked 91d/10.5/8.7% monthly)`);
+  }
+  return upgraded;
 }
 
 /** True when at least one product already serves the given borrower flow. */
@@ -1681,7 +1782,8 @@ export function seedLoanProducts(): void {
     added = true;
     console.warn(`[store/seedLoanProducts] catalog had NO ${type} product — added the default "${type === "BUSINESS" ? "Business Loan" : "Personal Loan"}"`);
   }
-  if (added) requestPersist("loanProducts");
+  const upgraded = upgradeLegacyDefaultProducts(now);
+  if (added || upgraded) requestPersist("loanProducts");
 }
 
 // ---------------------------------------------------------------------------

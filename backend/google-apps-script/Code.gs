@@ -1063,7 +1063,7 @@ function getLoanRules_(applicantType) {
   );
   const tenures = (
     source.tenures ||
-    [30, 60, 90, 180].map(function (value) {
+    [30, 60, 91, 180, 360].map(function (value) {
       return { value: value, label: value + " Days" };
     })
   )

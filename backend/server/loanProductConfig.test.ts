@@ -307,11 +307,13 @@ describe("Loan product full configuration — catalog is the single source of tr
       const business = loanProducts.find((p: any) => p.name === "Business Loan");
       expect(personal.programType).toBe("PERSONAL");
       expect(business.programType).toBe("BUSINESS");
-      // Moniepoint-style baseline terms.
+      // Moniepoint-style baseline terms (easimoney defaults, 2026-09).
       expect(personal.minAmountNaira).toBe(100_000);
       expect(personal.maxAmountNaira).toBe(30_000_000);
-      expect(personal.interestRatePercent).toBe(5);
-      expect(personal.tenureDays).toEqual([30, 60, 90, 180]);
+      expect(personal.interestRatePercent).toBe(18.9);
+      expect(personal.interestType).toBe("SIMPLE_FLAT");
+      expect(personal.tenureDays).toEqual([30, 60, 91, 180, 360]);
+      expect(personal.tenorInterestRates).toEqual(storeMod.DEFAULT_TENOR_INTEREST_RATES);
       // Existing admin products are never renamed or removed.
       expect(loanProducts.find((p: any) => p.id === "orphan")).toBeTruthy();
     } finally {
@@ -432,20 +434,132 @@ describe("Loan product full configuration — catalog is the single source of tr
     expect(storeMod.resolveTenorMonthlyRate(cleared.body.product, null, 60)).toBeUndefined();
   });
 
-  it("13. seeded defaults carry the easimoney per-tenor matrix (5% monthly on every tenor)", () => {
+  it("13. seeded defaults carry the easimoney per-tenor matrix (18.9/17.1/locked 91d/10.5/hot 8.7% monthly)", () => {
     const before = loanProducts.slice();
     try {
       loanProducts.splice(0, loanProducts.length);
       storeMod.seedLoanProducts();
       for (const product of loanProducts) {
         expect(product.interestType).toBe("SIMPLE_FLAT");
+        expect(product.interestRatePercent).toBe(18.9);
+        expect(product.tenureDays).toEqual([30, 60, 91, 180, 360]);
         expect(product.tenorInterestRates).toEqual([
-          { tenorDays: 30, monthlyRatePercent: 5 },
-          { tenorDays: 60, monthlyRatePercent: 5 },
-          { tenorDays: 90, monthlyRatePercent: 5 },
-          { tenorDays: 180, monthlyRatePercent: 5 },
+          { tenorDays: 30, monthlyRatePercent: 18.9, status: "AVAILABLE" },
+          { tenorDays: 60, monthlyRatePercent: 17.1, status: "AVAILABLE" },
+          { tenorDays: 91, monthlyRatePercent: 15.9, status: "LOCKED" },
+          { tenorDays: 180, monthlyRatePercent: 10.5, status: "AVAILABLE" },
+          { tenorDays: 360, monthlyRatePercent: 8.7, status: "HOT" },
         ]);
+        // The locked tenor resolves as LOCKED; the hot tenor as HOT.
+        expect(storeMod.resolveTenorStatus(product, null, 91)).toBe("LOCKED");
+        expect(storeMod.resolveTenorStatus(product, null, 360)).toBe("HOT");
+        expect(storeMod.resolveTenorStatus(product, null, 30)).toBe("AVAILABLE");
+        // The default tenure is always a SELECTABLE tenor (never the locked 91d).
+        expect(storeMod.resolveTenorStatus(product, null, product.defaultTenureDays)).not.toBe("LOCKED");
       }
+      // Business defaults to 60d (working capital); personal to 30d.
+      expect(loanProducts.find((p: any) => p.name === "Business Loan").defaultTenureDays).toBe(60);
+      expect(loanProducts.find((p: any) => p.name === "Personal Loan").defaultTenureDays).toBe(30);
+    } finally {
+      loanProducts.splice(0, loanProducts.length, ...before);
+    }
+  });
+
+  it("14. POST/PATCH carry the per-tenor status (AVAILABLE/LOCKED/HOT) and drop invalid statuses", async () => {
+    const created = await request(app)
+      .post("/api/v1/admin/loan-products")
+      .send({
+        name: `${TEST_PREFIX} Tenor Statuses`,
+        programType: "PERSONAL",
+        minAmountNaira: 100_000,
+        maxAmountNaira: 30_000_000,
+        defaultTenureDays: 30,
+        tenureDays: [30, 60, 91, 360],
+        tenorInterestRates: [
+          { tenorDays: 30, monthlyRatePercent: 18.9, status: "AVAILABLE" },
+          { tenorDays: 60, monthlyRatePercent: 17.1 }, // no status = AVAILABLE downstream
+          { tenorDays: 91, monthlyRatePercent: 15.9, status: "LOCKED" },
+          { tenorDays: 360, monthlyRatePercent: 8.7, status: "HOT" },
+        ],
+        interestRatePercent: 18.9,
+        interestType: "SIMPLE_FLAT",
+      });
+    expect(created.status).toBe(201);
+    const product = created.body.product;
+    createdProductIds.push(product.id);
+    expect(product.tenorInterestRates).toEqual([
+      { tenorDays: 30, monthlyRatePercent: 18.9, status: "AVAILABLE" },
+      { tenorDays: 60, monthlyRatePercent: 17.1 },
+      { tenorDays: 91, monthlyRatePercent: 15.9, status: "LOCKED" },
+      { tenorDays: 360, monthlyRatePercent: 8.7, status: "HOT" },
+    ]);
+    expect(storeMod.resolveTenorStatus(product, null, 91)).toBe("LOCKED");
+    expect(storeMod.resolveTenorStatus(product, null, 360)).toBe("HOT");
+    expect(storeMod.resolveTenorStatus(product, null, 30)).toBe("AVAILABLE");
+    expect(storeMod.resolveTenorStatus(product, null, 60)).toBe("AVAILABLE");
+
+    // PATCH: an invalid status is rejected at the API boundary (the JSONB
+    // rebuild path still tolerates legacy garbage); a valid HOT survives and
+    // the rate itself is editable in the same call.
+    const invalid = await request(app)
+      .patch(`/api/v1/admin/loan-products/${product.id}`)
+      .send({
+        tenorInterestRates: [
+          { tenorDays: 91, monthlyRatePercent: 14.9, status: "SOMETIMES" },
+        ],
+      });
+    expect(invalid.status).toBe(400);
+    expect(JSON.stringify(invalid.body.error)).toContain("Invalid enum value");
+
+    const patched = await request(app)
+      .patch(`/api/v1/admin/loan-products/${product.id}`)
+      .send({
+        tenorInterestRates: [
+          { tenorDays: 91, monthlyRatePercent: 14.9 }, // unlocked: back to AVAILABLE
+          { tenorDays: 360, monthlyRatePercent: 9.5, status: "HOT" },
+        ],
+      });
+    expect(patched.status).toBe(200);
+    expect(patched.body.product.tenorInterestRates).toEqual([
+      { tenorDays: 91, monthlyRatePercent: 14.9 },
+      { tenorDays: 360, monthlyRatePercent: 9.5, status: "HOT" },
+    ]);
+    expect(storeMod.resolveTenorStatus(patched.body.product, null, 91)).toBe("AVAILABLE");
+    expect(storeMod.resolveTenorStatus(patched.body.product, null, 360)).toBe("HOT");
+  });
+
+  it("15. legacy default products (never per-tenor configured) upgrade to the easimoney defaults; customized or renamed products are untouched", () => {
+    const before = loanProducts.slice();
+    try {
+      loanProducts.splice(0, loanProducts.length);
+      const now = new Date().toISOString();
+      // Task-11-era seed: default names, NO matrix, 5% annualized, old tenor list.
+      loanProducts.push({ id: "legacy-personal", name: "Personal Loan", programType: "PERSONAL", minAmountNaira: 100_000, maxAmountNaira: 30_000_000, defaultTenureDays: 30, tenureDays: [30, 60, 90, 180], interestRatePercent: 5, interestType: "ANNUALIZED", processingFeePercent: 2, serviceFeePercent: 0, lateFeePercent: 1, lateFeeType: "COMPOUNDING_DAILY", gracePeriodDays: 3, collateralEnabled: true, collateralRequired: false, isActive: true, version: 2, createdAt: now } as any);
+      // Admin-configured row: has a matrix entry → NEVER re-priced.
+      loanProducts.push({ id: "custom-business", name: "Business Loan", programType: "BUSINESS", minAmountNaira: 100_000, maxAmountNaira: 5_000_000, defaultTenureDays: 30, tenureDays: [30, 60], tenorInterestRates: [{ tenorDays: 30, monthlyRatePercent: 4 }], interestRatePercent: 4, interestType: "SIMPLE_FLAT", processingFeePercent: 2, serviceFeePercent: 0, lateFeePercent: 1, lateFeeType: "COMPOUNDING_DAILY", gracePeriodDays: 3, collateralEnabled: true, collateralRequired: false, isActive: true, version: 7, createdAt: now } as any);
+      // Renamed default: no longer matches the default name → untouched.
+      loanProducts.push({ id: "renamed-personal", name: "Velo Personal Plus", programType: "PERSONAL", minAmountNaira: 50_000, maxAmountNaira: 4_000_000, defaultTenureDays: 30, tenureDays: [30, 60], interestRatePercent: 3, interestType: "ANNUALIZED", processingFeePercent: 1, serviceFeePercent: 0, lateFeePercent: 1, lateFeeType: "ONE_TIME", gracePeriodDays: 5, collateralEnabled: false, collateralRequired: false, isActive: true, version: 3, createdAt: now } as any);
+
+      storeMod.seedLoanProducts();
+
+      const personal = loanProducts.find((p: any) => p.id === "legacy-personal");
+      expect(personal.tenureDays).toEqual([30, 60, 91, 180, 360]);
+      expect(personal.interestRatePercent).toBe(18.9);
+      expect(personal.interestType).toBe("SIMPLE_FLAT");
+      expect(personal.tenorInterestRates).toEqual(storeMod.DEFAULT_TENOR_INTEREST_RATES);
+      // Non-pricing fields stay exactly as the admin had them.
+      expect(personal.minAmountNaira).toBe(100_000);
+      expect(personal.maxAmountNaira).toBe(30_000_000);
+      expect(personal.processingFeePercent).toBe(2);
+
+      const business = loanProducts.find((p: any) => p.id === "custom-business");
+      expect(business.tenorInterestRates).toEqual([{ tenorDays: 30, monthlyRatePercent: 4 }]);
+      expect(business.tenureDays).toEqual([30, 60]);
+      expect(business.interestRatePercent).toBe(4);
+
+      const renamed = loanProducts.find((p: any) => p.id === "renamed-personal");
+      expect(renamed.interestRatePercent).toBe(3);
+      expect(renamed.tenorInterestRates).toBeUndefined();
     } finally {
       loanProducts.splice(0, loanProducts.length, ...before);
     }
