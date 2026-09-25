@@ -41,12 +41,47 @@ export interface AdminConfigOverride {
   globalInterestEnabled?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// LEGACY OVERRIDE MIGRATION.
+//
+// Loan configuration used to live in THREE places at once: the backend product
+// catalog, a per-program editor and "global" limits/fees editors — the last
+// two persisted ONLY to the admin's own browser (localStorage), so borrowers
+// saw different terms depending on which admin had last saved, and renamed
+// products were re-matched by fragile name keywords on every save.
+//
+// The catalog is now the COMPLETE configuration (type, amounts incl. default,
+// tenor list, interest, processing/service/late fees, grace, collateral).
+// Any loan-config keys still present in an old localStorage snapshot are
+// stripped here so they can never contradict the authoritative products.
+// Branding / access overrides (company name, logo, API URL, emails) stay.
+// ---------------------------------------------------------------------------
+
+const LEGACY_LOAN_OVERRIDE_KEYS: (keyof AdminConfigOverride)[] = [
+  "loanLimits",
+  "tenures",
+  "fees",
+  "tenureFees",
+  "loanPrograms",
+  "globalLimitsEnabled",
+  "globalFeesEnabled",
+  "globalInterestEnabled",
+];
+
+export function stripLegacyLoanOverrides(overrides: AdminConfigOverride): AdminConfigOverride {
+  const cleaned = { ...overrides };
+  for (const key of LEGACY_LOAN_OVERRIDE_KEYS) {
+    if (key in cleaned) delete cleaned[key];
+  }
+  return cleaned;
+}
+
 export function loadAdminOverrides(): AdminConfigOverride {
   try {
     const raw = localStorage.getItem(ADMIN_CONFIG_KEY);
     if (!raw) return {};
     const p = JSON.parse(raw);
-    return (p && typeof p === "object") ? p : {};
+    return (p && typeof p === "object") ? stripLegacyLoanOverrides(p) : {};
   } catch {
     return {};
   }
@@ -389,34 +424,52 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
   if (!Number.isFinite(min) || !Number.isFinite(max) || min >= max || min < 0) return false;
   const interestRate = Number(product.interestRatePercent);
   const processingFee = Number(product.processingFeePercent);
+  const serviceFee = Number(product.serviceFeePercent);
   const lateFee = Number(product.lateFeePercent);
   const interestType = product.interestType ?? "SIMPLE_FLAT";
+  // Allowed tenor list lives ON the product now — fall back to the configured
+  // program list only for legacy products without one.
+  const productTenures: TenureOption[] | null = Array.isArray(product.tenureDays) && product.tenureDays.length > 0
+    ? product.tenureDays
+      .map((days) => Math.trunc(Number(days)))
+      .filter((days) => Number.isFinite(days) && days > 0)
+      .sort((a, b) => a - b)
+      .map((days) => ({ value: days, label: `${days} Days` }))
+    : null;
+  const productDefaultAmount = Number(product.defaultAmountNaira);
   const limits = {
     min,
     max,
-    defaultAmount: Math.min(max, Math.max(min, program.loanLimits.defaultAmount)),
+    defaultAmount: Number.isFinite(productDefaultAmount) && productDefaultAmount > 0
+      ? Math.min(max, Math.max(min, productDefaultAmount))
+      : Math.min(max, Math.max(min, program.loanLimits.defaultAmount)),
   };
   const appliedInfo: AppliedLoanProductInfo = {
     id: product.id,
     name: product.name,
     description: product.description,
+    programType: product.programType ?? null,
     minAmountNaira: min,
     maxAmountNaira: max,
+    defaultAmountNaira: limits.defaultAmount,
     defaultTenureDays: product.defaultTenureDays,
+    tenureDays: productTenures ? productTenures.map((t) => t.value) : undefined,
     interestRatePercent: Number.isFinite(interestRate) ? interestRate : 0,
     interestType,
     processingFeePercent: Number.isFinite(processingFee) ? processingFee : 0,
+    serviceFeePercent: Number.isFinite(serviceFee) ? serviceFee : 0,
     lateFeePercent: Number.isFinite(lateFee) ? lateFee : 0,
     lateFeeType: product.lateFeeType,
     gracePeriodDays: product.gracePeriodDays,
+    collateralEnabled: product.collateralEnabled ?? true,
+    collateralRequired: product.collateralRequired ?? false,
   };
   config.loanPrograms[type] = {
     ...program,
     loanLimits: sanitizeLoanLimits(limits),
-    // Products expose a default tenure, not the complete admin-configured
-    // tenor list. Keep the configured list so calculator options and
-    // validation remain consistent with admin settings.
-    tenures: program.tenures,
+    // The product's own tenor list IS the tenor list for this flow — the
+    // tenure picker renders exactly what the admin configured on the product.
+    tenures: productTenures ?? program.tenures,
     productName: product.name,
     product: appliedInfo,
     fees: {
@@ -426,14 +479,24 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
         value: appliedInfo.interestRatePercent,
         interestType,
       },
+      serviceFee: {
+        ...program.fees.serviceFee,
+        type: "percentage",
+        value: appliedInfo.serviceFeePercent,
+      },
       processingFee: { ...program.fees.processingFee, type: "percentage", value: appliedInfo.processingFeePercent },
       lateFee: { ...program.fees.lateFee, type: "percentage", value: appliedInfo.lateFeePercent },
+    },
+    collateral: {
+      enabled: appliedInfo.collateralEnabled ?? program.collateral.enabled,
+      required: appliedInfo.collateralRequired ?? program.collateral.required,
     },
   };
   // Keep the global limits in sync with the PERSONAL flow (landing calculator
   // and other consumers read config.loanLimits).
   if (type === "PERSONAL") {
     config.loanLimits = sanitizeLoanLimits(limits);
+    config.tenures = (productTenures ?? program.tenures).slice();
   }
   return true;
 }

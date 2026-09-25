@@ -305,7 +305,26 @@ The unified workspace (`frontend/src/components/admin/AdminWorkspace.tsx`) cover
 | Content | Announcements (max 280 chars), banner carousel (base64 upload, links, activation), platform settings (fees, rates, maintenance mode/message) |
 | Audit log | Every sensitive action with actor/target enrichment, CSV export |
 
-Loan products are created/edited with cross-field guards (e.g. `minAmountNaira` must be less than `maxAmountNaira` — rejected at the API boundary) and late-fee semantics (`ONE_TIME`, `COMPOUNDING_DAILY`, `COMPOUNDING_MONTHLY`).
+### Loan products — the complete, single-source-of-truth loan configuration
+
+Every loan term lives ON the loan product (PostgreSQL table `loan_products`); nothing is scattered across per-browser "global" settings anymore:
+
+| Field | Purpose |
+|---|---|
+| `programType` | Explicit borrower-flow mapping: `PERSONAL` / `BUSINESS` / `BOTH` — the admin's choice wins over legacy name-keyword guessing, so renamed products keep their flow |
+| `minAmountNaira` / `maxAmountNaira` | Amount range shown to borrowers |
+| `defaultAmountNaira` | Pre-selected amount on the borrower form (validated inside the range) |
+| `tenureDays` | Allowed tenor list (days) — the borrower tenure picker renders EXACTLY this |
+| `defaultTenureDays` | Pre-selected tenor (validated to be one of `tenureDays`) |
+| `interestRatePercent` + `interestType` | Rate with `SIMPLE_FLAT` / `REDUCING_BALANCE` / `ANNUALIZED` semantics |
+| `processingFeePercent` / `serviceFeePercent` / `lateFeePercent` + `lateFeeType` | Full fee schedule |
+| `gracePeriodDays` | Days before late fees engage |
+| `collateralEnabled` / `collateralRequired` | Whether the collateral section is shown / media is mandatory |
+| `isActive` | Inactive products are hidden (with a resilient all-inactive fallback) |
+
+Defaults: a fresh platform seeds **Personal Loan** and **Business Loan** (₦100,000 – ₦30,000,000 @ 5% annualized, tenors 30/60/90/180); a catalog missing one of the two flows is self-healed with the matching default at boot. Applications capture an immutable product snapshot (full terms incl. tenor list and service fee) so later product edits never change agreed loans. The borrower screen fetches `GET /borrower/loan-products?type=…` and renders exactly the one returned product.
+
+Loan products are created/edited with cross-field guards (e.g. `minAmountNaira` must be less than `maxAmountNaira`, `defaultAmountNaira` must fall within the range, `defaultTenureDays` must be one of `tenureDays` — all rejected at the API boundary) and late-fee semantics (`ONE_TIME`, `COMPOUNDING_DAILY`, `COMPOUNDING_MONTHLY`). The admin console's "Loan Products" tab is the only place loan configuration is edited; the former "Loan programs" / "Global limits & fees" editors (which only wrote to the editing admin's browser) were removed, and any leftover localStorage loan overrides from older builds are stripped automatically on load.
 
 ---
 

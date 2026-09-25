@@ -113,7 +113,10 @@ async function main(): Promise<void> {
   check("C2: HIGHEST version survived", dupRes.body.products.find((p: any) => p.id === survivor.id)?.version === freshCopy.version, dupRes.body.products?.find((p: any) => p.id === survivor.id)?.version);
 
   // --- D. same-name twins (distinct ids) are collapsed too ---
-  const nameTwin = { ...structuredClone(ghostCopy), id: "smoke-twin-id-0000-0000", version: 1, updatedAt: new Date().toISOString() };
+  // JSON round-trip instead of structuredClone: product rows now carry nested
+  // arrays (tenureDays) that the store proxy wraps — structuredClone refuses
+  // proxy objects (DataCloneError), a JSON round-trip yields a plain copy.
+  const nameTwin = { ...JSON.parse(JSON.stringify(ghostCopy)), id: "smoke-twin-id-0000-0000", version: 1, updatedAt: new Date().toISOString() };
   loanProducts.push(nameTwin);
   const twinRes = await request(app).get("/api/v1/borrower/loan-products").set(borrowerHeaders);
   const nameMatches = twinRes.body.products.filter((p: any) => p.name.trim().toLowerCase() === `${survivor.name} stale`.toLowerCase());

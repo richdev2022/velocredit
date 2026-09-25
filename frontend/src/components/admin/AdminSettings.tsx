@@ -6,12 +6,14 @@
 // toggle switches, segmented fee editors, naira-chip inputs. Fully responsive
 // with explicit dark: variants.
 //
-// Functionality preserved 1:1 from the previous design:
-//   - Backend-first save flow (PATCH loan products BEFORE localStorage write)
-//   - 60s save timeout to tolerate Render cold starts, per-product errors
-//   - Per-tenure fee overrides, global limits/fees toggles
-//   - Platform settings (withdrawal fees, default investment rate)
-//   - Investor tools (earning rate, wallet credit), withdrawals, ledger
+// SINGLE SOURCE OF TRUTH (2026-09 consolidation):
+//   Loan configuration (amounts, tenures, interest, fees, grace, collateral,
+//   Personal/Business mapping) lives ENTIRELY on the loan product catalog —
+//   persisted in PostgreSQL via /admin/loan-products. The former "Loan
+//   programs" per-program editor and the "Global limits / Fees & charges"
+//   tabs (which only wrote to THIS browser's localStorage and fought with the
+//   catalog) have been removed. What remains here: branding & access (also
+//   mirrored to localStorage), investor tools, withdrawals, ledger.
 // ============================================================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -21,8 +23,6 @@ import {
   saveAdminOverrides,
   resetAdminOverrides,
   refreshConfig,
-  sanitizeLoanLimits,
-  safeNaira,
   type AdminConfigOverride,
 } from "../../utils/config";
 import {
@@ -45,43 +45,17 @@ import {
   type AdminBanner,
   type AdminLedgerEntry,
 } from "../../services/adminApi";
-import { adminListLoanProducts, adminCreateLoanProduct, adminPatchLoanProduct } from "../../services/apiClient";
-import { formatNaira } from "../../utils/loanCalculator";
-import { calculateLoan } from "../../utils/loanCalculator";
-import type { TenureOption, FeeConfiguration, FeeKey, TenureFeeOverrides, LoanProgramConfig, LoanProgramKey } from "../../types/loan";
-import ProgramEditor from "./ProgramEditor";
-import ProductCatalogCard from "./ProductCatalogCard";
 import AdminWithdrawalHistory from "./AdminWithdrawalHistory";
 import CsvExportButton from "../CsvExportButton";
+import ProductCatalogCard from "./ProductCatalogCard";
 import Icon from "../Icon";
-import { Pill, Toggle, SettingRow, NairaField, FeeEditor, Chip, PanelCard, type FeeValue } from "./settingsUI";
-
-const FEE_LABELS: Record<FeeKey, string> = {
-  interest: "Monthly Interest Rate",
-  serviceFee: "Service Fee",
-  processingFee: "Processing Fee",
-  lateFee: "Default / Late Fee",
-};
-
-const FEE_DESCRIPTIONS: Record<FeeKey, string> = {
-  interest: "Cost of borrowing, applied on the principal for the chosen tenure.",
-  serviceFee: "One-off administration fee charged on the loan amount.",
-  processingFee: "Deducted or charged at disbursement for processing the application.",
-  lateFee: "Penalty applied when a repayment is missed or overdue.",
-};
+import { Pill, Toggle, SettingRow, PanelCard } from "./settingsUI";
 
 /** Per-tenure override state: Record<tenureDays, { enabled: boolean, fees }> */
-type TenureFeeState = Record<number, {
-  enabled: boolean;
-  fees: Record<FeeKey, FeeValue>;
-}>;
-
-type SettingsTab = "programs" | "limits" | "fees" | "branding" | "engagement" | "system";
+type SettingsTab = "programs" | "branding" | "engagement" | "system";
 
 const SETTINGS_TABS: Array<{ key: SettingsTab; label: string; icon: React.ReactNode }> = [
-  { key: "programs", label: "Loan Programs", icon: <Icon name="target" size={15} /> },
-  { key: "limits", label: "Limits & Tenures", icon: <Icon name="money" size={15} /> },
-  { key: "fees", label: "Fees & Charges", icon: <Icon name="chart" size={15} /> },
+  { key: "programs", label: "Loan Products", icon: <Icon name="target" size={15} /> },
   { key: "branding", label: "Branding & Access", icon: <Icon name="bank" size={15} /> },
   { key: "engagement", label: "Maintenance & Announcements", icon: <Icon name="sparkles" size={15} /> },
   { key: "system", label: "System", icon: <Icon name="lock" size={15} /> },
@@ -94,24 +68,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const showWithdrawals = displaySection === "withdrawals";
   const showLedger = displaySection === "ledger";
   const [activeTab, setActiveTab] = useState<SettingsTab>("programs");
-  // Initialize from the sanitized limits — a corrupt localStorage override or a
-  // bad API response must never put undefined/NaN into these states (that used
-  // to crash the whole Admin page inside the formErrors useMemo with
-  // "Cannot read properties of undefined (reading 'toLocaleString')").
-  const safeInitLimits = sanitizeLoanLimits(currentConfig?.loanLimits);
-  const [min, setMin] = useState(safeInitLimits.min);
-  const [max, setMax] = useState(safeInitLimits.max);
-  const [defaultAmount, setDefaultAmount] = useState(safeInitLimits.defaultAmount);
-  const [globalLimitsEnabled, setGlobalLimitsEnabled] = useState(currentConfig.globalLimitsEnabled);
-  // Unified single toggle: when ON, the four global fees (interest, serviceFee,
-  // processingFee, lateFee) override every program. When OFF, each program uses
-  // its own per-program fee configuration. We still persist both legacy flags
-  // (globalFeesEnabled / globalInterestEnabled) for backward compatibility,
-  // but they are always written with the same value.
-  const [globalTransactionsEnabled, setGlobalTransactionsEnabled] = useState(
-    Boolean(currentConfig.globalFeesEnabled) && Boolean(currentConfig.globalInterestEnabled),
-  );
-  const [selectedTenures, setSelectedTenures] = useState<number[]>(() => currentConfig.tenures.map((t) => t.value));
   const [companyName, setCompanyName] = useState(currentConfig.companyName);
   const [companyWebsite, setCompanyWebsite] = useState(currentConfig.companyWebsite);
   const [brandLogoUrl, setBrandLogoUrl] = useState(currentConfig.brandLogoUrl);
@@ -121,34 +77,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const [apiUrl, setApiUrl] = useState(currentConfig.apiUrl);
   const [loanManagerEmails, setLoanManagerEmails] = useState(currentConfig.loanManagerEmails.join(", "));
   const [adminEmails, setAdminEmails] = useState(currentConfig.adminEmails.join(", "));
-  const [programs, setPrograms] = useState<Record<LoanProgramKey, LoanProgramConfig>>(() => ({
-    PERSONAL: structuredClone(currentConfig.loanPrograms.PERSONAL),
-    BUSINESS: structuredClone(currentConfig.loanPrograms.BUSINESS),
-  }));
-
-  const [fees, setFees] = useState<Record<FeeKey, FeeValue>>(() => ({
-    interest:      { ...currentConfig.fees.interest },
-    serviceFee:    { ...currentConfig.fees.serviceFee },
-    processingFee: { ...currentConfig.fees.processingFee },
-    lateFee:       { ...currentConfig.fees.lateFee },
-  }));
-
-  const [tenureFees, setTenureFees] = useState<TenureFeeState>(() => {
-    const state: TenureFeeState = {};
-    currentConfig.tenures.forEach((t) => {
-      const override = currentConfig.tenureFees?.[t.value];
-      state[t.value] = {
-        enabled: !!override,
-        fees: {
-          interest:      { ...currentConfig.fees.interest,      ...(override?.interest      || {}) },
-          serviceFee:    { ...currentConfig.fees.serviceFee,    ...(override?.serviceFee    || {}) },
-          processingFee: { ...currentConfig.fees.processingFee, ...(override?.processingFee || {}) },
-          lateFee:       { ...currentConfig.fees.lateFee,       ...(override?.lateFee       || {}) },
-        },
-      };
-    });
-    return state;
-  });
 
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -189,10 +117,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const LEDGER_LIMIT = 20;
 
   // Loan product catalog — rendered by the self-contained ProductCatalogCard
-  // (every product fully editable + activatable + creatable). refreshSignal is
-  // bumped whenever the program save flow creates/patches backend products so
-  // the catalog card re-fetches and stays in sync.
-  const [catalogRefresh, setCatalogRefresh] = useState(0);
+  // (every product fully editable: type, amounts, tenures, interest, fees,
+  // grace, collateral, active). It saves straight to the backend catalog —
+  // the authoritative loan configuration for the whole platform.
 
   useEffect(() => {
     async function loadAdminData() {
@@ -311,171 +238,12 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }
   }
 
-  const tenureOptions: TenureOption[] = useMemo(() => {
-    const baseTenures = Array.isArray(baseConfig?.tenures) ? baseConfig.tenures : [];
-    const currentTenures = Array.isArray(currentConfig?.tenures) ? currentConfig.tenures : [];
-    const values = new Set([...baseTenures, ...currentTenures].map((tenure) => tenure?.value).filter((v) => Number.isFinite(v)));
-    return [...values].sort((a, b) => a - b).map((value) => ({ value, label: `${value} Days` }));
-  }, []);
-
-  const tenures = useMemo(
-    () => tenureOptions.filter((tenure) => selectedTenures.includes(tenure.value)),
-    [selectedTenures, tenureOptions],
-  );
-
-  // When tenures list changes, sync tenureFees state (add new, keep existing)
-  const tenureFeesSynced: TenureFeeState = useMemo(() => {
-    const next: TenureFeeState = { ...tenureFees };
-    tenures.forEach((t) => {
-      if (!next[t.value]) {
-        next[t.value] = {
-          enabled: false,
-          fees: {
-            interest:      { ...fees.interest },
-            serviceFee:    { ...fees.serviceFee },
-            processingFee: { ...fees.processingFee },
-            lateFee:       { ...fees.lateFee },
-          },
-        };
-      }
-    });
-    return next;
-  }, [tenures, tenureFees, fees]);
-
-  const previewCalc = useMemo(() => {
-    // Guard against undefined/NaN — Math.min/max with undefined yields NaN and
-    // would silently poison the preview panel.
-    const nMin = Number.isFinite(Number(min)) ? Number(min) : baseConfig.loanLimits.min;
-    const nMax = Number.isFinite(Number(max)) ? Number(max) : baseConfig.loanLimits.max;
-    const lo = Math.min(nMin, nMax);
-    const hi = Math.max(nMin, nMax);
-    const nDef = Number.isFinite(Number(defaultAmount)) ? Number(defaultAmount) : lo;
-    const safeDef = Math.min(Math.max(nDef, lo), hi);
-    const safeTenure = tenures.length > 0 ? tenures[Math.floor(tenures.length / 2)].value : 30;
-    return calculateLoan(safeDef, safeTenure, {
-      fees: {
-        interest: fees.interest,
-        serviceFee: fees.serviceFee,
-        processingFee: fees.processingFee,
-        lateFee: fees.lateFee,
-      } as any,
-    });
-  }, [defaultAmount, min, max, tenures, fees]);
-
-  const formErrors = useMemo(() => {
-    const errs: { key: string; message: string; severity: "error" | "warning" }[] = [];
-    // Coerce states through Number() first — they can transiently hold NaN/
-    // undefined from input parsing. Use safeNaira() so formatting never throws
-    // even when a value is still undefined.
-    const nMin = Number(min);
-    const nMax = Number(max);
-    const nDefault = Number(defaultAmount);
-    const minFinite = Number.isFinite(nMin);
-    const maxFinite = Number.isFinite(nMax);
-    const defFinite = Number.isFinite(nDefault);
-    if (!minFinite || !maxFinite) {
-      errs.push({ key: "LOAN_LIMITS", message: "Minimum and Maximum loan amounts must be valid numbers.", severity: "error" });
-    } else if (!(nMin < nMax)) {
-      errs.push({ key: "LOAN_LIMITS", message: `Minimum (₦${safeNaira(nMin)}) must be less than Maximum (₦${safeNaira(nMax)}).`, severity: "error" });
-    }
-    if (minFinite && maxFinite && defFinite && (nDefault < nMin || nDefault > nMax)) {
-      errs.push({ key: "LOAN_DEFAULT", message: `Default amount (₦${safeNaira(nDefault)}) must be between min (₦${safeNaira(nMin)}) and max (₦${safeNaira(nMax)}).`, severity: "error" });
-    } else if (!defFinite) {
-      errs.push({ key: "LOAN_DEFAULT", message: "Default loan amount must be a valid number.", severity: "error" });
-    }
-    if (tenures.length === 0) {
-      errs.push({ key: "TENURES", message: "Select at least one repayment tenure.", severity: "error" });
-    }
-    (Object.keys(fees) as FeeKey[]).forEach((k) => {
-      const f = fees[k];
-      if (f.type !== "flat" && f.type !== "percentage") {
-        errs.push({ key: `${k.toUpperCase()}_TYPE`, message: `${FEE_LABELS[k]} type must be flat or percentage.`, severity: "error" });
-      }
-      if (f.type === "percentage" && (f.value < 0 || f.value > 100)) {
-        errs.push({ key: `${k.toUpperCase()}_VALUE`, message: `${FEE_LABELS[k]} percentage must be between 0 and 100 (got ${f.value}).`, severity: "error" });
-      }
-      if (f.value < 0) {
-        errs.push({ key: `${k.toUpperCase()}_VALUE`, message: `${FEE_LABELS[k]} value cannot be negative.`, severity: "error" });
-      }
-    });
-    // Validate tenure fees too
-    tenures.forEach((t) => {
-      const tf = tenureFeesSynced[t.value];
-      if (tf?.enabled) {
-        (Object.keys(tf.fees) as FeeKey[]).forEach((k) => {
-          const f = tf.fees[k];
-          if (f.type === "percentage" && (f.value < 0 || f.value > 100)) {
-            errs.push({ key: `T${t.value}_${k.toUpperCase()}_VALUE`, message: `[${t.value}d] ${FEE_LABELS[k]} % must be 0-100 (got ${f.value}).`, severity: "error" });
-          }
-          if (f.value < 0) {
-            errs.push({ key: `T${t.value}_${k.toUpperCase()}_VALUE`, message: `[${t.value}d] ${FEE_LABELS[k]} cannot be negative.`, severity: "error" });
-          }
-        });
-      }
-    });
-    return errs;
-  }, [min, max, defaultAmount, tenures, fees, tenureFeesSynced]);
-
-  function buildTenureFeesOverrides(): TenureFeeOverrides | undefined {
-    const result: TenureFeeOverrides = {};
-    tenures.forEach((t) => {
-      const tf = tenureFeesSynced[t.value];
-      if (!tf?.enabled) return;
-      const base: Partial<FeeConfiguration> = {};
-      (Object.keys(tf.fees) as FeeKey[]).forEach((k) => {
-        const globalFees = baseConfig.fees[k];
-        const f = tf.fees[k];
-        if (f.type !== globalFees.type || f.value !== globalFees.value || f.includeUpfront !== globalFees.includeUpfront) {
-          base[k] = f;
-        }
-      });
-      if (Object.keys(base).length > 0) result[t.value] = base;
-    });
-    return Object.keys(result).length > 0 ? result : undefined;
-  }
-
-  function updateGlobalLimits(patch: Partial<LoanProgramConfig["loanLimits"]>) {
-    const nMin = Number.isFinite(Number(patch.min)) ? Number(patch.min)
-      : Number.isFinite(Number(min)) ? Number(min) : baseConfig.loanLimits.min;
-    const nMax = Number.isFinite(Number(patch.max)) ? Number(patch.max)
-      : Number.isFinite(Number(max)) ? Number(max) : baseConfig.loanLimits.max;
-    const nDef = Number.isFinite(Number(patch.defaultAmount)) ? Number(patch.defaultAmount)
-      : Number.isFinite(Number(defaultAmount)) ? Number(defaultAmount) : nMin;
-    const limits = { min: nMin, max: nMax, defaultAmount: nDef };
-    if (patch.min !== undefined) setMin(nMin);
-    if (patch.max !== undefined) setMax(nMax);
-    if (patch.defaultAmount !== undefined) setDefaultAmount(nDef);
-    setPrograms((current) => ({
-      PERSONAL: { ...current.PERSONAL, loanLimits: limits },
-      BUSINESS: { ...current.BUSINESS, loanLimits: limits },
-    }));
-  }
-
-  async function withSaveTimeout<T>(operation: Promise<T>, timeoutMs = 60000): Promise<T> {
-    let timeoutId: number | undefined;
-    try {
-      return await Promise.race([
-        operation,
-        new Promise<T>((_, reject) => {
-          timeoutId = window.setTimeout(() => reject(new Error("Saving configuration timed out. The backend may be cold-starting — please try again in a moment.")), timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-    }
-  }
-
   async function handleSave() {
+    // Loan configuration lives ENTIRELY on the backend loan product catalog
+    // (edited on the Loan Products tab — saved per product via /admin/loan-products).
+    // What is saved HERE is the platform identity / access layer, mirrored to
+    // localStorage so every page of this browser picks it up instantly.
     const overrides: AdminConfigOverride = {
-      loanLimits: {
-        min: min !== baseConfig.loanLimits.min ? min : undefined,
-        max: max !== baseConfig.loanLimits.max ? max : undefined,
-        defaultAmount: defaultAmount !== baseConfig.loanLimits.defaultAmount ? defaultAmount : undefined,
-      },
-      tenures: JSON.stringify(tenures) !== JSON.stringify(baseConfig.tenures) ? tenures : undefined,
-      fees: {},
-      tenureFees: buildTenureFeesOverrides(),
-      loanPrograms: programs,
       companyName: companyName !== baseConfig.companyName ? companyName : undefined,
       companyWebsite: companyWebsite !== baseConfig.companyWebsite ? companyWebsite : undefined,
       brandLogoUrl: brandLogoUrl !== baseConfig.brandLogoUrl ? brandLogoUrl : undefined,
@@ -485,94 +253,16 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       apiUrl: apiUrl !== baseConfig.apiUrl ? apiUrl : undefined,
       loanManagerEmails: loanManagerEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
       adminEmails: adminEmails.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean),
-      globalLimitsEnabled,
-      globalFeesEnabled: globalTransactionsEnabled,
-      globalInterestEnabled: globalTransactionsEnabled,
     };
-    (Object.keys(fees) as FeeKey[]).forEach((k) => {
-      const b = baseConfig.fees[k];
-      const f = fees[k];
-      if (f.type !== b.type || f.value !== b.value || f.includeUpfront !== b.includeUpfront) {
-        overrides.fees![k] = f;
-      }
-    });
-    if (overrides.fees && Object.keys(overrides.fees).length === 0) overrides.fees = undefined;
-    if (overrides.loanLimits && Object.keys(overrides.loanLimits).length === 0) overrides.loanLimits = undefined;
 
     setSaving(true);
     setSaved(false);
     setSaveError("");
     try {
-      const activePrograms = Object.fromEntries(
-        (Object.entries(programs) as Array<[LoanProgramKey, LoanProgramConfig]>).map(([type, program]) => [type, {
-          ...program,
-          loanLimits: globalLimitsEnabled ? { min: Number(min) || 0, max: Number(max) || 0, defaultAmount: Number(defaultAmount) || 0 } : program.loanLimits,
-          fees: globalTransactionsEnabled
-            ? { ...program.fees, ...fees }
-            : { ...program.fees },
-        }]),
-      ) as Record<LoanProgramKey, LoanProgramConfig>;
-      overrides.loanPrograms = activePrograms;
-
-      // ===== Push to backend FIRST, then write to localStorage only on success =====
-      // This ensures the admin's localStorage doesn't get out of sync with the
-      // backend. If the backend PATCH fails (timeout, 404, 503, etc.), we
-      // surface the error and DON'T write to localStorage — so the admin
-      // knows the save didn't land and can retry.
-      const patchErrors: string[] = [];
-      await withSaveTimeout((async () => {
-        const products = (await adminListLoanProducts()).products;
-        for (const [type, program] of Object.entries(activePrograms) as Array<[LoanProgramKey, LoanProgramConfig]>) {
-          // Staged matching, best bind first:
-          //   1. the product this program is BOUND to by its live name (set by
-          //      applyLoanProducts — rename-safe), then
-          //   2. an ACTIVE product whose name carries the type keyword, then
-          //   3. any product with the keyword.
-          // Never a blanket OR-chain: that could bind the program to the wrong
-          // (inactive/stale) product when several names share the keyword.
-          const keyword = type === "PERSONAL" ? /personal/i : /business/i;
-          const existing
-            = (program.productName
-              ? products.find((product: any) => String(product.name).toLowerCase() === String(program.productName).toLowerCase())
-              : undefined)
-            ?? products.find((product: any) => product.isActive && keyword.test(product.name))
-            ?? products.find((product: any) => keyword.test(product.name));
-          // Preserve the admin's product NAME on update — forcing the name back
-          // to "Personal/Business Loan" on every save renamed custom products,
-          // tripped the duplicate-name guard (409) and desynced the binding.
-          const productName = existing ? existing.name : `${type === "PERSONAL" ? "Personal" : "Business"} Loan`;
-          const productInput = {
-            name: productName,
-            minAmountNaira: program.loanLimits.min,
-            maxAmountNaira: program.loanLimits.max,
-            defaultTenureDays: program.tenures[0]?.value || 30,
-            interestRatePercent: program.fees.interest.value,
-            interestType: "ANNUALIZED" as const,
-            processingFeePercent: program.fees.processingFee.type === "percentage" ? program.fees.processingFee.value : 0,
-            lateFeePercent: program.fees.lateFee.type === "percentage" ? program.fees.lateFee.value : 0,
-            isActive: existing?.isActive ?? true,
-          };
-          try {
-            if (existing) await adminPatchLoanProduct(existing.id, productInput);
-            else await adminCreateLoanProduct(productInput);
-          } catch (err) {
-            patchErrors.push(`${type}: ${err instanceof Error ? err.message : "unknown error"}`);
-          }
-        }
-      })());
-
-      if (patchErrors.length > 0) {
-        throw new Error(`Backend save failed for: ${patchErrors.join("; ")}. Local settings were NOT saved — please retry.`);
-      }
-
-      // Only write to localStorage + refreshConfig AFTER the backend succeeded.
       saveAdminOverrides(overrides);
       refreshConfig(overrides);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-      // The save flow may have created/patched backend products — bump the
-      // catalog card so it re-fetches the authoritative list.
-      setCatalogRefresh((v) => v + 1);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "Unable to save settings.");
     } finally {
@@ -586,12 +276,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     try {
       resetAdminOverrides();
       refreshConfig({});
-      setMin(currentConfig.loanLimits?.min ?? baseConfig.loanLimits.min);
-      setMax(currentConfig.loanLimits?.max ?? baseConfig.loanLimits.max);
-      setDefaultAmount(currentConfig.loanLimits?.defaultAmount ?? baseConfig.loanLimits.defaultAmount);
-      setGlobalLimitsEnabled(true);
-      setGlobalTransactionsEnabled(true);
-      setSelectedTenures(baseConfig.tenures.map((t) => t.value));
       setCompanyName(baseConfig.companyName);
       setCompanyWebsite(baseConfig.companyWebsite);
       setBrandLogoUrl(baseConfig.brandLogoUrl);
@@ -601,26 +285,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
       setApiUrl(baseConfig.apiUrl);
       setLoanManagerEmails(baseConfig.loanManagerEmails.join(", "));
       setAdminEmails(baseConfig.adminEmails.join(", "));
-      setPrograms({ PERSONAL: structuredClone(baseConfig.loanPrograms.PERSONAL), BUSINESS: structuredClone(baseConfig.loanPrograms.BUSINESS) });
-      setFees({
-        interest:      { ...baseConfig.fees.interest },
-        serviceFee:    { ...baseConfig.fees.serviceFee },
-        processingFee: { ...baseConfig.fees.processingFee },
-        lateFee:       { ...baseConfig.fees.lateFee },
-      });
-      const resetState: TenureFeeState = {};
-      baseConfig.tenures.forEach((t) => {
-        resetState[t.value] = {
-          enabled: false,
-          fees: {
-            interest:      { ...baseConfig.fees.interest },
-            serviceFee:    { ...baseConfig.fees.serviceFee },
-            processingFee: { ...baseConfig.fees.processingFee },
-            lateFee:       { ...baseConfig.fees.lateFee },
-          },
-        };
-      });
-      setTenureFees(resetState);
       setResetConfirm(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -631,7 +295,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     }
   }
 
-  const saveDisabled = saving || formErrors.some((error) => error.severity === "error");
+  const saveDisabled = saving;
 
   return (
     <div className="space-y-5">
@@ -649,7 +313,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 <div className="min-w-0">
                   <h2 className="text-lg font-bold tracking-tight sm:text-xl">Platform Settings</h2>
                   <p className="mt-0.5 text-xs leading-5 text-white/70 sm:max-w-xl sm:text-[13px]">
-                    Configure loan programs, limits, fees, branding and access — saved for every user on the platform.
+                    Loan products, branding and access — the product catalog is the complete loan configuration for every user on the platform.
                   </p>
                 </div>
               </div>
@@ -707,21 +371,6 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
               <div className="min-w-0 flex-1">{saveError}</div>
             </div>
           )}
-          {formErrors.length > 0 && (
-            <div className={`rounded-2xl border p-4 ${formErrors.some(e => e.severity === "error") ? "border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/40" : "border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/40"}`}>
-              <div className={`mb-1.5 flex items-center gap-2 text-sm font-bold ${formErrors.some(e => e.severity === "error") ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`}>
-                <Icon name="alert" size={15} />{formErrors.some(e => e.severity === "error") ? "Fix these before saving" : "Review these warnings"}
-              </div>
-              <ul className="space-y-1 text-xs">
-                {formErrors.map((e, i) => (
-                  <li key={i} className="flex items-start gap-2 text-slate-700 dark:text-slate-300">
-                    <span className="mt-0.5 text-slate-400">•</span>
-                    <span><strong className="font-semibold">{e.key}:</strong> {e.message}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
 
           {/* ===== Sticky tab bar ===== */}
           <div className="sticky top-14 z-20 -mx-1 bg-slate-50/95 px-1 py-2 backdrop-blur dark:bg-slate-950/95 sm:top-16">
@@ -753,151 +402,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
             <div className="min-w-0 space-y-5 xl:col-span-2">
               {activeTab === "programs" && (
-                <>
-                  {/* Fully editable catalog — every product (name, range,
-                      tenure, interest + type, fees, grace period, active). */}
-                  <ProductCatalogCard refreshSignal={catalogRefresh} />
-
-                  <PanelCard
-                    title="Loan programs"
-                    description="Each program controls the limits, tenures, rates, fees and collateral rules its applicants see."
-                    icon={<Icon name="target" size={18} />}
-                    action={<Pill tone="info">2 application flows</Pill>}
-                  >
-                    <div className="space-y-4 py-2">
-                      {(["PERSONAL", "BUSINESS"] as LoanProgramKey[]).map((type) => (
-                        <ProgramEditor key={type} type={type} value={programs[type]} onChange={(value) => setPrograms((current) => ({ ...current, [type]: value }))} />
-                      ))}
-                    </div>
-                  </PanelCard>
-                </>
-              )}
-
-              {activeTab === "limits" && (
-                <>
-                  <PanelCard
-                    title="Global loan limits"
-                    description="Apply one range to both programs, or switch off to use each program's own limits."
-                    icon={<Icon name="money" size={18} />}
-                    action={<Toggle checked={globalLimitsEnabled} onChange={setGlobalLimitsEnabled} label={globalLimitsEnabled ? "Global" : "Per program"} />}
-                  >
-                    <div className={globalLimitsEnabled ? "" : "pointer-events-none opacity-50"}>
-                      <div className="grid grid-cols-1 gap-4 py-3 sm:grid-cols-3">
-                        <NairaField label="Minimum loan" value={min} onChange={(value) => updateGlobalLimits({ min: value })} />
-                        <NairaField label="Maximum loan" value={max} onChange={(value) => updateGlobalLimits({ max: value })} />
-                        <NairaField label="Default amount" value={defaultAmount} onChange={(value) => updateGlobalLimits({ defaultAmount: value })} helpText="Pre-selected on the application form" />
-                      </div>
-                    </div>
-                    {!globalLimitsEnabled && (
-                      <p className="pb-3 text-[11px] font-semibold text-amber-600 dark:text-amber-400">Per-program limits are edited on the Loan Programs tab.</p>
-                    )}
-                  </PanelCard>
-
-                  <PanelCard
-                    title="Repayment tenures"
-                    description="Select the repayment periods available to borrowers."
-                    icon={<Icon name="calendar" size={18} />}
-                    action={<Pill tone={tenures.length === 0 ? "danger" : "neutral"}>{tenures.length} selected</Pill>}
-                  >
-                    <div className="flex flex-wrap gap-2 py-3">
-                      {tenureOptions.map((tenure) => (
-                        <Chip
-                          key={tenure.value}
-                          selected={selectedTenures.includes(tenure.value)}
-                          onClick={() => setSelectedTenures((current) =>
-                            current.includes(tenure.value)
-                              ? current.filter((value) => value !== tenure.value)
-                              : [...current, tenure.value].sort((a, b) => a - b)
-                          )}
-                        >
-                          {tenure.value} days
-                        </Chip>
-                      ))}
-                    </div>
-                    {tenures.length === 0 && <p className="pb-3 text-xs font-semibold text-red-600">Select at least one tenure.</p>}
-                  </PanelCard>
-
-                  <PanelCard
-                    title="Per-tenure fee overrides"
-                    description="Optional: give specific tenors their own fee schedule. Fees left unchanged inherit from the global fees."
-                    icon={<Icon name="chart" size={18} />}
-                  >
-                    <div className="space-y-3 py-3">
-                      {tenures.length === 0 && (
-                        <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                          Select tenures above to configure per-tenure fees.
-                        </div>
-                      )}
-                      {tenures.map((t) => {
-                        const state = tenureFeesSynced[t.value];
-                        if (!state) return null;
-                        return (
-                          <div
-                            key={t.value}
-                            className={`overflow-hidden rounded-2xl border transition-all duration-200 ${
-                              state.enabled
-                                ? "border-velo-300 bg-velo-50/50 dark:border-velo-700 dark:bg-velo-900/20"
-                                : "border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-3 p-3.5">
-                              <div className="flex items-center gap-3">
-                                <Toggle size="sm" checked={state.enabled} onChange={(on) => setTenureFees({ ...tenureFeesSynced, [t.value]: { ...state, enabled: on } })} />
-                                <div>
-                                  <div className="text-sm font-bold text-velo-900 dark:text-white">{t.value} days</div>
-                                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                                    {state.enabled ? "Custom fees active for this tenure" : "Using global fees (inherited)"}
-                                  </div>
-                                </div>
-                              </div>
-                              <Pill tone={state.enabled ? "info" : "neutral"}>{state.enabled ? "CUSTOM" : "GLOBAL"}</Pill>
-                            </div>
-                            {state.enabled && (
-                              <div className="grid grid-cols-1 gap-3 border-t border-velo-100 p-3.5 dark:border-velo-800/60 md:grid-cols-2">
-                                {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
-                                  <FeeEditor
-                                    key={k}
-                                    label={FEE_LABELS[k]}
-                                    value={state.fees[k]}
-                                    baseline={fees[k]}
-                                    baselineLabel="Global"
-                                    onChange={(v) => setTenureFees({ ...tenureFeesSynced, [t.value]: { ...state, fees: { ...state.fees, [k]: v } } })}
-                                  />
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </PanelCard>
-                </>
-              )}
-
-              {activeTab === "fees" && (
-                <PanelCard
-                  title="Global fees & charges"
-                  description="When global fees are ON, the four fees below override every loan program. When OFF, each program uses its own per-program fees."
-                  icon={<Icon name="chart" size={18} />}
-                  action={<Toggle checked={globalTransactionsEnabled} onChange={setGlobalTransactionsEnabled} label={globalTransactionsEnabled ? "Global" : "Per program"} />}
-                >
-                  <div className={globalTransactionsEnabled ? "space-y-4 py-3" : "space-y-4 py-3"}>
-                    {(Object.keys(FEE_LABELS) as FeeKey[]).map((k) => (
-                      <FeeEditor
-                        key={k}
-                        label={FEE_LABELS[k]}
-                        description={FEE_DESCRIPTIONS[k]}
-                        value={fees[k]}
-                        baseline={baseConfig.fees[k]}
-                        baselineLabel="default"
-                        onChange={(v) => setFees({ ...fees, [k]: v })}
-                      />
-                    ))}
-                  </div>
-                  {!globalTransactionsEnabled && (
-                    <p className="pb-3 text-[11px] font-semibold text-amber-600 dark:text-amber-400">Per-program fees are edited on the Loan Programs tab.</p>
-                  )}
-                </PanelCard>
+                <ProductCatalogCard />
               )}
 
               {activeTab === "branding" && (
@@ -982,36 +487,14 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
 
             {/* ===== Context sidebar ===== */}
             <div className="min-w-0 space-y-5">
-              {(activeTab === "limits" || activeTab === "fees" || activeTab === "programs") && (
-                <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-velo-900 via-velo-800 to-velo-700 p-5 text-white shadow-elevated">
-                  <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-velo-300/20 blur-2xl" />
-                  <div className="relative">
-                    <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] font-bold tracking-wider">
-                      <Icon name="sparkles" size={11} />LIVE PREVIEW
-                    </span>
-                    <h3 className="mb-0.5 text-sm font-bold">Sample calculation</h3>
-                    <p className="mb-4 text-[11px] text-white/70">Default amount × middle tenure, using global fees.</p>
-                    <div className="mb-3 space-y-1">
-                      <PreviewRow label="Principal" value={formatNaira(previewCalc.loanAmount)} />
-                      <PreviewRow label="Interest" value={formatNaira(previewCalc.interest)} />
-                      <PreviewRow label="Service Fee" value={formatNaira(previewCalc.serviceFee)} />
-                      <PreviewRow label="Processing Fee" value={formatNaira(previewCalc.processingFee)} />
-                      {previewCalc.lateFee > 0 && <PreviewRow label="Default Fee (if any)" value={formatNaira(previewCalc.lateFee)} muted />}
-                    </div>
-                    <div className="border-t border-white/15 pt-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold tracking-wider text-white/80">TOTAL REPAYMENT</span>
-                        <span key={previewCalc.totalRepayment} className="animate-bounce-subtle text-xl font-bold tracking-tight sm:text-2xl">
-                          {formatNaira(previewCalc.totalRepayment)}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 flex justify-between text-[10px] text-white/70">
-                        <span>Tenure: <strong className="text-white/90">{previewCalc.tenureLabel}</strong></span>
-                        <span>Due: <strong className="text-white/90">{previewCalc.repaymentDateLabel || "…"}</strong></span>
-                      </div>
-                    </div>
+              {activeTab === "programs" && (
+                <PanelCard title="Single source of truth" icon={<Icon name="sparkles" size={16} />}>
+                  <div className="space-y-2.5 py-2 text-xs leading-5 text-slate-600 dark:text-slate-300">
+                    <p>Every loan term lives on the product itself: type (Personal / Business / Both), amount range + default, tenor list + default tenor, interest and type, processing / service / late fees, grace period, collateral and active state.</p>
+                    <p>Products are persisted in PostgreSQL — every borrower sees exactly the same terms on every device, and applications capture an immutable snapshot of the product they applied under.</p>
+                    <p>The former per-program editors and global limits/fees tabs stored settings ONLY in the editing admin's browser — they have been removed to end the conflicts.</p>
                   </div>
-                </div>
+                </PanelCard>
               )}
 
               {activeTab === "branding" && (
@@ -1043,10 +526,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
               <PanelCard title="How this works" icon={<Icon name="history" size={16} />}>
                 <ol className="space-y-2.5 py-2 text-xs leading-5 text-slate-600 dark:text-slate-300">
                   {[
-                    "Settings are saved to the shared Velo configuration and pushed to the backend.",
-                    "Every applicant receives the saved settings when the site loads.",
-                    "Per-tenure fee schedules take precedence over the global fees.",
-                    "Restore defaults returns to the deployed baseline configuration.",
+                    "Loan Products save straight to the backend catalog (PostgreSQL) — every borrower sees the same terms.",
+                    "Branding & access settings apply to this deployment and mirror to the browser for instant page loads.",
+                    "Loan applications capture an immutable product snapshot, so later product edits never change agreed loans.",
+                    "Restore defaults resets branding/access to the deployed baseline (loan products are untouched).",
                   ].map((line, i) => (
                     <li key={line} className="flex gap-2.5">
                       <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-velo-100 text-[10px] font-bold text-velo-700 dark:bg-velo-900 dark:text-velo-300">{i + 1}</span>
@@ -1486,15 +969,6 @@ function InlineMessage({ message }: { message: string }) {
         : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
     }`}>
       <Icon name={isError ? "alert" : "check"} size={14} />{message.replace(/^Error: /, "")}
-    </div>
-  );
-}
-
-function PreviewRow({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
-  return (
-    <div className={`flex items-center justify-between py-0.5 ${muted ? "opacity-50" : ""}`}>
-      <span className="text-[11px] text-white/75">{label}</span>
-      <span className="text-sm font-semibold">{value}</span>
     </div>
   );
 }

@@ -21,15 +21,26 @@ export interface AppliedLoanProductInfo {
   id?: string;
   name: string;
   description?: string;
+  /** Explicit flow mapping stamped by the backend (admin's choice). */
+  programType?: "PERSONAL" | "BUSINESS" | "BOTH" | null;
   minAmountNaira: number;
   maxAmountNaira: number;
+  /** Pre-selected amount on the borrower form (within [min,max]). */
+  defaultAmountNaira?: number;
   defaultTenureDays?: number;
+  /** Allowed tenor list (days) — the tenure picker renders exactly this. */
+  tenureDays?: number[];
   interestRatePercent: number;
   interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
   processingFeePercent: number;
+  /** One-off administration fee on the loan amount (percent). */
+  serviceFeePercent: number;
   lateFeePercent: number;
   lateFeeType?: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
   gracePeriodDays?: number;
+  /** Collateral rules configured on the product itself. */
+  collateralEnabled?: boolean;
+  collateralRequired?: boolean;
 }
 
 export interface LoanProgramConfig {

@@ -86,14 +86,39 @@ const parseJson = <T>(value: unknown, fallback: T): T => {
 
 export type Snapshot = Record<StoreKey, unknown[]>;
 
+const numberOrNull = (row: Row, key: string): number | null => {
+  const value = row[key];
+  if (value == null) return null;
+  const parsed = typeof value === "number" ? value : Number(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+/** Parse the tenure_days JSONB column into a clean, sorted, deduped day list. */
+const tenureDays = (row: Row): number[] | undefined => {
+  const raw = row["tenure_days"];
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try { parsed = JSON.parse(raw); } catch { parsed = undefined; }
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const days = [...new Set(parsed.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0))].sort((a, b) => a - b);
+  return days.length > 0 ? days : undefined;
+};
+
 export function mapLoanProductRow(row: Row): LoanProduct {
   const product: LoanProduct = {
     id: str(row, "id"), name: str(row, "name"), description: strNull(row, "description"),
+    programType: (strNull(row, "program_type") ?? undefined) as LoanProduct["programType"],
     minAmountNaira: number(row, "min_amount_naira"), maxAmountNaira: number(row, "max_amount_naira"),
-    defaultTenureDays: nullableNumber(row, "default_tenure_days"), interestRatePercent: number(row, "interest_rate_percent"),
+    defaultAmountNaira: numberOrNull(row, "default_amount_naira") ?? undefined,
+    defaultTenureDays: nullableNumber(row, "default_tenure_days"),
+    tenureDays: tenureDays(row),
+    interestRatePercent: number(row, "interest_rate_percent"),
     interestType: str(row, "interest_type") as LoanProduct["interestType"], processingFeePercent: number(row, "processing_fee_percent"),
+    serviceFeePercent: number(row, "service_fee_percent"),
     lateFeePercent: number(row, "late_fee_percent"), lateFeeType: str(row, "late_fee_type") as LoanProduct["lateFeeType"],
     gracePeriodDays: number(row, "grace_period_days"), isActive: bool(row, "is_active", true), version: number(row, "version") || 1,
+    collateralEnabled: bool(row, "collateral_enabled", true), collateralRequired: bool(row, "collateral_required", false),
     createdAt: iso(row.created_at) ?? new Date().toISOString(), updatedAt: iso(row.updated_at),
   };
   return product;
@@ -461,11 +486,17 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
     for (const row of await db.query("SELECT * FROM loan_products ORDER BY created_at ASC") as Row[]) {
       const product: LoanProduct = {
         id: str(row, "id"), name: str(row, "name"), description: strNull(row, "description"),
+        programType: (strNull(row, "program_type") ?? undefined) as LoanProduct["programType"],
         minAmountNaira: number(row, "min_amount_naira"), maxAmountNaira: number(row, "max_amount_naira"),
-        defaultTenureDays: nullableNumber(row, "default_tenure_days"), interestRatePercent: number(row, "interest_rate_percent"),
+        defaultAmountNaira: numberOrNull(row, "default_amount_naira") ?? undefined,
+        defaultTenureDays: nullableNumber(row, "default_tenure_days"),
+        tenureDays: tenureDays(row),
+        interestRatePercent: number(row, "interest_rate_percent"),
         interestType: str(row, "interest_type") as LoanProduct["interestType"], processingFeePercent: number(row, "processing_fee_percent"),
+        serviceFeePercent: number(row, "service_fee_percent"),
         lateFeePercent: number(row, "late_fee_percent"), lateFeeType: str(row, "late_fee_type") as LoanProduct["lateFeeType"],
         gracePeriodDays: number(row, "grace_period_days"), isActive: bool(row, "is_active", true), version: number(row, "version") || 1,
+        collateralEnabled: bool(row, "collateral_enabled", true), collateralRequired: bool(row, "collateral_required", false),
         createdAt: iso(row.created_at) ?? new Date().toISOString(), updatedAt: iso(row.updated_at),
       };
       snapshot.loanProducts.push(product);

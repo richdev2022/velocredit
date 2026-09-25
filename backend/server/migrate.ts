@@ -19,6 +19,7 @@ const MIGRATION_FILES = [
   "005_unique_loan_application_reference.sql",
   "006_withdrawal_idempotency.sql",
   "007_disbursement_idempotency.sql",
+  "008_loan_product_full_config.sql",
 ];
 
 export async function ensureDatabaseSchema(): Promise<"created" | "skipped"> {

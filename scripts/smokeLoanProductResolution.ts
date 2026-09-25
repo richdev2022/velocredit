@@ -56,11 +56,16 @@ async function main(): Promise<void> {
   check("classify personal keyword", classifyLoanProductType(personal as never), "PERSONAL");
   check("classify business keyword", classifyLoanProductType(business as never), "BUSINESS");
 
-  // 6. Rename simulation: product without keyword still resolves via stored id,
-  //    and classification returns null (frontend deterministic fallback).
+  // 6. Rename simulation: product without keyword still resolves via stored id.
+  //    Catalog contract 2026-09: products seeded/edited since the full-config
+  //    migration carry an EXPLICIT programType, so renaming does NOT detach
+  //    them from their flow (classification stays "PERSONAL") — the old
+  //    "renamed -> null" behaviour only applied to legacy keyword-classified
+  //    rows, which the storefront still falls back for.
   const originalName = personal.name;
   personal.name = "Velo Flex Cash";
-  check("classify renamed product -> null", classifyLoanProductType(personal as never), null);
+  const expectedAfterRename = personal.programType ? String(personal.programType) : null;
+  check("classify renamed product keeps explicit flow", classifyLoanProductType(personal as never), expectedAfterRename);
   const renamedResolution = resolveLoanProductForApplication({ loanProductId: personal.id, applicantType: "PERSONAL" });
   check("stored id survives rename", renamedResolution?.name, "Velo Flex Cash");
   personal.name = originalName;

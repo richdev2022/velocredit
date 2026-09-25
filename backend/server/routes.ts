@@ -5006,11 +5006,21 @@ router.post("/admin/kyc-cases/:id/requirement", requireAuth, requireRole("ADMIN"
 
 type LoanProductRow = (typeof loanProducts)[number];
 
+/** Sort + dedupe a tenure list so catalog data is always canonical. */
+export function normalizeTenureDays(days: number[]): number[] {
+  return [...new Set(days.map((d) => Math.trunc(Number(d))).filter((d) => Number.isFinite(d) && d > 0))].sort((a, b) => a - b);
+}
+
 function normalizeProductKeyword(name: unknown): string {
   return String(name ?? "").trim().toLowerCase();
 }
 
 function productMatchesApplicantType(product: LoanProductRow, applicantType: "PERSONAL" | "BUSINESS"): boolean {
+  // Explicit admin-set type always wins over name keywords.
+  if (product.programType === "BOTH") return true;
+  if (product.programType === "PERSONAL" || product.programType === "BUSINESS") {
+    return product.programType === applicantType;
+  }
   const name = normalizeProductKeyword(product.name);
   return applicantType === "BUSINESS"
     ? name.includes("business")
@@ -5065,21 +5075,29 @@ export function resolveLoanProductForApplication(
   return loanProducts[0] ?? null;
 }
 
-/** Build the immutable terms snapshot captured on applications and loans. */
+/**
+ * Build the immutable terms snapshot captured on applications and loans.
+ */
 export function captureProductSnapshot(product: LoanProductRow | null): LoanProductSnapshot | null {
   if (!product) return null;
   return {
     productId: product.id,
     productName: product.name,
+    programType: product.programType ?? null,
     minAmountNaira: Number(product.minAmountNaira),
     maxAmountNaira: Number(product.maxAmountNaira),
+    defaultAmountNaira: product.defaultAmountNaira !== undefined ? Number(product.defaultAmountNaira) : undefined,
     defaultTenureDays: product.defaultTenureDays,
+    tenureDays: product.tenureDays ? [...product.tenureDays] : undefined,
     interestRatePercent: Number(product.interestRatePercent),
     interestType: product.interestType,
     processingFeePercent: Number(product.processingFeePercent),
+    serviceFeePercent: Number(product.serviceFeePercent ?? 0),
     lateFeePercent: Number(product.lateFeePercent),
     lateFeeType: product.lateFeeType,
     gracePeriodDays: product.gracePeriodDays,
+    collateralEnabled: product.collateralEnabled ?? true,
+    collateralRequired: product.collateralRequired ?? false,
     capturedAt: new Date().toISOString(),
   };
 }
@@ -5108,25 +5126,34 @@ function applicationProductPayload(application: {
   if (!name) return {};
   return {
     productName: name,
+    productProgramType: (sourceRecord.programType ?? snapshot?.programType ?? null) as string | null | undefined,
     productInterestRatePercent: Number(sourceRecord.interestRatePercent ?? snapshot?.interestRatePercent ?? 0),
     productInterestType: sourceRecord.interestType ?? snapshot?.interestType ?? "SIMPLE_FLAT",
     productProcessingFeePercent: Number(sourceRecord.processingFeePercent ?? snapshot?.processingFeePercent ?? 0),
+    productServiceFeePercent: Number(sourceRecord.serviceFeePercent ?? snapshot?.serviceFeePercent ?? 0),
     productLateFeePercent: Number(sourceRecord.lateFeePercent ?? snapshot?.lateFeePercent ?? 0),
     productGracePeriodDays: sourceRecord.gracePeriodDays ?? snapshot?.gracePeriodDays,
     productMinAmountNaira: Number(sourceRecord.minAmountNaira ?? snapshot?.minAmountNaira ?? 0),
     productMaxAmountNaira: Number(sourceRecord.maxAmountNaira ?? snapshot?.maxAmountNaira ?? 0),
+    productDefaultAmountNaira: sourceRecord.defaultAmountNaira ?? snapshot?.defaultAmountNaira,
     productDefaultTenureDays: sourceRecord.defaultTenureDays ?? snapshot?.defaultTenureDays,
+    productTenureDays: (sourceRecord.tenureDays ?? snapshot?.tenureDays) as number[] | undefined,
   };
 }
 
 /**
  * Classify a product into the borrower application flow (PERSONAL / BUSINESS)
  * deterministically, so the borrower never renders an empty program:
+ *   0. EXPLICIT productType column — the admin's choice always wins (a renamed
+ *      product keeps its flow; no keyword guessing).
  *   1. Name keyword ("business" -> BUSINESS, "personal" (not business) -> PERSONAL)
+ *      for legacy rows created before the explicit column existed.
  *   2. Single active product on the platform -> "BOTH" (serves both flows)
  *   3. Otherwise null (frontend falls back to deterministic assignment)
  */
 export function classifyLoanProductType(product: LoanProductRow): "PERSONAL" | "BUSINESS" | "BOTH" | null {
+  if (product.programType === "BUSINESS" || product.programType === "PERSONAL") return product.programType;
+  if (product.programType === "BOTH") return "BOTH";
   if (productMatchesApplicantType(product, "BUSINESS")) return "BUSINESS";
   if (productMatchesApplicantType(product, "PERSONAL")) return "PERSONAL";
   const active = loanProducts.filter((p) => p.isActive);
@@ -6423,15 +6450,21 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
   const schema = z.object({
     name: z.string().min(2),
     description: z.string().optional(),
+    programType: z.enum(["PERSONAL", "BUSINESS", "BOTH"]).nullable().optional(),
     minAmountNaira: z.number().positive(),
     maxAmountNaira: z.number().positive(),
+    defaultAmountNaira: z.number().positive().optional(),
     defaultTenureDays: z.number().int().positive().optional(),
+    tenureDays: z.array(z.number().int().positive()).max(24).optional(),
     interestRatePercent: z.number().nonnegative(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).default("SIMPLE_FLAT"),
     processingFeePercent: z.number().nonnegative().default(2),
+    serviceFeePercent: z.number().nonnegative().default(0),
     lateFeePercent: z.number().nonnegative().default(1),
     lateFeeType: z.enum(["ONE_TIME", "COMPOUNDING_DAILY", "COMPOUNDING_MONTHLY"]).default("COMPOUNDING_DAILY"),
     gracePeriodDays: z.number().int().nonnegative().default(3),
+    collateralEnabled: z.boolean().default(true),
+    collateralRequired: z.boolean().default(false),
     isActive: z.boolean().default(true),
   })
     // Cross-field guard: a product with min >= max would seed every borrower
@@ -6440,6 +6473,14 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     .refine((data) => data.minAmountNaira < data.maxAmountNaira, {
       message: "minAmountNaira must be less than maxAmountNaira",
       path: ["minAmountNaira"],
+    })
+    .refine((data) => data.defaultAmountNaira === undefined || (data.defaultAmountNaira >= data.minAmountNaira && data.defaultAmountNaira <= data.maxAmountNaira), {
+      message: "defaultAmountNaira must fall within the min/max range",
+      path: ["defaultAmountNaira"],
+    })
+    .refine((data) => data.tenureDays === undefined || data.tenureDays.length === 0 || data.defaultTenureDays === undefined || data.tenureDays.includes(data.defaultTenureDays), {
+      message: "defaultTenureDays must be one of the allowed tenureDays",
+      path: ["defaultTenureDays"],
     });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -6459,11 +6500,13 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     return;
   }
   const now = new Date().toISOString();
+  const { tenureDays, ...rest } = parsed.data;
   const product: (typeof loanProducts)[number] = {
     id: randomUUID(),
     version: 1,
     createdAt: now,
-    ...parsed.data,
+    ...rest,
+    ...(tenureDays && tenureDays.length > 0 ? { tenureDays: normalizeTenureDays(tenureDays) } : {}),
   };
   loanProducts.push(product);
   if (!(await persistMutation(res))) return;
@@ -6479,15 +6522,21 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
   const schema = z.object({
     name: z.string().min(2).optional(),
     description: z.string().optional(),
+    programType: z.enum(["PERSONAL", "BUSINESS", "BOTH"]).nullable().optional(),
     minAmountNaira: z.number().positive().optional(),
     maxAmountNaira: z.number().positive().optional(),
+    defaultAmountNaira: z.number().positive().nullable().optional(),
     defaultTenureDays: z.number().int().positive().optional(),
+    tenureDays: z.array(z.number().int().positive()).max(24).optional(),
     interestRatePercent: z.number().nonnegative().optional(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).optional(),
     processingFeePercent: z.number().nonnegative().optional(),
+    serviceFeePercent: z.number().nonnegative().optional(),
     lateFeePercent: z.number().nonnegative().optional(),
     lateFeeType: z.enum(["ONE_TIME", "COMPOUNDING_DAILY", "COMPOUNDING_MONTHLY"]).optional(),
     gracePeriodDays: z.number().int().nonnegative().optional(),
+    collateralEnabled: z.boolean().optional(),
+    collateralRequired: z.boolean().optional(),
     isActive: z.boolean().optional(),
   });
   const parsed = schema.safeParse(req.body);
@@ -6522,9 +6571,48 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
     });
     return;
   }
+  // The default amount must always sit inside the effective range.
+  const effectiveDefaultAmount = parsed.data.defaultAmountNaira === undefined
+    ? product.defaultAmountNaira
+    : parsed.data.defaultAmountNaira;
+  if (effectiveDefaultAmount !== undefined && effectiveDefaultAmount !== null && (effectiveDefaultAmount < effectiveMin || effectiveDefaultAmount > effectiveMax)) {
+    res.status(400).json({
+      ok: false,
+      error: {
+        formErrors: [],
+        fieldErrors: { defaultAmountNaira: [`defaultAmountNaira (${effectiveDefaultAmount}) must fall within the min/max range (${effectiveMin} – ${effectiveMax})`] },
+      },
+    });
+    return;
+  }
+  // Default tenure must be one of the allowed tenures once both are known.
+  const effectiveTenureDays = parsed.data.tenureDays !== undefined
+    ? normalizeTenureDays(parsed.data.tenureDays)
+    : product.tenureDays;
+  const effectiveDefaultTenure = parsed.data.defaultTenureDays ?? product.defaultTenureDays;
+  if (effectiveTenureDays && effectiveTenureDays.length > 0 && effectiveDefaultTenure !== undefined && !effectiveTenureDays.includes(effectiveDefaultTenure)) {
+    res.status(400).json({
+      ok: false,
+      error: {
+        formErrors: [],
+        fieldErrors: { defaultTenureDays: [`defaultTenureDays (${effectiveDefaultTenure}) must be one of the allowed tenureDays (${effectiveTenureDays.join(", ")})`] },
+      },
+    });
+    return;
+  }
   product.version += 1;
   product.updatedAt = new Date().toISOString();
-  Object.assign(product, parsed.data);
+  const { tenureDays, defaultAmountNaira, ...rest } = parsed.data;
+  Object.assign(product, rest);
+  if (tenureDays !== undefined) {
+    const normalized = normalizeTenureDays(tenureDays);
+    if (normalized.length > 0) (product as LoanProductRow).tenureDays = normalized;
+    else delete (product as LoanProductRow).tenureDays;
+  }
+  if (defaultAmountNaira !== undefined) {
+    if (defaultAmountNaira === null) delete (product as LoanProductRow).defaultAmountNaira;
+    else (product as LoanProductRow).defaultAmountNaira = defaultAmountNaira;
+  }
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, product });
 });

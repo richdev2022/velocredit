@@ -327,15 +327,23 @@ export type LoanStageKey = typeof LOAN_STAGES[number]["key"];
 export interface LoanProductSnapshot {
   productId?: string;
   productName: string;
+  /** Explicit borrower-flow mapping (Personal / Business / both) at capture time. */
+  programType?: "PERSONAL" | "BUSINESS" | "BOTH" | null;
   minAmountNaira?: number;
   maxAmountNaira?: number;
+  defaultAmountNaira?: number;
   defaultTenureDays?: number;
+  /** Allowed tenor list (days) at capture time — drives the borrower tenure picker. */
+  tenureDays?: number[];
   interestRatePercent?: number;
   interestType?: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
   processingFeePercent?: number;
+  serviceFeePercent?: number;
   lateFeePercent?: number;
   lateFeeType?: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
   gracePeriodDays?: number;
+  collateralEnabled?: boolean;
+  collateralRequired?: boolean;
   capturedAt?: string;
 }
 
@@ -654,19 +662,37 @@ export interface PlatformSettings {
   createdAt: string;
 }
 
+export type LoanProductProgramType = "PERSONAL" | "BUSINESS" | "BOTH";
+
 export interface LoanProduct {
   id: string;
   name: string;
   description?: string;
+  /**
+   * Explicit borrower-flow mapping. NULL/undefined = legacy behaviour (the
+   * product is classified from its NAME keywords downstream). Admin-configured
+   * products should always set this so renamed products keep their flow.
+   */
+  programType?: LoanProductProgramType | null;
   minAmountNaira: number;
   maxAmountNaira: number;
+  /** Pre-selected amount on the borrower form (clamped into [min,max]). */
+  defaultAmountNaira?: number;
   defaultTenureDays?: number;
+  /** Allowed tenor list in days — the borrower tenure picker renders EXACTLY this. */
+  tenureDays?: number[];
   interestRatePercent: number;
   interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
   processingFeePercent: number;
+  /** One-off administration fee on the loan amount (percent). */
+  serviceFeePercent: number;
   lateFeePercent: number;
   lateFeeType: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
   gracePeriodDays: number;
+  /** Collateral section shown to applicants of this product. */
+  collateralEnabled: boolean;
+  /** When true, collateral details + media are required before submission. */
+  collateralRequired: boolean;
   isActive: boolean;
   version: number;
   createdAt: string;
@@ -1492,16 +1518,101 @@ export function seedInvestmentPlans(): void {
   }
 }
 
-export function seedLoanProducts(): void {
-  if (loanProducts.length > 0) return;
-  const now = new Date().toISOString();
-  const seed: Omit<LoanProduct, "id" | "createdAt" | "updatedAt">[] = [
-    { name: "Velo Personal Quick", description: "Fast personal loan for salaried individuals", minAmountNaira: 50000, maxAmountNaira: 2000000, defaultTenureDays: 90, interestRatePercent: 18, interestType: "SIMPLE_FLAT", processingFeePercent: 2, lateFeePercent: 1, lateFeeType: "COMPOUNDING_DAILY", gracePeriodDays: 3, isActive: true, version: 1 },
-    { name: "Velo Business Boost", description: "Working capital for registered SMEs", minAmountNaira: 500000, maxAmountNaira: 10000000, defaultTenureDays: 180, interestRatePercent: 22, interestType: "REDUCING_BALANCE", processingFeePercent: 3, lateFeePercent: 0.5, lateFeeType: "COMPOUNDING_DAILY", gracePeriodDays: 5, isActive: true, version: 1 },
-  ];
-  for (const product of seed) {
-    loanProducts.push({ id: randomUUID(), createdAt: now, ...product });
+// ---------------------------------------------------------------------------
+// Default loan products (Moniepoint-style baseline).
+//
+// The platform sells TWO flows — Personal and Business — and BOTH must exist
+// as real, fully-configured catalog products. Legacy seeds used vendor-ish
+// names ("Velo Personal Quick") that the admin never asked for; the defaults
+// below are the plain "Personal Loan" / "Business Loan" products the borrower
+// flow and landing page promise (₦100,000 – ₦30,000,000 @ 5% p.a.).
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_TENURE_DAYS = [30, 60, 90, 180];
+
+export function defaultLoanProductDraft(type: "PERSONAL" | "BUSINESS"): Omit<LoanProduct, "id" | "createdAt" | "updatedAt"> {
+  if (type === "BUSINESS") {
+    return {
+      name: "Business Loan",
+      description: "Working capital, inventory, equipment and growth finance for registered businesses.",
+      programType: "BUSINESS",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 30_000_000,
+      defaultAmountNaira: 500_000,
+      defaultTenureDays: 90,
+      tenureDays: [...DEFAULT_TENURE_DAYS],
+      interestRatePercent: 5,
+      interestType: "ANNUALIZED",
+      processingFeePercent: 2,
+      serviceFeePercent: 0,
+      lateFeePercent: 1,
+      lateFeeType: "COMPOUNDING_DAILY",
+      gracePeriodDays: 3,
+      collateralEnabled: true,
+      collateralRequired: false,
+      isActive: true,
+      version: 1,
+    };
   }
+  return {
+    name: "Personal Loan",
+    description: "For personal financial needs — school fees, rent, medical, emergencies and more.",
+    programType: "PERSONAL",
+    minAmountNaira: 100_000,
+    maxAmountNaira: 30_000_000,
+    defaultAmountNaira: 100_000,
+    defaultTenureDays: 30,
+    tenureDays: [...DEFAULT_TENURE_DAYS],
+    interestRatePercent: 5,
+    interestType: "ANNUALIZED",
+    processingFeePercent: 2,
+    serviceFeePercent: 0,
+    lateFeePercent: 1,
+    lateFeeType: "COMPOUNDING_DAILY",
+    gracePeriodDays: 3,
+    collateralEnabled: true,
+    collateralRequired: false,
+    isActive: true,
+    version: 1,
+  };
+}
+
+/** True when at least one product already serves the given borrower flow. */
+function catalogCoversType(type: "PERSONAL" | "BUSINESS"): boolean {
+  return loanProducts.some((p) => {
+    if (p.programType === "BOTH") return true;
+    if (p.programType === type) return true;
+    // Legacy rows without an explicit type: keyword on the name.
+    const name = String(p.name ?? "").trim().toLowerCase();
+    return type === "BUSINESS" ? name.includes("business") : name.includes("personal") && !name.includes("business");
+  });
+}
+
+/**
+ * Seed the catalog AND self-heal missing flows.
+ *
+ *  - Fresh platforms get the two default products (Personal + Business Loan).
+ *  - An EXISTING catalog (production) that is missing one of the two flows —
+ *    exactly the "Personal and Business Loan are not among the loan products"
+ *    report — gets the missing default product added ONCE. Products the admin
+ *    configured are never renamed or removed.
+ */
+export function seedLoanProducts(): void {
+  const now = new Date().toISOString();
+  if (loanProducts.length === 0) {
+    for (const type of ["PERSONAL", "BUSINESS"] as const) {
+      loanProducts.push({ id: randomUUID(), createdAt: now, ...defaultLoanProductDraft(type) });
+    }
+    return;
+  }
+  let added = false;
+  for (const type of ["PERSONAL", "BUSINESS"] as const) {
+    if (catalogCoversType(type)) continue;
+    loanProducts.push({ id: randomUUID(), createdAt: now, ...defaultLoanProductDraft(type) });
+    added = true;
+    console.warn(`[store/seedLoanProducts] catalog had NO ${type} product — added the default "${type === "BUSINESS" ? "Business Loan" : "Personal Loan"}"`);
+  }
+  if (added) requestPersist("loanProducts");
 }
 
 // ---------------------------------------------------------------------------

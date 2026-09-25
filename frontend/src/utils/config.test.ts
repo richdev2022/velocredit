@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { getEffectiveConfig, resolveApiUrl, config, applyLoanProducts, applyLoanProduct, baseConfig, sanitizeLoanLimits, safeNaira } from "./config";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { getEffectiveConfig, resolveApiUrl, config, applyLoanProducts, applyLoanProduct, baseConfig, sanitizeLoanLimits, safeNaira, stripLegacyLoanOverrides, loadAdminOverrides, ADMIN_CONFIG_KEY } from "./config";
 import { calculateTermInterest } from "./loanCalculator";
 
 describe("loan configuration", () => {
@@ -299,6 +299,147 @@ describe("sanitizeLoanLimits (Admin toLocaleString crash regression)", () => {
     expect(safeNaira(null)).toBe("—");
     expect(safeNaira(Number.NaN)).toBe("—");
     expect(safeNaira(1234.5).length).toBeGreaterThan(0);
+  });
+});
+
+describe("product-driven configuration (catalog = single source of truth)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("applyLoanProduct applies the FULL product: service fee, tenor list, default amount, collateral", () => {
+    refreshTestConfig();
+    const applied = applyLoanProduct({
+      id: "p-full",
+      name: "Personal Loan",
+      programType: "PERSONAL",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 30_000_000,
+      defaultAmountNaira: 250_000,
+      defaultTenureDays: 60,
+      tenureDays: [30, 60, 90, 180],
+      interestRatePercent: 5,
+      interestType: "ANNUALIZED",
+      processingFeePercent: 2,
+      serviceFeePercent: 0.5,
+      lateFeePercent: 1,
+      lateFeeType: "COMPOUNDING_DAILY",
+      gracePeriodDays: 3,
+      collateralEnabled: true,
+      collateralRequired: true,
+    }, "PERSONAL");
+    expect(applied).toBe(true);
+    const program = config.loanPrograms.PERSONAL;
+    // Amount range + default amount.
+    expect(program.loanLimits).toEqual({ min: 100_000, max: 30_000_000, defaultAmount: 250_000 });
+    // The product's tenor list IS the tenor list for the flow.
+    expect(program.tenures.map((t) => t.value)).toEqual([30, 60, 90, 180]);
+    // Fees — including the previously hardcoded service fee.
+    expect(program.fees.interest.value).toBe(5);
+    expect(program.fees.serviceFee).toMatchObject({ type: "percentage", value: 0.5 });
+    expect(program.fees.processingFee.value).toBe(2);
+    expect(program.fees.lateFee.value).toBe(1);
+    // Collateral rules come from the product.
+    expect(program.collateral).toEqual({ enabled: true, required: true });
+    // Full product detail is carried for rendering.
+    expect(program.product?.serviceFeePercent).toBe(0.5);
+    expect(program.product?.defaultAmountNaira).toBe(250_000);
+    expect(program.product?.tenureDays).toEqual([30, 60, 90, 180]);
+    // The global config mirrors the PERSONAL flow.
+    expect(config.loanLimits.defaultAmount).toBe(250_000);
+    expect(config.tenures.map((t) => t.value)).toEqual([30, 60, 90, 180]);
+  });
+
+  it("collateral OFF on the product disables the collateral section", () => {
+    refreshTestConfig();
+    applyLoanProduct({
+      name: "Personal Loan",
+      minAmountNaira: 10_000,
+      maxAmountNaira: 1_000_000,
+      interestRatePercent: 5,
+      interestType: "ANNUALIZED",
+      processingFeePercent: 0,
+      serviceFeePercent: 0,
+      lateFeePercent: 0,
+      collateralEnabled: false,
+      collateralRequired: false,
+    }, "PERSONAL");
+    expect(config.loanPrograms.PERSONAL.collateral).toEqual({ enabled: false, required: false });
+  });
+
+  it("a legacy product without a tenor list keeps the configured tenor list", () => {
+    refreshTestConfig();
+    const before = config.loanPrograms.PERSONAL.tenures.map((t) => t.value);
+    applyLoanProduct({
+      name: "Personal Loan",
+      minAmountNaira: 10_000,
+      maxAmountNaira: 1_000_000,
+      interestRatePercent: 5,
+      processingFeePercent: 0,
+      serviceFeePercent: 0,
+      lateFeePercent: 0,
+    }, "PERSONAL");
+    expect(config.loanPrograms.PERSONAL.tenures.map((t) => t.value)).toEqual(before);
+  });
+
+  it("applyLoanProducts applies tenors + service fee from catalog products (type-scoped)", () => {
+    refreshTestConfig();
+    applyLoanProducts([
+      { id: "p1", name: "Velo Flex Cash", programType: "PERSONAL", minAmountNaira: 50_000, maxAmountNaira: 5_000_000, defaultAmountNaira: 100_000, tenureDays: [30, 60, 90], defaultTenureDays: 30, interestRatePercent: 4, interestType: "ANNUALIZED", processingFeePercent: 1, serviceFeePercent: 0.25, lateFeePercent: 1, version: 2, isActive: true },
+      { id: "b1", name: "Velo Growth Fund", programType: "BUSINESS", minAmountNaira: 500_000, maxAmountNaira: 20_000_000, defaultAmountNaira: 1_000_000, tenureDays: [90, 180, 365], defaultTenureDays: 90, interestRatePercent: 9, interestType: "ANNUALIZED", processingFeePercent: 2, serviceFeePercent: 1, lateFeePercent: 1.5, version: 2, isActive: true },
+    ]);
+    const personal = config.loanPrograms.PERSONAL;
+    const business = config.loanPrograms.BUSINESS;
+    expect(personal.tenures.map((t) => t.value)).toEqual([30, 60, 90]);
+    expect(personal.fees.serviceFee.value).toBe(0.25);
+    expect(personal.loanLimits.defaultAmount).toBe(100_000);
+    expect(business.tenures.map((t) => t.value)).toEqual([90, 180, 365]);
+    expect(business.fees.serviceFee.value).toBe(1);
+    expect(business.loanLimits.defaultAmount).toBe(1_000_000);
+    // BUSINESS tenors must not leak into the global (PERSONAL-driven) list.
+    expect(config.tenures.map((t) => t.value)).toEqual([30, 60, 90]);
+  });
+
+  it("legacy localStorage loan overrides are stripped — branding/access overrides survive", () => {
+    const stripped = stripLegacyLoanOverrides({
+      loanLimits: { min: 1, max: 2, defaultAmount: 1 },
+      tenures: [{ value: 30, label: "30 Days" }],
+      fees: { interest: { type: "percentage", value: 99, includeUpfront: true } },
+      tenureFees: { 30: {} },
+      loanPrograms: { PERSONAL: {} as any },
+      globalLimitsEnabled: false,
+      globalFeesEnabled: false,
+      globalInterestEnabled: false,
+      companyName: "Velo Finance LTD",
+      apiUrl: "https://api.velocredit.ng",
+    } as any);
+    expect(stripped).toEqual({
+      companyName: "Velo Finance LTD",
+      apiUrl: "https://api.velocredit.ng",
+    });
+  });
+
+  it("loadAdminOverrides migrates away saved loan overrides from older builds", () => {
+    const savedByAnOlderBuild = {
+      loanLimits: { min: 200, max: 40_000_000, defaultAmount: 500_000 },
+      loanPrograms: { PERSONAL: { loanLimits: { min: 123, max: 456, defaultAmount: 200 } } },
+      globalLimitsEnabled: true,
+      globalFeesEnabled: true,
+      globalInterestEnabled: true,
+      companyName: "Kept Branding",
+    };
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => (key === ADMIN_CONFIG_KEY ? JSON.stringify(savedByAnOlderBuild) : null),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    });
+    const loaded = loadAdminOverrides();
+    // Loan configuration keys are GONE (the backend catalog owns them now)…
+    expect(loaded.loanLimits).toBeUndefined();
+    expect(loaded.loanPrograms).toBeUndefined();
+    expect(loaded.globalLimitsEnabled).toBeUndefined();
+    // …while branding keys survive.
+    expect(loaded.companyName).toBe("Kept Branding");
   });
 });
 

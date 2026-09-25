@@ -1,16 +1,18 @@
 // ============================================================================
 // src/components/admin/ProductCatalogCard.tsx
-// "Loan product catalog" — EVERY product fully editable.
+// "Loan product catalog" — THE single source of truth for loan configuration.
 //
-// Replaces the old view-only catalog list. The admin can now edit ALL loan
-// products (not just the two application-flow programs), including:
-//   name, description, min/max amount, default tenure, interest rate,
-//   interest type (SIMPLE_FLAT / REDUCING_BALANCE / ANNUALIZED),
-//   processing fee, late fee, late fee type (ONE_TIME / COMPOUNDING_DAILY /
-//   COMPOUNDING_MONTHLY), grace period and active state.
+// Every product carries its COMPLETE configuration (nothing scattered across
+// "global" tabs or per-browser localStorage anymore):
+//   identity   — name, description, explicit TYPE (Personal/Business/Serves both)
+//   amounts    — min, max AND default application amount
+//   tenures    — the exact tenor list borrowers can pick from + default tenor
+//   interest   — rate + type (SIMPLE_FLAT / REDUCING_BALANCE / ANNUALIZED)
+//   fees       — processing fee, service fee, late fee + late fee type
+//   rules      — grace period, collateral shown / required, active state
 //
-// Each product saves INDEPENDENTLY (PATCH /admin/loan-products/:id) with its
-// own saving/error state, so one bad product can never block the others.
+// Products save INDEPENDENTLY (PATCH /admin/loan-products/:id) with their own
+// saving/error state, so one bad product can never block the others.
 // New products can be added inline (POST /admin/loan-products).
 // ============================================================================
 
@@ -28,6 +30,7 @@ import { Pill, Toggle, NairaField, PanelCard } from "./settingsUI";
 
 type InterestType = LoanProduct["interestType"];
 type LateFeeType = LoanProduct["lateFeeType"];
+type ProgramType = NonNullable<LoanProduct["programType"]>;
 
 const INTEREST_TYPE_OPTIONS: Array<{ value: InterestType; label: string; hint: string }> = [
   { value: "SIMPLE_FLAT", label: "Simple flat", hint: "Percent of the principal per 30-day month, prorated over the tenure." },
@@ -41,36 +44,58 @@ const LATE_FEE_TYPE_OPTIONS: Array<{ value: LateFeeType; label: string }> = [
   { value: "COMPOUNDING_MONTHLY", label: "Monthly comp." },
 ];
 
-const TENURE_PRESETS = [30, 60, 90, 180, 365];
+const PROGRAM_TYPE_OPTIONS: Array<{ value: ProgramType; label: string; hint: string }> = [
+  { value: "PERSONAL", label: "Personal", hint: "Serves the Personal Loan application flow." },
+  { value: "BUSINESS", label: "Business", hint: "Serves the Business Loan application flow." },
+  { value: "BOTH", label: "Both flows", hint: "One product serves Personal AND Business applicants." },
+];
+
+const TENURE_PRESETS = [7, 14, 30, 60, 90, 120, 180, 270, 365];
 
 interface ProductDraft {
   name: string;
   description: string;
+  programType: ProgramType;
   minAmountNaira: number;
   maxAmountNaira: number;
+  defaultAmountNaira: number;
+  tenures: number[];
   defaultTenureDays: number;
   interestRatePercent: string;
   interestType: InterestType;
   processingFeePercent: string;
+  serviceFeePercent: string;
   lateFeePercent: string;
   lateFeeType: LateFeeType;
   gracePeriodDays: number;
+  collateralEnabled: boolean;
+  collateralRequired: boolean;
   isActive: boolean;
 }
 
 function draftFromProduct(product: LoanProduct): ProductDraft {
+  const tenures = Array.isArray(product.tenureDays) && product.tenureDays.length > 0
+    ? [...product.tenureDays].sort((a, b) => a - b)
+    : [];
+  const defaultTenure = Number(product.defaultTenureDays ?? 30) || 30;
   return {
     name: product.name,
     description: product.description ?? "",
+    programType: product.programType ?? "PERSONAL",
     minAmountNaira: Number(product.minAmountNaira) || 0,
     maxAmountNaira: Number(product.maxAmountNaira) || 0,
-    defaultTenureDays: Number(product.defaultTenureDays ?? 30) || 30,
+    defaultAmountNaira: Number(product.defaultAmountNaira ?? 0) || 0,
+    tenures,
+    defaultTenureDays: defaultTenure,
     interestRatePercent: String(product.interestRatePercent ?? 0),
     interestType: product.interestType ?? "SIMPLE_FLAT",
     processingFeePercent: String(product.processingFeePercent ?? 0),
+    serviceFeePercent: String(product.serviceFeePercent ?? 0),
     lateFeePercent: String(product.lateFeePercent ?? 0),
     lateFeeType: product.lateFeeType ?? "COMPOUNDING_DAILY",
     gracePeriodDays: Number(product.gracePeriodDays ?? 0) || 0,
+    collateralEnabled: product.collateralEnabled ?? true,
+    collateralRequired: product.collateralRequired ?? false,
     isActive: Boolean(product.isActive),
   };
 }
@@ -79,15 +104,21 @@ function emptyDraft(): ProductDraft {
   return {
     name: "",
     description: "",
+    programType: "PERSONAL",
     minAmountNaira: 100000,
-    maxAmountNaira: 3000000,
-    defaultTenureDays: 90,
+    maxAmountNaira: 30000000,
+    defaultAmountNaira: 100000,
+    tenures: [30, 60, 90, 180],
+    defaultTenureDays: 30,
     interestRatePercent: "5",
     interestType: "ANNUALIZED",
     processingFeePercent: "2",
+    serviceFeePercent: "0",
     lateFeePercent: "1",
     lateFeeType: "COMPOUNDING_DAILY",
     gracePeriodDays: 3,
+    collateralEnabled: true,
+    collateralRequired: false,
     isActive: true,
   };
 }
@@ -100,10 +131,22 @@ function validateDraft(draft: ProductDraft): Record<string, string> {
   if (!Number.isFinite(min) || min <= 0) errors.minAmountNaira = "Minimum amount must be a positive number.";
   if (!Number.isFinite(max) || max <= 0) errors.maxAmountNaira = "Maximum amount must be a positive number.";
   if (!errors.minAmountNaira && !errors.maxAmountNaira && min >= max) errors.minAmountNaira = "Minimum must be less than maximum.";
-  if (!Number.isFinite(Number(draft.defaultTenureDays)) || Number(draft.defaultTenureDays) < 1) errors.defaultTenureDays = "Default tenure must be at least 1 day.";
+  const defaultAmount = Number(draft.defaultAmountNaira);
+  if (!Number.isFinite(defaultAmount) || defaultAmount < 0) {
+    errors.defaultAmountNaira = "Default amount must be a valid number.";
+  } else if (defaultAmount > 0 && Number.isFinite(min) && Number.isFinite(max) && min < max && (defaultAmount < min || defaultAmount > max)) {
+    errors.defaultAmountNaira = "Default amount must fall within the min/max range.";
+  }
+  if (draft.tenures.length === 0) errors.tenures = "Select at least one repayment tenure.";
+  if (!Number.isFinite(Number(draft.defaultTenureDays)) || Number(draft.defaultTenureDays) < 1) {
+    errors.defaultTenureDays = "Default tenure must be at least 1 day.";
+  } else if (draft.tenures.length > 0 && !draft.tenures.includes(Number(draft.defaultTenureDays))) {
+    errors.defaultTenureDays = "Default tenure must be one of the selected tenures.";
+  }
   const percentFields: Array<[string, string]> = [
     ["interestRatePercent", "Interest rate"],
     ["processingFeePercent", "Processing fee"],
+    ["serviceFeePercent", "Service fee"],
     ["lateFeePercent", "Late fee"],
   ];
   for (const [key, label] of percentFields) {
@@ -119,15 +162,21 @@ function buildPayload(draft: ProductDraft) {
   return {
     name: draft.name.trim(),
     description: draft.description.trim() || undefined,
+    programType: draft.programType,
     minAmountNaira: Number(draft.minAmountNaira),
     maxAmountNaira: Number(draft.maxAmountNaira),
+    defaultAmountNaira: Number(draft.defaultAmountNaira) > 0 ? Number(draft.defaultAmountNaira) : undefined,
     defaultTenureDays: Number(draft.defaultTenureDays),
+    tenureDays: [...draft.tenures].sort((a, b) => a - b),
     interestRatePercent: Number(draft.interestRatePercent),
     interestType: draft.interestType,
     processingFeePercent: Number(draft.processingFeePercent),
+    serviceFeePercent: Number(draft.serviceFeePercent),
     lateFeePercent: Number(draft.lateFeePercent),
     lateFeeType: draft.lateFeeType,
     gracePeriodDays: Number(draft.gracePeriodDays),
+    collateralEnabled: draft.collateralEnabled,
+    collateralRequired: draft.collateralEnabled && draft.collateralRequired,
     isActive: draft.isActive,
   };
 }
@@ -185,6 +234,10 @@ function SegmentedOptions<T extends string>({ value, options, onChange }: { valu
   );
 }
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">{children}</div>;
+}
+
 function ProductEditor({
   draft,
   onDraftChange,
@@ -195,6 +248,8 @@ function ProductEditor({
   errors: Record<string, string>;
 }) {
   const interestHint = INTEREST_TYPE_OPTIONS.find((o) => o.value === draft.interestType)?.hint;
+  const programHint = PROGRAM_TYPE_OPTIONS.find((o) => o.value === draft.programType)?.hint;
+  const tenures = [...draft.tenures].sort((a, b) => a - b);
   return (
     <div className="space-y-4 rounded-xl border border-velo-100 bg-velo-50/40 p-4 dark:border-velo-800 dark:bg-velo-900/10">
       {/* Identity */}
@@ -222,9 +277,18 @@ function ProductEditor({
         </label>
       </div>
 
+      {/* Product type — explicit, never guessed from the name */}
+      <div>
+        <SectionLabel>Product type</SectionLabel>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <SegmentedOptions value={draft.programType} options={PROGRAM_TYPE_OPTIONS.map(({ value, label }) => ({ value, label }))} onChange={(v) => onDraftChange({ programType: v })} />
+          <p className="self-center text-[11px] text-slate-400 dark:text-slate-500">{programHint}</p>
+        </div>
+      </div>
+
       {/* Amounts */}
       <div>
-        <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Amount limits</div>
+        <SectionLabel>Amount limits</SectionLabel>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>
             <NairaField compact label="Minimum" value={draft.minAmountNaira} onChange={(n) => onDraftChange({ minAmountNaira: n })} />
@@ -235,18 +299,34 @@ function ProductEditor({
             {errors.maxAmountNaira && <p className="velo-error-text">{errors.maxAmountNaira}</p>}
           </div>
           <div>
-            <NairaField compact label="Default tenure (days)" value={draft.defaultTenureDays} onChange={(n) => onDraftChange({ defaultTenureDays: n })} />
-            {errors.defaultTenureDays && <p className="velo-error-text">{errors.defaultTenureDays}</p>}
+            <NairaField compact label="Default amount" value={draft.defaultAmountNaira} onChange={(n) => onDraftChange({ defaultAmountNaira: n })} helpText="Pre-selected on the borrower form" />
+            {errors.defaultAmountNaira && <p className="velo-error-text">{errors.defaultAmountNaira}</p>}
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
+      </div>
+
+      {/* Tenures */}
+      <div>
+        <SectionLabel>Repayment tenures</SectionLabel>
+        <div className="flex flex-wrap gap-1.5">
           {TENURE_PRESETS.map((days) => (
             <button
               key={days}
               type="button"
-              onClick={() => onDraftChange({ defaultTenureDays: days })}
+              onClick={() => {
+                const selected = draft.tenures.includes(days)
+                  ? draft.tenures.filter((t) => t !== days)
+                  : [...draft.tenures, days];
+                const patch: Partial<ProductDraft> = { tenures: selected };
+                // Keep the default tenure valid as the list changes.
+                if (selected.length > 0 && !selected.includes(Number(draft.defaultTenureDays))) {
+                  patch.defaultTenureDays = selected.sort((a, b) => a - b)[0];
+                }
+                if (selected.length === 0) patch.defaultTenureDays = draft.defaultTenureDays;
+                onDraftChange(patch);
+              }}
               className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
-                Number(draft.defaultTenureDays) === days
+                draft.tenures.includes(days)
                   ? "border-velo-500 bg-velo-500 text-white"
                   : "border-slate-200 bg-white text-slate-500 hover:border-velo-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
               }`}
@@ -255,11 +335,34 @@ function ProductEditor({
             </button>
           ))}
         </div>
+        {errors.tenures && <p className="velo-error-text mt-1">{errors.tenures}</p>}
+        {tenures.length > 0 && (
+          <div className="mt-2.5">
+            <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Default tenure</span>
+            <div className="flex flex-wrap gap-1.5">
+              {tenures.map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => onDraftChange({ defaultTenureDays: days })}
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                    Number(draft.defaultTenureDays) === days
+                      ? "border-velo-500 bg-velo-50 text-velo-700 dark:border-velo-400 dark:bg-velo-900/40 dark:text-velo-200"
+                      : "border-slate-200 bg-white text-slate-500 hover:border-velo-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+                  }`}
+                >
+                  {days} days
+                </button>
+              ))}
+            </div>
+            {errors.defaultTenureDays && <p className="velo-error-text mt-1">{errors.defaultTenureDays}</p>}
+          </div>
+        )}
       </div>
 
       {/* Interest */}
       <div>
-        <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Interest</div>
+        <SectionLabel>Interest</SectionLabel>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <PercentField label="Interest rate" value={draft.interestRatePercent} onChange={(v) => onDraftChange({ interestRatePercent: v })} />
           <div>
@@ -273,11 +376,15 @@ function ProductEditor({
 
       {/* Fees */}
       <div>
-        <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Fees</div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <SectionLabel>Fees</SectionLabel>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <PercentField label="Processing fee" value={draft.processingFeePercent} onChange={(v) => onDraftChange({ processingFeePercent: v })} />
             {errors.processingFeePercent && <p className="velo-error-text">{errors.processingFeePercent}</p>}
+          </div>
+          <div>
+            <PercentField label="Service fee" value={draft.serviceFeePercent} onChange={(v) => onDraftChange({ serviceFeePercent: v })} helpText="One-off admin fee" />
+            {errors.serviceFeePercent && <p className="velo-error-text">{errors.serviceFeePercent}</p>}
           </div>
           <div>
             <PercentField label="Late fee" value={draft.lateFeePercent} onChange={(v) => onDraftChange({ lateFeePercent: v })} />
@@ -290,13 +397,31 @@ function ProductEditor({
         </div>
       </div>
 
-      {/* Grace period + active */}
-      <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
-        <div>
-          <NairaField compact label="Grace period (days)" value={draft.gracePeriodDays} onChange={(n) => onDraftChange({ gracePeriodDays: n })} />
-          {errors.gracePeriodDays && <p className="velo-error-text">{errors.gracePeriodDays}</p>}
+      {/* Rules: grace, collateral, active */}
+      <div className="space-y-2.5 border-t border-velo-100 pt-3.5 dark:border-velo-800">
+        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
+          <div>
+            <NairaField compact label="Grace period (days)" value={draft.gracePeriodDays} onChange={(n) => onDraftChange({ gracePeriodDays: n })} />
+            {errors.gracePeriodDays && <p className="velo-error-text">{errors.gracePeriodDays}</p>}
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-xl bg-white px-3.5 py-2.5 dark:bg-slate-900 sm:justify-start">
+            <div>
+              <div className="text-xs font-semibold text-velo-900 dark:text-white">Collateral section</div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400">Ask applicants for collateral details.</div>
+            </div>
+            <Toggle size="sm" checked={draft.collateralEnabled} onChange={(on) => onDraftChange({ collateralEnabled: on, ...(on ? {} : { collateralRequired: false }) })} />
+          </div>
+          {draft.collateralEnabled && (
+            <div className="flex items-center justify-between gap-3 rounded-xl bg-white px-3.5 py-2.5 dark:bg-slate-900 sm:justify-start">
+              <div>
+                <div className="text-xs font-semibold text-velo-900 dark:text-white">Require media</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">Collateral proof is mandatory.</div>
+              </div>
+              <Toggle size="sm" checked={draft.collateralRequired} onChange={(on) => onDraftChange({ collateralRequired: on })} />
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-3 sm:col-span-2 sm:justify-end sm:pt-4">
+        <div className="flex items-center justify-end gap-3">
           <Toggle checked={draft.isActive} onChange={(on) => onDraftChange({ isActive: on })} label={draft.isActive ? "Active — visible to borrowers" : "Inactive — hidden from borrowers"} />
         </div>
       </div>
@@ -418,10 +543,17 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
     onCatalogChanged?.();
   }
 
+  const programTypePill = (product: LoanProduct) => {
+    if (product.programType === "BUSINESS") return <Pill tone="info">Business</Pill>;
+    if (product.programType === "BOTH") return <Pill tone="neutral">Both flows</Pill>;
+    if (product.programType === "PERSONAL") return <Pill tone="success">Personal</Pill>;
+    return <Pill tone="warning">Legacy name-match</Pill>;
+  };
+
   return (
     <PanelCard
       title="Loan product catalog"
-      description="Every loan product on the platform — fully editable. Borrowers only see ACTIVE products, mapped strictly by the product type they select."
+      description="The complete loan configuration — every product carries its type, amounts, tenures, interest, fees, grace period and collateral rules. Borrowers only see ACTIVE products, served strictly by the product type."
       icon={<Icon name="bank" size={18} />}
       action={
         <div className="flex items-center gap-2">
@@ -490,7 +622,7 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
         {loading ? (
           <p className="velo-helper py-4 text-center">Loading loan products…</p>
         ) : catalog.length === 0 && editingId !== "new" ? (
-          <p className="velo-helper py-4 text-center">No loan products yet — click “Add product” to create the first one, or save a program below.</p>
+          <p className="velo-helper py-4 text-center">No loan products yet — click “Add product” to create the first one.</p>
         ) : (
           catalog.map((product) => {
             const editing = editingId === product.id;
@@ -506,6 +638,7 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="text-sm font-semibold text-slate-900 dark:text-white">{product.name}</p>
                       <Pill tone={product.isActive ? "success" : "warning"}>{product.isActive ? "Active" : "Inactive"}</Pill>
+                      {programTypePill(product)}
                       <Pill tone="neutral">v{product.version}</Pill>
                     </div>
                     {product.description && (
@@ -535,11 +668,14 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                 {!editing && (
                   <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
                     <span>Range: <span className="font-semibold text-slate-700 dark:text-slate-200">₦{safeNaira(product.minAmountNaira)} – ₦{safeNaira(product.maxAmountNaira)}</span></span>
+                    <span>Default: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.defaultAmountNaira ? `₦${safeNaira(product.defaultAmountNaira)}` : "—"}</span></span>
                     <span>Interest: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.interestRatePercent}% {String(product.interestType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
-                    <span>Tenure: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.defaultTenureDays ?? "—"} days</span></span>
+                    <span>Tenures: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.tenureDays?.length ? product.tenureDays.map((d) => `${d}d`).join(" · ") : `${product.defaultTenureDays ?? "—"}d default`}</span></span>
                     <span>Processing: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.processingFeePercent}%</span></span>
+                    <span>Service: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.serviceFeePercent ?? 0}%</span></span>
                     <span>Late fee: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.lateFeePercent}% {String(product.lateFeeType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
                     <span>Grace: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.gracePeriodDays ?? "—"}d</span></span>
+                    <span>Collateral: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.collateralEnabled === false ? "Off" : product.collateralRequired ? "Required" : "Optional"}</span></span>
                   </div>
                 )}
 
