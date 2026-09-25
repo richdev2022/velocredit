@@ -500,6 +500,22 @@ export async function getLoanProducts(params?: { type?: "PERSONAL" | "BUSINESS";
   return request(`/api/v1/borrower/loan-products${qs ? `?${qs}` : ""}`);
 }
 
+/**
+ * PUBLIC (unauthenticated) loan product catalog — same payload shape as
+ * getLoanProducts(). Powers the landing-page calculator so an anonymous
+ * visitor sees the EXACT terms the admin configured (limits, tenors,
+ * per-tenor monthly rates, fees) instead of stale VITE_* env defaults.
+ * The backend serves this endpoint with Cache-Control: no-store, so an admin
+ * re-pricing is visible on the very next page view.
+ */
+export async function getPublicLoanProducts(params?: { type?: "PERSONAL" | "BUSINESS"; productId?: string }): Promise<LoanProductsResponse> {
+  const query = new URLSearchParams();
+  if (params?.type) query.set("type", params.type);
+  if (params?.productId) query.set("productId", params.productId);
+  const qs = query.toString();
+  return request(`/api/v1/public/loan-products${qs ? `?${qs}` : ""}`);
+}
+
 export interface LoanApplicationInput { applicationId?: string; applicantType: "PERSONAL" | "BUSINESS"; personalInfo: Record<string, unknown>; businessInfo: Record<string, unknown>; businessRep: Record<string, unknown>; personalFinancial: Record<string, unknown>; businessFinancial: Record<string, unknown>; kyc: Record<string, unknown>; disbursementAccount: Record<string, unknown>; loanRequest: { amount: number; tenure: number; purpose: string }; collateral: Record<string, unknown>; documents: Record<string, unknown>; witness: Record<string, unknown>; }
 export interface LoanApplicationResponse { ok: true; application: { id: string; applicationId: string; status: LoanStatus; createdAt: string; updatedAt: string; }; }
 export async function createLoanApplication(input: LoanApplicationInput): Promise<LoanApplicationResponse> {

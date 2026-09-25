@@ -173,6 +173,15 @@ export interface ApplicationData {
   applicantType: ApplicantType | null;
   status: ApplicationStatus;
 
+  /**
+   * Explicit product binding: the loan product the borrower actually saw and
+   * calculated with (selected on the landing calculator / carried through
+   * ?productId). Submitted with the application so the backend governs it by
+   * EXACTLY that product instead of re-resolving by type/amount. Optional —
+   * legacy drafts resolve by applicantType as before.
+   */
+  loanProductId?: string | null;
+
   /** Last section index the user was on — persisted server-side so resume across devices lands on exact page. */
   lastSectionIndex?: number | null;
 

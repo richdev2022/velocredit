@@ -777,6 +777,11 @@ function compactApplicationPayload(input: Record<string, unknown>): Record<strin
 const loanApplicationSchema = z.object({
   applicationId: z.string().optional(),
   applicantType: z.enum(["PERSONAL", "BUSINESS"]).default("PERSONAL"),
+  // Explicit product binding: the product the borrower actually saw and
+  // calculated with (selected on the landing calculator / wizard). Wins over
+  // type/amount-based resolution in resolveLoanProductForApplication, so the
+  // application is governed by EXACTLY the configured product that was shown.
+  loanProductId: z.string().trim().min(1).optional(),
   personalInfo: z.record(z.unknown()).default({}),
   businessInfo: z.record(z.unknown()).default({}),
   businessRep: z.record(z.unknown()).default({}),
@@ -1042,10 +1047,70 @@ router.get("/platform/status", (_req, res) => {
 
 router.get("/platform/banners", (_req, res) => {
   const settings = getPlatformSettings();
+  res.set("Cache-Control", "no-store");
   res.json({
     ok: true,
     banners: (settings.banners ?? []).filter((item) => item.isActive).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
   });
+});
+
+/**
+ * PUBLIC loan product catalog — no authentication required.
+ *
+ * Powers the landing-page calculator so an ANONYMOUS visitor sees the exact
+ * terms the admin configured (limits, tenors, per-tenor monthly rates, fees)
+ * instead of stale VITE_* env defaults. Read-only marketing data; inactive
+ * products are never advertised (except the all-inactive fallback, flagged
+ * with catalogNotice exactly like the borrower endpoint).
+ *
+ * Query:
+ *   ?type=PERSONAL|BUSINESS  -> the single authoritative product for that flow
+ *   ?productId=<id>          -> one exact product
+ *
+ * Cache-Control: no-store — an admin re-pricing a product must be visible on
+ * the very next page view; a cached 304 revalidation layer must never serve
+ * yesterday's terms (production incident 2026-09: landing calculator showed
+ * env defaults after the admin re-configured the catalog).
+ */
+router.get("/public/loan-products", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  // Same self-heal guarantees as the borrower endpoint: a partial boot or
+  // legacy duplicated rows must never leak into the public catalog.
+  if (normalizeLoanProducts()) {
+    void persistStore().catch(() => undefined);
+    void purgeGhostCatalogRows();
+  }
+  if (loanProducts.length === 0) {
+    await ensureLoanProductsLoaded();
+    if (normalizeLoanProducts()) void persistStore().catch(() => undefined);
+  }
+
+  const typeParam = typeof req.query.type === "string" ? req.query.type.trim().toUpperCase() : "";
+  const productIdParam = typeof req.query.productId === "string" ? req.query.productId.trim() : "";
+
+  if (productIdParam) {
+    const product = loanProducts.find((p) => p.id === productIdParam && p.isActive);
+    if (!product) {
+      return res.status(404).json({ ok: false, error: "Loan product not found" });
+    }
+    return res.json({ ok: true, products: [loanProductPayload(product)], activeCount: loanProducts.filter((p) => p.isActive).length, catalogNotice: null });
+  }
+
+  if (typeParam === "PERSONAL" || typeParam === "BUSINESS") {
+    const { product, fromInactiveFallback } = resolveBorrowerProductForFlow(typeParam);
+    if (!product) {
+      return res.json({ ok: true, products: [], activeCount: 0, catalogNotice: "EMPTY_CATALOG" });
+    }
+    return res.json({
+      ok: true,
+      products: [loanProductPayload(product)],
+      activeCount: loanProducts.filter((p) => p.isActive).length,
+      catalogNotice: fromInactiveFallback ? "ALL_PRODUCTS_INACTIVE_FALLBACK" : null,
+    });
+  }
+
+  const catalog = buildBorrowerProductCatalog();
+  res.json({ ok: true, ...catalog });
 });
 
 router.post("/auth/admin/login", async (req, res) => {
@@ -3588,6 +3653,11 @@ function loanProductPayload(product: LoanProductRow) {
 }
 
 router.get("/borrower/loan-products", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
+  // Permanent staleness kill: an admin re-pricing a product must reach the
+  // borrower's very next request. Without this header the browser keeps
+  // revalidating a cached body (opaque 304 in devtools) behind Express's
+  // default weak ETag — with no-store every fetch returns the live catalog.
+  res.set("Cache-Control", "no-store");
   // Self-heal first: legacy snapshots could contain duplicated rows (same id /
   // same name). Borrowers must ONLY ever see the admin-configured products.
   if (normalizeLoanProducts()) {
@@ -3805,6 +3875,7 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
     const gateTenure = Math.trunc(Number(input.loanRequest?.tenure));
     if (Number.isFinite(gateTenure) && gateTenure > 0) {
       const gateProduct = resolveLoanProductForApplication({
+        loanProductId: input.loanProductId,
         applicantType: input.applicantType,
         amountNaira: Number(input.loanRequest?.amount) || 0,
       });
@@ -3927,6 +3998,7 @@ router.post("/borrower/applications", requireAuth, requireRole("BORROWER"), asyn
       // capture its terms — later renames/re-pricing cannot orphan the info.
       ...(() => {
         const product = resolveLoanProductForApplication({
+          loanProductId: input.loanProductId,
           applicantType: input.applicantType,
           amountNaira,
         });
@@ -5231,9 +5303,18 @@ function ensureApprovedLoanRecord(application: (typeof loanApplications)[number]
       interest = principal * (tenorMonthlyRate / 100) * (tenure / 30);
     } else {
       const rate = Number(product?.interestRatePercent ?? snapshot?.interestRatePercent ?? 18) / 100;
-      interest = principal * rate * (tenure / 365);
+      const interestType = String(product?.interestType ?? snapshot?.interestType ?? "SIMPLE_FLAT").toUpperCase();
+      // Mirror the frontend calculateTermInterest semantics EXACTLY so the
+      // server-built offer matches what the borrower saw in the wizard:
+      //   ANNUALIZED                    -> rate is per YEAR, prorated tenure/365
+      //   SIMPLE_FLAT / REDUCING_BALANCE -> rate is per 30-day month, tenure/30
+      // (The old unconditional /365 math underpriced monthly products ~12x.)
+      interest = interestType === "ANNUALIZED"
+        ? principal * rate * (tenure / 365)
+        : principal * rate * (tenure / 30);
     }
-    processing = principal * (Number(product?.processingFeePercent ?? snapshot?.processingFeePercent ?? 2) / 100);
+    processing = principal * (Number(product?.processingFeePercent ?? snapshot?.processingFeePercent ?? 2) / 100)
+      + principal * (Number(product?.serviceFeePercent ?? snapshot?.serviceFeePercent ?? 0) / 100);
   }
   const totalRepayment = principal + interest + processing;
   const dueAt = new Date(Date.now() + tenure * 86400000).toISOString();
