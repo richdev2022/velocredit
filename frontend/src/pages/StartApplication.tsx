@@ -309,7 +309,7 @@ export default function StartApplication() {
                 {/* Loan calculator quick-jump pill */}
                 <a
                   href="#calculator"
-                  className="absolute -bottom-7 right-2 sm:right-6 inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-white dark:bg-white text-velo-800 text-xs font-bold shadow-2xl hover:scale-105 active:scale-95 transition-transform"
+                  className="absolute -bottom-7 right-2 sm:right-6 inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-white dark:bg-velo-100 text-velo-800 text-xs font-bold shadow-2xl hover:scale-105 active:scale-95 transition-transform"
                 >
                   <CalcIcon />
                   Try the loan calculator
@@ -878,7 +878,7 @@ export default function StartApplication() {
                     href={`https://${config.companyWebsite}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-white dark:bg-white text-velo-800 font-bold shadow-lg transition-all duration-300 hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] group"
+                    className="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl bg-white dark:bg-velo-100 text-velo-800 font-bold shadow-lg transition-all duration-300 hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] group"
                   >
                     Visit Velo Banking
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="group-hover:rotate-45 transition-transform duration-300"><path d="M14 3h7v7M21 3L10 14M21 14v7H3V3h7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -966,7 +966,7 @@ export default function StartApplication() {
                 </div>
                 <Link
                   to="/account?mode=register&role=BORROWER"
-                  className="shrink-0 inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-2xl bg-white dark:bg-white text-velo-800 font-bold shadow-xl transition-all duration-200 hover:scale-[1.03] active:scale-[0.98] group/cta"
+                  className="shrink-0 inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-2xl bg-white dark:bg-velo-100 text-velo-800 font-bold shadow-xl transition-all duration-200 hover:scale-[1.03] active:scale-[0.98] group/cta"
                 >
                   Start your application
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" className="group-hover/cta:translate-x-1 transition-transform"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -1044,7 +1044,7 @@ export default function StartApplication() {
                 <div className="flex flex-wrap items-center gap-3">
                   <Link
                     to="/account?mode=register&role=BORROWER"
-                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-white dark:bg-white text-velo-800 font-bold shadow-lg transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] group"
+                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-white dark:bg-velo-100 text-velo-800 font-bold shadow-lg transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] group"
                   >
                     Start securely
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="group-hover:translate-x-1 transition-transform"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -1205,7 +1205,7 @@ export default function StartApplication() {
                 <div className="flex flex-col sm:flex-row gap-3">
                   <Link
                     to="/account?mode=register&role=BORROWER"
-                    className="group inline-flex items-center justify-center gap-2 px-7 py-4 rounded-2xl bg-white dark:bg-white text-velo-800 font-bold shadow-xl transition-all duration-200 hover:shadow-2xl hover:scale-[1.02] active:scale-[0.98] animate-pulse-glow"
+                    className="group inline-flex items-center justify-center gap-2 px-7 py-4 rounded-2xl bg-white dark:bg-velo-100 text-velo-800 font-bold shadow-xl transition-all duration-200 hover:shadow-2xl hover:scale-[1.02] active:scale-[0.98] animate-pulse-glow"
                   >
                     Start New Application
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="group-hover:translate-x-1 transition-transform"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>

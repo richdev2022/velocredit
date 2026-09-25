@@ -409,7 +409,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="rounded-lg border border-slate-100 p-3">
             <div className="flex items-center justify-between mb-2">
-              <h4 className="text-xs font-semibold text-velo-800 uppercase tracking-wide">Internal Score</h4>
+              <h4 className="text-xs font-semibold text-velo-800 dark:text-slate-200 uppercase tracking-wide">Internal Score</h4>
               {app.creditReportSnapshot?.internal?.band && (
                 <span className="badge bg-velo-50 text-velo-700">{app.creditReportSnapshot.internal.band}</span>
               )}
