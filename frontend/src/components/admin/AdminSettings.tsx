@@ -352,7 +352,7 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                   type="button"
                   onClick={handleSave}
                   disabled={saveDisabled}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2 text-xs font-bold text-velo-800 shadow-lg transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white dark:bg-velo-100 px-4 py-2 text-xs font-bold text-velo-800 shadow-lg transition hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {saving ? (
                     <><span className="h-3 w-3 animate-spin rounded-full border-2 border-velo-600 border-t-transparent" />Saving…</>

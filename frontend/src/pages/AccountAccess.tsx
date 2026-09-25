@@ -363,7 +363,7 @@ export default function AccountAccess() {
                         onClick={() => setLoanType("PERSONAL")}
                         className={`px-4 py-3 rounded-2xl text-sm font-semibold transition-all flex items-center gap-2 border-2 ${
                           loanType === "PERSONAL"
-                            ? "bg-white text-velo-800 border-white shadow-lg scale-[1.02]"
+                            ? "bg-white dark:bg-velo-100 text-velo-800 border-white dark:border-velo-100 shadow-lg scale-[1.02]"
                             : "bg-white/5 text-white/70 border-white/10 hover:bg-white/10 hover:text-white"
                         }`}
                       >
@@ -375,7 +375,7 @@ export default function AccountAccess() {
                         onClick={() => setLoanType("BUSINESS")}
                         className={`px-4 py-3 rounded-2xl text-sm font-semibold transition-all flex items-center gap-2 border-2 ${
                           loanType === "BUSINESS"
-                            ? "bg-white text-velo-800 border-white shadow-lg scale-[1.02]"
+                            ? "bg-white dark:bg-velo-100 text-velo-800 border-white dark:border-velo-100 shadow-lg scale-[1.02]"
                             : "bg-white/5 text-white/70 border-white/10 hover:bg-white/10 hover:text-white"
                         }`}
                       >
