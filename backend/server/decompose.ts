@@ -236,6 +236,11 @@ export async function decomposeAndUpsertAll(
         { snake: "occupation", get: (row) => row.occupation },
         { snake: "source_of_funds", get: (row) => row.sourceOfFunds },
         { snake: "metadata", get: (row) => row.metadata ?? {}, json: true },
+        // RBAC: persist the direct permission override + staff-role assignment.
+        // adminPermissions was historically NOT written here, so every server
+        // restart silently revoked loan managers' permissions.
+        { snake: "admin_permissions", get: (row) => row.adminPermissions, json: true },
+        { snake: "staff_role_id", get: (row) => row.staffRoleId },
       ],
     }));
     for (const user of sourceUsers) {

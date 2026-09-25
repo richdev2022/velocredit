@@ -11,6 +11,7 @@ import {
   notifications,
   findOrCreateKycCase,
   ADMIN_PERMISSIONS,
+  effectiveAdminPermissions,
   auditLogs,
   consents,
   generateOtpCode,
@@ -41,7 +42,9 @@ export function issueToken(user: User): string {
       email: user.email,
       fullName: user.fullName,
       roles: user.roles,
-      adminPermissions: user.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : user.adminPermissions,
+      // Stamp the EFFECTIVE permission set (staff-role driven for loan
+      // managers, everything for admins) so the token reflects RBAC.
+      adminPermissions: effectiveAdminPermissions(user),
       kycStatus: user.kycStatus,
     },
     secret,
@@ -89,8 +92,11 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       id: payload.sub,
       email: payload.email,
       fullName: payload.fullName,
-      roles: payload.roles,
-      adminPermissions: payload.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : payload.adminPermissions,
+      roles: liveUser.roles,
+      // Resolve permissions from the LIVE store record (not the JWT claims):
+      // role/permission edits and deactivations take effect on the very next
+      // request instead of waiting for the token to expire.
+      adminPermissions: effectiveAdminPermissions(liveUser),
       kycStatus: (payload.kycStatus ?? "NOT_STARTED") as User["kycStatus"],
     };
     // NOTE: We no longer push an "ADMIN_ENDPOINT_CALL" audit log on every

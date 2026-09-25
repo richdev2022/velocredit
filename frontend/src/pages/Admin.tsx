@@ -6,9 +6,9 @@ import AdminApplicationsTable from "../components/admin/AdminApplicationsTable";
 import AdminDetail from "../components/admin/AdminDetail";
 import AdminBorrowerDetail from "../components/admin/AdminBorrowerDetail";
 import AdminSettings from "../components/admin/AdminSettings";
-import LoanManagerAdmin from "../components/admin/LoanManagerAdmin";
+import StaffAdmin from "../components/admin/StaffAdmin";
+import RolesPermissions from "../components/admin/RolesPermissions";
 import AdminWorkspace, { type AdminSection } from "../components/admin/AdminWorkspace";
-import AdminAccounts from "../components/admin/AdminAccounts";
 import AdminAccountRequests from "../components/admin/AdminAccountRequests";
 import { config } from "../utils/config";
 import {
@@ -27,6 +27,7 @@ type View =
   | "borrower-detail"
   | "settings"
   | "managers"
+  | "roles"
   | "ledger"
   | "withdrawals"
   | "investor-tools";
@@ -119,6 +120,12 @@ const Icons = {
       <path d="M18 8V5m3 3h-6" />
     </svg>
   ),
+  RolesShield: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  ),
   Settings: (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
@@ -161,7 +168,8 @@ const menu: MenuItem[] = [
   { key: "investor-tools", label: "Investor tools", group: "Financials", icon: Icons.Tools },
   { key: "reconciliation", label: "Reconciliation", group: "Insights", icon: Icons.Chart },
   { key: "audit", label: "Audit log", group: "Insights", icon: Icons.History },
-  { key: "managers", label: "Admin & managers", group: "Administration", icon: Icons.UserShield },
+  { key: "managers", label: "Team management", group: "Administration", icon: Icons.UserShield },
+  { key: "roles", label: "Roles & permissions", group: "Administration", icon: Icons.RolesShield },
   { key: "settings", label: "Platform settings", group: "Administration", icon: Icons.Settings },
 ];
 
@@ -179,7 +187,8 @@ const titles: Record<View, string> = {
   "investor-tools": "Investor tools",
   reconciliation: "Reconciliation center",
   audit: "Audit log",
-  managers: "Admin & managers",
+  managers: "Team management",
+  roles: "Roles & permissions",
   settings: "Platform settings",
   detail: "Application detail",
   "borrower-detail": "Borrower detail",
@@ -196,7 +205,7 @@ export default function Admin() {
     const hash = window.location.hash.replace(/^#/, "");
     const params = new URLSearchParams(hash);
     const v = params.get("view") as View | null;
-    const validViews: View[] = ["overview", "applications", "borrowers", "borrower-detail", "investors", "account-requests", "kyc", "payouts", "loans", "detail", "ledger", "withdrawals", "investor-tools", "reconciliation", "audit", "managers", "settings"];
+    const validViews: View[] = ["overview", "applications", "borrowers", "borrower-detail", "investors", "account-requests", "kyc", "payouts", "loans", "detail", "ledger", "withdrawals", "investor-tools", "reconciliation", "audit", "managers", "roles", "settings"];
     const id = params.get("id");
     return {
       view: v && validViews.includes(v) ? v : "overview",
@@ -293,7 +302,7 @@ export default function Admin() {
   };
 
   const visibleMenu = menu.filter((item) => {
-    if ((item.key === "managers" || item.key === "settings") && role !== "ADMIN") return false;
+    if ((item.key === "managers" || item.key === "roles" || item.key === "settings") && role !== "ADMIN") return false;
     return true;
   });
 
@@ -525,17 +534,14 @@ export default function Admin() {
             {view === "ledger" && renderSettingsLike("ledger")}
             {view === "withdrawals" && renderSettingsLike("withdrawals")}
             {view === "investor-tools" && renderSettingsLike("investor-tools")}
-            {view === "managers" && (
-              <div className="space-y-6">
-                <AdminAccounts />
-                <LoanManagerAdmin />
-              </div>
-            )}
+            {view === "managers" && <StaffAdmin />}
+            {view === "roles" && <RolesPermissions />}
             {view !== "applications" &&
               view !== "detail" &&
               view !== "borrower-detail" &&
               view !== "settings" &&
               view !== "managers" &&
+              view !== "roles" &&
               view !== "ledger" &&
               view !== "withdrawals" &&
               view !== "investor-tools" &&
