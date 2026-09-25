@@ -123,7 +123,7 @@ interface ApplicationContextValue {
   backendConfigured: boolean;
 
   // lifecycle
-  startNewApplication: (type: "PERSONAL" | "BUSINESS") => ApplicationData;
+  startNewApplication: (type: "PERSONAL" | "BUSINESS", productId?: string | null) => ApplicationData;
   prefillFromPrevious: () => Promise<ApplicationData | null>;
   resumeApplication: (email: string, phone: string) => Promise<LookupDraftResponse>;
   loadExisting: (id: string, data?: ApplicationData, sectionIndex?: number | null) => void;
@@ -376,7 +376,7 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
   }, [application, currentIndex]);
 
   // ----- lifecycle: start new -----
-  const startNewApplication = useCallback((type: "PERSONAL" | "BUSINESS"): ApplicationData => {
+  const startNewApplication = useCallback((type: "PERSONAL" | "BUSINESS", productId?: string | null): ApplicationData => {
     const id = generateDraftId();
     const now = new Date().toISOString();
     const fresh: ApplicationData = {
@@ -400,6 +400,10 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       updatedAt: now,
       submittedAt: null,
     };
+    // Explicit product binding (landing calculator / ?productId=): the wizard
+    // renders and prices with EXACTLY this admin-configured product, and the
+    // id is submitted so the backend binds the same row instead of re-resolving.
+    if (productId) fresh.loanProductId = productId;
     fresh.calculation = calculateLoan(fresh.loanRequest.amount, fresh.loanRequest.tenure, { loanType: type });
     applicationRef.current = fresh;
     setApplication(fresh);
@@ -724,7 +728,14 @@ export function ApplicationProvider({ children }: { children: ReactNode }) {
       }
       const res = getAccessToken()
         ? await (async () => {
-            const response = await submitBorrowerApplication(compactApplicationData(application));
+            // GUARANTEE: the calculation submitted is computed from the CURRENT
+            // admin-configured product terms — never a stale snapshot that
+            // survived in the draft. The backend prefers this saved calc when
+            // building the offer, so it must match what the borrower saw.
+            const pricedApplication: ApplicationData = application.loanRequest?.amount && application.loanRequest?.tenure
+              ? { ...application, calculation: calculateLoan(application.loanRequest.amount, application.loanRequest.tenure, { loanType: application.applicantType === "BUSINESS" ? "BUSINESS" : "PERSONAL" }) }
+              : application;
+            const response = await submitBorrowerApplication(compactApplicationData(pricedApplication));
             return { ok: response.ok, applicationId: String(response.loan?.applicationId ?? response.loan?.id ?? application.applicationId), status: "SUBMITTED" as const, error: response.error };
           })()
         : { ok: false, applicationId: application.applicationId, status: application.status, error: "Please sign in before submitting your loan application." };
@@ -1129,7 +1140,20 @@ function normalizeApplicationData(
       location: pickString(prevCollateral?.location, dataCollateral.location, ""),
       documentReference: pickString(prevCollateral?.documentReference, dataCollateral.documentReference, ""),
     },
-    calculation: data.calculation || priorState?.calculation || calculateLoan(loanRequest.amount, loanRequest.tenure, { loanType: data.applicantType || "PERSONAL" }),
+    calculation: (() => {
+      // FRESH RECOMPUTE WINS: a persisted calculation is a snapshot of the
+      // product terms at the time it was saved — resuming a draft after the
+      // admin re-priced the product must show TODAY's configured terms, not
+      // the numbers buried in the draft (production incident 2026-09: resumed
+      // applications kept rendering the old pricing indefinitely).
+      // The live useMemo (loanConfigVersion) re-renders the UI once the
+      // catalog lands; this keeps application.calculation aligned with it.
+      const type: "PERSONAL" | "BUSINESS" = data.applicantType === "BUSINESS" ? "BUSINESS" : "PERSONAL";
+      if (Number.isFinite(loanRequest.amount) && Number(loanRequest.amount) > 0 && Number.isFinite(loanRequest.tenure) && Number(loanRequest.tenure) > 0) {
+        return calculateLoan(Number(loanRequest.amount), Number(loanRequest.tenure), { loanType: type });
+      }
+      return data.calculation || priorState?.calculation || null;
+    })(),
     documents: Object.fromEntries(Object.entries(data.documents || priorState?.documents || {}).filter(([slot]) => slot !== "signedAgreement")),
     witness: {
       fullName: pickString(prevWitness?.fullName, dataWitness.fullName, ""),

@@ -312,16 +312,20 @@ function Dashboard() {
 function ApplyRoute() {
   const [params] = useSearchParams();
   const nav = useNavigate();
-  const { application, startNewApplication, prefillFromPrevious } = useApplication();
+  const { application, startNewApplication, update, prefillFromPrevious } = useApplication();
 
   // If `?type=PERSONAL|BUSINESS` was passed and we don't have an application of
   // that type yet, auto-create one. This lets the landing page link directly
-  // to "/apply?type=PERSONAL" to skip the type-selection step.
+  // to "/apply?type=PERSONAL" to skip the type-selection step. An optional
+  // `?productId=` binds the wizard to the EXACT admin-configured product the
+  // visitor selected on the landing calculator (limits, tenors, per-tenor
+  // rates) and is submitted with the application.
   useEffect(() => {
     const t = params.get("type");
+    const productId = params.get("productId");
     if (t === "PERSONAL" || t === "BUSINESS") {
       if (!application || application.applicantType !== t) {
-        startNewApplication(t);
+        startNewApplication(t, productId);
         // Returning borrower: prefill every section from their most recent
         // previous application so nothing has to be re-entered. Awaited BEFORE
         // entering the wizard so sections render already populated (and the
@@ -331,6 +335,12 @@ function ApplyRoute() {
           nav("/apply", { replace: true });
         })();
         return;
+      }
+      // Same-type draft still in progress: adopt the selected product ONLY
+      // when the draft has no explicit binding yet — an existing binding (the
+      // product the borrower started with) is never silently replaced.
+      if (productId && !application.loanProductId) {
+        update("loanProductId", productId);
       }
       // clear the query string so a refresh doesn't re-trigger creation
       nav("/apply", { replace: true });

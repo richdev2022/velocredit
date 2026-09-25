@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import Layout from "../components/Layout";
-import { config, getLoanProgram, validateConfig, selectableTenures } from "../utils/config";
+import { config, getLoanProgram, validateConfig, selectableTenures, applyLoanProduct, applyLoanProducts, resolveFeesForTenure } from "../utils/config";
 import { calculateMonthlyInterest, calculateLoan, formatNaira, formatDateLabel, getSuggestedLoanAmounts } from "../utils/loanCalculator";
-import { resolveFeesForTenure } from "../utils/config";
+import { getPublicLoanProducts, type LoanProduct } from "../services/apiClient";
+import type { LoanProgramKey } from "../types/loan";
 
 /* =======================================================================
    Real corporate photography — verified reachable CDN assets.
@@ -48,14 +49,78 @@ const TRUST_ITEMS = [
   { icon: <NairaIcon />, label: "₦1B+ Disbursed" },
 ];
 
+/**
+ * Map a catalog product to the borrower program key that prices it. The
+ * backend stamps `programType` explicitly; the name keyword is only the
+ * fallback for legacy rows (mirrors the backend classification rules).
+ */
+function programKeyOf(product: LoanProduct): LoanProgramKey {
+  if (product.programType === "BUSINESS") return "BUSINESS";
+  if (product.programType === "PERSONAL") return "PERSONAL";
+  const name = (product.name || "").toLowerCase();
+  return name.includes("business") ? "BUSINESS" : "PERSONAL";
+}
+
 export default function StartApplication() {
   const [testimonialIndex, setTestimonialIndex] = useState(0);
   const [openFaq, setOpenFaq] = useState(0);
-  const personalProgram = getLoanProgram("PERSONAL");
+
+  // ---------------------------------------------------------------------------
+  // LIVE PRODUCT CATALOG — fetched from the PUBLIC loan-products endpoint
+  // (no auth required, served with Cache-Control: no-store).
+  //
+  // The calculator renders EXACTLY the admin-configured product terms: the
+  // visitor picks a product and every number below — amount range, tenors,
+  // per-tenor monthly rates, interest type, fees — comes from THAT product,
+  // the same rows the borrower wizard serves. The env-configured program is
+  // only the fallback while the catalog loads or is unreachable.
+  // ---------------------------------------------------------------------------
+  const [catalog, setCatalog] = useState<LoanProduct[]>([]);
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  // Bumped after the config singleton is (re-)applied — forces the program
+  // read and the calculation to re-run with the freshly applied product.
+  const [configVersion, setConfigVersion] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPublicLoanProducts().then((response) => {
+      if (cancelled) return;
+      const products = Array.isArray(response.products) ? response.products : [];
+      if (products.length === 0) return;
+      // Seed the shared config singleton so this calculator (and any other
+      // landing-page consumer) reads admin-configured terms, not env defaults.
+      applyLoanProducts(products, {
+        includeInactive: response.catalogNotice === "ALL_PRODUCTS_INACTIVE_FALLBACK",
+      });
+      setCatalog(products);
+      // Default selection: the PERSONAL-classified product, else the first row.
+      const defaultProduct = products.find((p) => programKeyOf(p) === "PERSONAL") ?? products[0];
+      applyLoanProduct(defaultProduct, programKeyOf(defaultProduct));
+      setSelectedProductId(defaultProduct.id);
+      setConfigVersion((v) => v + 1);
+    }).catch(() => {
+      // Catalog unavailable — the env-configured defaults remain usable.
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const selectedProduct = useMemo(
+    () => catalog.find((p) => p.id === selectedProductId) ?? null,
+    [catalog, selectedProductId],
+  );
+  const activeProgramKey: LoanProgramKey = selectedProduct ? programKeyOf(selectedProduct) : "PERSONAL";
+
+  // Re-read the program AFTER a product is applied to the config singleton
+  // (the singleton is mutable — configVersion forces this useMemo to re-run).
+  const program = useMemo(() => {
+    void configVersion;
+    return getLoanProgram(activeProgramKey);
+  }, [activeProgramKey, configVersion]);
+
   // The landing calculator only offers SELECTABLE tenors — locked tenors are
   // an in-wizard teaser (rendered by the loan request screen), not a
   // marketing estimation option.
-  const selectableTenuresList = selectableTenures(personalProgram.tenures);
+  const selectableTenuresList = selectableTenures(program.tenures);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -68,20 +133,58 @@ export default function StartApplication() {
   const hardErrors = errors.filter((e) => e.severity === "error");
   const warnings = errors.filter((e) => e.severity === "warning");
 
-  const [loanAmount, setLoanAmount] = useState(personalProgram.loanLimits.defaultAmount);
-  const [amountInput, setAmountInput] = useState(String(personalProgram.loanLimits.defaultAmount));
+  const [loanAmount, setLoanAmount] = useState<number>(() => getLoanProgram("PERSONAL").loanLimits.defaultAmount);
+  const [amountInput, setAmountInput] = useState<string>(() => String(getLoanProgram("PERSONAL").loanLimits.defaultAmount));
   const [amountError, setAmountError] = useState("");
-  const [selectedTenure, setSelectedTenure] = useState(personalProgram.tenures.find((t) => t.status !== "LOCKED")?.value || 30);
+  const [selectedTenure, setSelectedTenure] = useState<number>(() => selectableTenures(getLoanProgram("PERSONAL").tenures)[0]?.value || 30);
+
+  // When a product is selected (or the catalog first lands), re-anchor amount
+  // + tenure to THAT product's configured defaults so the calculator always
+  // shows exactly its terms — never the previous product's leftovers.
+  useEffect(() => {
+    if (!selectedProduct) return;
+    const limits = program.loanLimits;
+    const defaultAmount = Math.min(limits.max, Math.max(limits.min, limits.defaultAmount || limits.min));
+    setLoanAmount(defaultAmount);
+    setAmountInput(String(defaultAmount));
+    setAmountError("");
+    const tenures = selectableTenures(program.tenures);
+    const productDefault = Number(selectedProduct.defaultTenureDays);
+    const resolvedTenure = Number.isFinite(productDefault) && tenures.some((t) => t.value === productDefault)
+      ? productDefault
+      : (tenures[0]?.value || 30);
+    setSelectedTenure(resolvedTenure);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProductId, configVersion]);
 
   const calculation = useMemo(() => {
-    return calculateLoan(loanAmount, selectedTenure, { loanType: "PERSONAL" });
-  }, [loanAmount, selectedTenure]);
+    return calculateLoan(loanAmount, selectedTenure, { loanType: activeProgramKey });
+    // configVersion: the program config behind getLoanProgram is mutated when
+    // a product is applied — recalculate with the freshly applied terms.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loanAmount, selectedTenure, activeProgramKey, configVersion]);
 
-  const { min, max } = personalProgram.loanLimits;
+  const { min, max } = program.loanLimits;
   const step = (max - min) <= 1_000_000 ? 5_000 : 10_000;
-  const selectedFees = resolveFeesForTenure({ ...config, ...personalProgram }, selectedTenure);
+  const selectedFees = resolveFeesForTenure({ ...config, ...program }, selectedTenure);
   const quickAmounts = getSuggestedLoanAmounts(min, max);
   const monthlyInterest = calculateMonthlyInterest(calculation.loanAmount, selectedFees.interest);
+
+  // The interest label/tag must reflect the product's CONFIGURED interest
+  // semantics — the admin may price ANNUALIZED (p.a., prorated), not monthly.
+  const rateIsAnnual = selectedFees.interest.type === "percentage" && selectedFees.interest.interestType === "ANNUALIZED";
+  const interestRateLabel = selectedFees.interest.type === "percentage"
+    ? `${selectedFees.interest.value.toFixed(2)}% ${rateIsAnnual ? "p.a. (prorated over tenure)" : "per month"}`
+    : "Flat";
+
+  function selectProduct(product: LoanProduct) {
+    if (product.id === selectedProductId) return;
+    // Strict per-product application — the whole calculator now reads THIS
+    // product's terms, the identical mechanism the borrower wizard uses.
+    applyLoanProduct(product, programKeyOf(product));
+    setSelectedProductId(product.id);
+    setConfigVersion((v) => v + 1);
+  }
 
   function validateAmount(value: number): string {
     if (!Number.isFinite(value) || value < min) return `Minimum loan amount is ${formatNaira(min)}.`;
@@ -478,6 +581,16 @@ export default function StartApplication() {
                     </div>
                     <h3 className="text-xl sm:text-2xl font-bold">Your repayment estimate</h3>
                     <p className="text-sm text-white/60 mt-0.5">Adjust amount &amp; tenure — results update instantly</p>
+                    {/* Selected product identity — the EXACT admin-configured
+                        product this estimate is priced with. */}
+                    {selectedProduct && (
+                      <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-xl bg-white/10 border border-white/15 px-3 py-1.5 backdrop-blur-sm">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-white/60 shrink-0">
+                          {activeProgramKey === "BUSINESS" ? "Business product" : "Personal product"}
+                        </span>
+                        <span className="text-sm font-bold text-white truncate">{selectedProduct.name}</span>
+                      </div>
+                    )}
                   </div>
                   <div className="text-right shrink-0">
                     <div className="text-[10px] text-white/50 font-bold uppercase tracking-widest mb-1">Total Repayment</div>
@@ -496,6 +609,48 @@ export default function StartApplication() {
 
               {/* Body */}
               <div className="p-6 sm:p-8 space-y-6">
+                {/* Loan product filter — every chip is a live admin-configured
+                    product; selecting one re-prices the whole calculator from
+                    that product's exact configuration. */}
+                {catalog.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-2.5">
+                      <label className="text-sm font-bold text-velo-900 dark:text-white">Loan product</label>
+                      <span className="text-xs text-slate-500 font-semibold">{catalog.length} available</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {catalog.map((p) => {
+                        const active = p.id === selectedProductId;
+                        const key = programKeyOf(p);
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => selectProduct(p)}
+                            aria-pressed={active}
+                            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl border-2 text-sm font-bold transition-all duration-200
+                              ${active
+                                ? "border-velo-500 bg-gradient-to-br from-velo-50 to-white dark:from-velo-900/40 dark:to-slate-800 text-velo-700 dark:text-velo-300 shadow-md shadow-velo-500/10 ring-2 ring-velo-100 dark:ring-velo-800 scale-[1.02]"
+                                : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:border-velo-300 hover:text-velo-700 dark:hover:text-velo-300 hover:scale-[1.02]"
+                              }`}
+                          >
+                            {active && (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            )}
+                            {p.name}
+                            <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wider ${key === "BUSINESS" ? "bg-slate-900 text-white dark:bg-slate-600" : "bg-velo-100 text-velo-700 dark:bg-velo-900 dark:text-velo-300"}`}>
+                              {key === "BUSINESS" ? "Business" : "Personal"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {selectedProduct?.description && (
+                      <p className="mt-2.5 text-xs text-slate-500 dark:text-slate-400 max-w-prose">{selectedProduct.description}</p>
+                    )}
+                  </div>
+                )}
+
                 {/* Amount */}
                 <div>
                   <div className="flex items-center justify-between mb-2.5">
@@ -617,9 +772,11 @@ export default function StartApplication() {
                     <div className="space-y-2.5">
                       <BreakdownRow label="Principal (you receive)" value={formatNaira(calculation.loanAmount)} accent="velo" bold />
                       <BreakdownRow
-                        label={`Interest (${selectedFees.interest.type === "percentage" ? `${selectedFees.interest.value.toFixed(2)}% per month` : "Flat"})`}
+                        label={`Interest (${interestRateLabel})`}
                         value={formatNaira(calculation.interest)}
-                        tag={`${formatNaira(monthlyInterest)} per month × ${(selectedTenure / 30).toFixed(2)} months`}
+                        tag={rateIsAnnual
+                          ? `${formatNaira(calculation.loanAmount)} × ${selectedFees.interest.value.toFixed(2)}% p.a. × ${selectedTenure}/365 days`
+                          : `${formatNaira(monthlyInterest)} per month × ${(selectedTenure / 30).toFixed(2)} months`}
                       />
                       <BreakdownRow label="Service Fee" value={formatNaira(calculation.serviceFee)} />
                       <BreakdownRow label="Processing Fee" value={formatNaira(calculation.processingFee)} />
@@ -648,35 +805,38 @@ export default function StartApplication() {
                   </div>
                 </div>
 
-                {/* Apply CTAs */}
+                {/* Apply CTAs — the SELECTED product travels through
+                    registration straight into the wizard (?productId=), so
+                    the application is governed by exactly the product the
+                    visitor calculated with. */}
                 <div className="space-y-3 pt-1">
                   <div className="text-center mb-3">
                     <p className="text-sm font-bold text-velo-900 dark:text-white mb-1">Ready to get funded?</p>
                     <p className="text-xs text-slate-500">Create an account or sign in — your progress is always saved.</p>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <Link
-                      to="/account?mode=register&role=BORROWER&type=PERSONAL"
-                      className="group inline-flex items-center justify-center gap-2 px-5 py-4 rounded-2xl bg-gradient-to-r from-velo-600 to-velo-500 dark:from-velo-500 dark:to-velo-400 text-white font-bold shadow-lg shadow-velo-500/25 transition-all duration-200 hover:shadow-xl hover:shadow-velo-500/40 hover:scale-[1.02] active:scale-[0.98]"
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="2"/></svg>
-                      Personal Loan
-                    </Link>
-                    <Link
-                      to="/account?mode=register&role=BORROWER&type=BUSINESS"
-                      className="group inline-flex items-center justify-center gap-2 px-5 py-4 rounded-2xl bg-gradient-to-r from-velo-900 to-velo-800 dark:from-slate-700 dark:to-slate-600 text-white font-bold shadow-lg shadow-velo-900/25 transition-all duration-200 hover:shadow-xl hover:scale-[1.02] active:scale-[0.98]"
-                    >
-                      <CbnIcon />
-                      Business Loan
-                    </Link>
-                  </div>
-                  <Link
-                    to="/account?mode=login#signin"
-                    className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-2xl bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold transition-all duration-200 hover:border-velo-300 hover:text-velo-700 dark:hover:text-velo-300 hover:bg-slate-50 dark:hover:bg-slate-700 group"
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="group-hover:rotate-12 transition-transform"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    Sign in to continue your application
-                  </Link>
+                  {(() => {
+                    const wizardHref = `/apply?type=${activeProgramKey}${selectedProduct ? `&productId=${encodeURIComponent(selectedProduct.id)}` : ""}`;
+                    const registerHref = `/account?mode=register&role=BORROWER&type=${activeProgramKey}${selectedProduct ? `&productId=${encodeURIComponent(selectedProduct.id)}&redirect=${encodeURIComponent(wizardHref)}` : ""}`;
+                    const loginHref = `/account?mode=login&redirect=${encodeURIComponent(wizardHref)}#signin`;
+                    return (
+                      <>
+                        <Link
+                          to={registerHref}
+                          className="group flex items-center justify-center gap-2 w-full px-5 py-4 rounded-2xl bg-gradient-to-r from-velo-600 to-velo-500 dark:from-velo-500 dark:to-velo-400 text-white font-bold shadow-lg shadow-velo-500/25 transition-all duration-200 hover:shadow-xl hover:shadow-velo-500/40 hover:scale-[1.02] active:scale-[0.98]"
+                        >
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="2"/></svg>
+                          Apply now{selectedProduct ? ` — ${selectedProduct.name}` : ""}
+                        </Link>
+                        <Link
+                          to={loginHref}
+                          className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-2xl bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold transition-all duration-200 hover:border-velo-300 hover:text-velo-700 dark:hover:text-velo-300 hover:bg-slate-50 dark:hover:bg-slate-700 group"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="group-hover:rotate-12 transition-transform"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          Sign in to continue your application
+                        </Link>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             </div>

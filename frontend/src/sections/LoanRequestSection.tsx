@@ -47,13 +47,33 @@ export default function LoanRequestSection() {
   // Type-scoped product fetch: the backend resolves THE product for this
   // application flow (?type=PERSONAL|BUSINESS) and its terms are applied
   // strictly to this flow's program config. Re-runs if the applicant type
-  // changes so the two flows can never cross-contaminate.
+  // changes so the two flows can never cross-contaminate. When the
+  // application carries an EXPLICIT product binding (loanProductId, set from
+  // the landing calculator's ?productId=), that exact product is fetched
+  // instead of a type-based re-resolution. A window-focus / tab-visibility
+  // refresh re-runs the fetch so an admin re-pricing is picked up without a
+  // full reload.
   const [appliedProduct, setAppliedProduct] = useState<LoanProduct | null>(null);
   const [configVersion, setConfigVersion] = useState(0);
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [focusTick, setFocusTick] = useState(0);
+  const explicitProductId = application?.loanProductId || null;
   useEffect(() => {
+    const refocus = () => setFocusTick((t) => t + 1);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refocus();
+    };
+    window.addEventListener("focus", refocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", refocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+  useEffect(() => {
+    void focusTick; // re-run the fetch when the window regains focus
     let cancelled = false;
-    void getLoanProducts({ type: applicantType }).then((response) => {
+    void getLoanProducts({ type: applicantType, productId: explicitProductId ?? undefined }).then((response) => {
       if (cancelled) return;
       const product = response.products[0] ?? null;
       if (product) {
@@ -75,7 +95,7 @@ export default function LoanRequestSection() {
       // If the fetch fails, fall back to whatever config is already in memory.
     });
     return () => { cancelled = true; };
-  }, [applicantType]);
+  }, [applicantType, explicitProductId, focusTick]);
 
   // Re-read the program after the re-fetch completes (configVersion forces the
   // useMemo below to re-run, so the freshly applied product terms are used).
@@ -244,6 +264,40 @@ export default function LoanRequestSection() {
                 )}
               </div>
             </div>
+            {/* Per-tenor pricing matrix — EXACTLY as the admin configured it
+                (easimoney style). When the product carries a tenor rate table
+                it is rendered verbatim here: each tenor with its monthly
+                rate; LOCKED tenors show "Locked" instead of a rate. */}
+            {bannerProduct?.tenorInterestRates && bannerProduct.tenorInterestRates.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-velo-100 dark:border-velo-800">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-velo-600 dark:text-velo-300 mb-2">
+                  Tenor rates (per month)
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {bannerProduct.tenorInterestRates
+                    .slice()
+                    .sort((a, b) => a.tenorDays - b.tenorDays)
+                    .map((rate) => {
+                      const locked = rate.status === "LOCKED";
+                      return (
+                        <span
+                          key={rate.tenorDays}
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold border ${
+                            locked
+                              ? "border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-500"
+                              : "border-velo-100 bg-white text-velo-700 dark:border-velo-800 dark:bg-velo-900/30 dark:text-velo-300"
+                          }`}
+                        >
+                          {tenorDurationLabel(rate.tenorDays)}: {locked ? "Locked" : `${rate.monthlyRatePercent}%`}
+                          {rate.status === "HOT" && !locked && (
+                            <span className="rounded bg-orange-100 px-1 text-[9px] font-extrabold uppercase text-orange-600 dark:bg-orange-900/40 dark:text-orange-300">Hot</span>
+                          )}
+                        </span>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Left — selectors */}
