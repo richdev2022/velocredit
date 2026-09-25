@@ -120,7 +120,7 @@ import {
   normalizeBankCodeForFlutterwave,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult, PlatformAnnouncement, PlatformBanner, Document as StoreDocument } from "./store.js";
 
 const router = Router();
@@ -4903,8 +4903,15 @@ router.post("/admin/loan-managers", requireAuth, requireRole("ADMIN"), async (re
   users.push(manager);
   recordAdminAudit(req, "LOAN_MANAGER_CREATED", "USER", manager.id, { role: "LOAN_MANAGER", email: manager.email });
   if (!(await persistMutation(res))) return;
+  // Invite email with the login details + sign-in instructions. A delivery
+  // failure must never roll back or block the account creation itself.
+  let notifiedByEmail = false;
+  try {
+    const invite = await sendEmail({ to: manager.email, name: manager.fullName, ...backOfficeAccountCreatedEmail({ name: manager.fullName, loginEmail: manager.email, password: parsed.data.password, roles: manager.roles as string[], loginUrl: env.ADMIN_PORTAL_URL ?? `${env.API_ORIGIN}/admin` }) });
+    notifiedByEmail = invite.sent;
+  } catch { /* invite email failure must not block account creation */ }
   const { passwordHash: _passwordHash, ...safeManager } = manager;
-  res.status(201).json({ ok: true, manager: { ...safeManager, role: "LOAN_MANAGER" } });
+  res.status(201).json({ ok: true, manager: { ...safeManager, role: "LOAN_MANAGER" }, notifiedByEmail });
 });
 
 router.patch("/admin/loan-managers/:id/status", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
@@ -4954,8 +4961,15 @@ router.post("/admin/administrators", requireAuth, requireRole("ADMIN"), async (r
   users.push(administrator);
   recordAdminAudit(req, "ADMIN_CREATED", "USER", administrator.id, { email: administrator.email });
   if (!(await persistMutation(res))) return;
+  // Invite email with the login details + sign-in instructions. A delivery
+  // failure must never roll back or block the account creation itself.
+  let notifiedByEmail = false;
+  try {
+    const invite = await sendEmail({ to: administrator.email, name: administrator.fullName, ...backOfficeAccountCreatedEmail({ name: administrator.fullName, loginEmail: administrator.email, password: parsed.data.password, roles: administrator.roles as string[], loginUrl: env.ADMIN_PORTAL_URL ?? `${env.API_ORIGIN}/admin` }) });
+    notifiedByEmail = invite.sent;
+  } catch { /* invite email failure must not block account creation */ }
   const { passwordHash: _passwordHash, ...safeAdministrator } = administrator;
-  res.status(201).json({ ok: true, administrator: safeAdministrator });
+  res.status(201).json({ ok: true, administrator: safeAdministrator, notifiedByEmail });
 });
 
 router.patch("/admin/administrators/:id/status", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
@@ -7501,7 +7515,9 @@ router.post("/admin/banners", requireAuth, requireRole("ADMIN"), async (req, res
   const parsed = z.object({
     name: z.string().min(1).max(120),
     // Accept a raw data URL or a bare base64 payload with an explicit mimeType.
-    imageData: z.string().min(32).max(6_000_000),
+    // Cap ~2M chars (≈1.5 MB binary): the admin UI compresses banners before
+    // upload and the JSON body must fit the 3 MB express.json envelope.
+    imageData: z.string().min(32).max(2_000_000),
     mimeType: z.string().regex(/^image\//).optional(),
     linkUrl: z.string().max(500).optional(),
   }).safeParse(req.body);

@@ -125,6 +125,7 @@ All backend configuration is validated at boot with Zod (`backend/server/config.
 | `API_HOST` | `0.0.0.0` | |
 | `API_PUBLIC_URL` | `http://localhost:4000` | Advertised in health/docs output |
 | `API_ORIGIN` | `http://localhost:5173` | Allowed CORS origin |
+| `ADMIN_PORTAL_URL` | — | Optional explicit back-office sign-in link used in staff invite emails (falls back to `API_ORIGIN` + `/admin`) |
 | `DATABASE_URL` | — | PostgreSQL connection string (Neon serverless driver) |
 | `JWT_SECRET`, `JWT_EXPIRES_IN` | — / `2h` | `JWT_SECRET` min 32 chars |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` | — | Bootstrap administrator credentials (password min 12 chars) |
@@ -194,7 +195,7 @@ Authenticated routes use **Bearer JWT** (`Authorize` button in Swagger UI). Admi
 5. **Early liquidity** — request early exit on plans that allow it (fee rules per plan; forfeit-interest flag honoured).
 
 ### Admin / Loan manager
-- Log in at `/admin` with **two-step authentication** (password → OTP). Loan managers are the same workspace with scoped permissions.
+- Log in at `/admin` with **two-step authentication** (password → OTP). Loan managers are the same workspace with scoped permissions. Newly created staff (administrators / loan managers) automatically receive an **invite email** with their login details (sign-in page, email, temporary password, role) and step-by-step sign-in instructions — the UI confirms whether the email went out (`notifiedByEmail`).
 - Operate everything from one workspace (§8). Every sensitive action lands in the audit log.
 
 ---
@@ -295,14 +296,14 @@ The unified workspace (`frontend/src/components/admin/AdminWorkspace.tsx`) cover
 | Loan management | List with **status filter, search, pagination** (`limit/offset/status/borrowerId/search`), detail with documents + credit snapshots, **staged review** (per-stage approve/reject, approve-all), decision recording, disbursement + retry, "request account update" |
 | KYC cases | Queue, per-requirement decisions, overall decisions, KYC reset |
 | Users | Create/edit/roles/suspend, KYC reset, investor earning-rate override, manual wallet credit (ledgered + audited) |
-| Loan managers / Administrators | Create, permission scoping, activate/suspend, delete |
+| Loan managers / Administrators | Create (invite email with login details + sign-in instructions sent automatically), permission scoping, activate/suspend, delete |
 | Investments & plans | All investments; plan CRUD with liquidity rules and rate types |
 | Withdrawal history | Filters (status, date range), search, pagination, detail with ledger trail + timeline, retry |
 | Disbursements | All transfers (self-healing status read), per-borrower history, retry |
 | Payouts | Attempt list, manual approval gate, retry |
 | Account requests | Approve/reject bank-account change requests (payout + disbursement) |
 | Ledger & reports | Double-entry ledger with platform balance; date-range business reports |
-| Content | Announcements (max 280 chars), banner carousel (base64 upload, links, activation), platform settings (fees, rates, maintenance mode/message) |
+| Content | Announcements (max 280 chars), banner carousel (browser-compressed base64 upload — photos are downscaled + re-encoded to ~100–300 KB before they hit the API, links, activation), platform settings (fees, rates, maintenance mode/message) |
 | Audit log | Every sensitive action with actor/target enrichment, CSV export |
 
 ### Loan products — the complete, single-source-of-truth loan configuration
@@ -325,7 +326,7 @@ Every loan term lives ON the loan product (PostgreSQL table `loan_products`); no
 
 Defaults (owner-seeded easimoney configuration, "seed this as default"): a fresh platform seeds **Personal Loan** and **Business Loan** (₦100,000 – ₦30,000,000) with the per-tenor matrix **30d 18.9% · 60d 17.1% · 91d locked (15.9%) · 180d 10.5% · 360d 8.7% (Hot)**, `SIMPLE_FLAT` with an 18.9% base fallback; Business defaults to a 60-day tenor, Personal to 30 days (the locked 91-day tenor is never a default). A catalog missing one of the two flows is self-healed with the matching default at boot, and **legacy default-named products that never had per-tenor rates are automatically upgraded to this same default table** (products the admin renamed or per-tenor-configured are never touched). Applications capture an immutable product snapshot (full terms incl. tenor list, per-tenor rates/statuses and service fee) so later product edits never change agreed loans. The borrower screen fetches `GET /borrower/loan-products?type=…` and renders exactly the one returned product, including a "priced at X% per month" note for the selected tenor when an explicit rate exists.
 
-**Per-tenor rates + availability in the admin console:** every product editor shows an easimoney-style pricing table — one row per tenor with **Tenure | Duration | Monthly Interest | Status | Remove**, a status selector per tenor (Available / Locked / Hot), *Load easimoney default* / *Fill all with base* / *Clear all* quick actions, custom-tenor entry, and a Default badge per row. Entries must reference tenors from the product's tenor list (rejected at the API boundary otherwise); shrinking the tenor list prunes orphaned entries; a LOCKED tenor must carry its own rate (otherwise it would silently fall back to AVAILABLE + base-rate pricing); an empty matrix (or `[]` on PATCH) reverts the product to pure base-rate math. Borrowers see locked tenors as disabled rows with a lock icon and NO rate; selecting a locked tenor is also rejected server-side at submission and section save.
+**Per-tenor rates + availability in the admin console:** every product editor shows the default pricing table — one row per tenor with **Tenure | Duration | Monthly Interest | Status | Remove**, a status selector per tenor (Available / Locked / Hot), *Load default* / *Fill all with base* / *Clear all* quick actions, custom-tenor entry, and a Default badge per row. Entries must reference tenors from the product's tenor list (rejected at the API boundary otherwise); shrinking the tenor list prunes orphaned entries; a LOCKED tenor must carry its own rate (otherwise it would silently fall back to AVAILABLE + base-rate pricing); an empty matrix (or `[]` on PATCH) reverts the product to pure base-rate math. Borrowers see locked tenors as disabled rows with a lock icon and NO rate; selecting a locked tenor is also rejected server-side at submission and section save.
 
 Loan products are created/edited with cross-field guards (e.g. `minAmountNaira` must be less than `maxAmountNaira`, `defaultAmountNaira` must fall within the range, `defaultTenureDays` must be one of `tenureDays` — all rejected at the API boundary) and late-fee semantics (`ONE_TIME`, `COMPOUNDING_DAILY`, `COMPOUNDING_MONTHLY`). The admin console's "Loan Products" tab is the only place loan configuration is edited; the former "Loan programs" / "Global limits & fees" editors (which only wrote to the editing admin's browser) were removed, and any leftover localStorage loan overrides from older builds are stripped automatically on load.
 

@@ -9,7 +9,7 @@
 //   tenures    — the exact tenor list borrowers can pick from + default tenor
 //   interest   — rate + type (SIMPLE_FLAT / REDUCING_BALANCE / ANNUALIZED)
 //                PLUS the per-tenor MONTHLY interest matrix with per-tenor
-//                availability (Available / Locked / Hot, easimoney style)
+//                availability (Available / Locked / Hot)
 //   fees       — processing fee, service fee, late fee + late fee type
 //   rules      — grace period, collateral shown / required, active state
 //
@@ -61,8 +61,8 @@ const TENOR_STATUS_OPTIONS: Array<{ value: Exclude<TenorStatus, undefined>; labe
   { value: "HOT", label: "Hot", hint: "Selectable with a Hot badge (marketing highlight)." },
 ];
 
-/** The owner-seeded default pricing table (easimoney configuration). */
-const EASIMONEY_PRESET = {
+/** The owner-seeded default pricing table ("Load default" preset). */
+const DEFAULT_PRESET = {
   tenures: [30, 60, 91, 180, 360],
   tenorRates: { 30: "18.9", 60: "17.1", 91: "15.9", 180: "10.5", 360: "8.7" } as Record<number, string>,
   tenorStatuses: { 30: "AVAILABLE", 60: "AVAILABLE", 91: "LOCKED", 180: "AVAILABLE", 360: "HOT" } as Record<number, TenorStatus>,
@@ -79,9 +79,9 @@ interface ProductDraft {
   defaultTenureDays: number;
   interestRatePercent: string;
   interestType: InterestType;
-  /** Per-tenor MONTHLY interest rates (easimoney style): tenor days -> "" (unset, base rate) or rate string. */
+  /** Per-tenor MONTHLY interest rates: tenor days -> "" (unset, base rate) or rate string. */
   tenorRates: Record<number, string>;
-  /** Per-tenor availability (easimoney style): tenor days -> AVAILABLE / LOCKED / HOT. */
+  /** Per-tenor availability: tenor days -> AVAILABLE / LOCKED / HOT. */
   tenorStatuses: Record<number, TenorStatus>;
   processingFeePercent: string;
   serviceFeePercent: string;
@@ -140,13 +140,13 @@ function emptyDraft(): ProductDraft {
     minAmountNaira: 100000,
     maxAmountNaira: 30000000,
     defaultAmountNaira: 100000,
-    tenures: [...EASIMONEY_PRESET.tenures],
+    tenures: [...DEFAULT_PRESET.tenures],
     defaultTenureDays: 30,
     interestRatePercent: "18.9",
     interestType: "SIMPLE_FLAT",
-    // easimoney default pricing table (owner-seeded configuration).
-    tenorRates: { ...EASIMONEY_PRESET.tenorRates },
-    tenorStatuses: { ...EASIMONEY_PRESET.tenorStatuses },
+    // Owner-seeded default pricing table ("Load default" preset).
+    tenorRates: { ...DEFAULT_PRESET.tenorRates },
+    tenorStatuses: { ...DEFAULT_PRESET.tenorStatuses },
     processingFeePercent: "2",
     serviceFeePercent: "0",
     lateFeePercent: "1",
@@ -498,7 +498,7 @@ function ProductEditor({
         {errors.interestRatePercent && <p className="velo-error-text">{errors.interestRatePercent}</p>}
       </div>
 
-      {/* Per-tenor MONTHLY interest rates + availability (easimoney style) */}
+      {/* Per-tenor MONTHLY interest rates + availability */}
       {tenures.length > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white p-3.5 dark:border-slate-700 dark:bg-slate-900">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
@@ -512,14 +512,14 @@ function ProductEditor({
               <button
                 type="button"
                 onClick={() => onDraftChange({
-                  tenures: [...EASIMONEY_PRESET.tenures],
-                  tenorRates: { ...EASIMONEY_PRESET.tenorRates },
-                  tenorStatuses: { ...EASIMONEY_PRESET.tenorStatuses },
-                  ...(!EASIMONEY_PRESET.tenures.includes(Number(draft.defaultTenureDays)) ? { defaultTenureDays: 30 } : {}),
+                  tenures: [...DEFAULT_PRESET.tenures],
+                  tenorRates: { ...DEFAULT_PRESET.tenorRates },
+                  tenorStatuses: { ...DEFAULT_PRESET.tenorStatuses },
+                  ...(!DEFAULT_PRESET.tenures.includes(Number(draft.defaultTenureDays)) ? { defaultTenureDays: 30 } : {}),
                 })}
                 className="rounded-lg border border-velo-300 bg-velo-50 px-2.5 py-1.5 text-[10px] font-bold text-velo-700 transition hover:bg-velo-100 dark:border-velo-700 dark:bg-velo-900/40 dark:text-velo-200 dark:hover:bg-velo-900/70"
               >
-                Load easimoney default
+                Load default
               </button>
               <button
                 type="button"

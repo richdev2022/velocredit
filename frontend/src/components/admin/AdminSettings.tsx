@@ -54,6 +54,58 @@ import { Pill, Toggle, SettingRow, PanelCard } from "./settingsUI";
 /** Per-tenure override state: Record<tenureDays, { enabled: boolean, fees }> */
 type SettingsTab = "programs" | "branding" | "engagement" | "system";
 
+// Banner uploads used to time out because raw phone photos (3 MB → ~4 MB of
+// base64) were posted through the API's JSON envelope. Banners are downscaled
+// and re-encoded as JPEG in the browser BEFORE upload, so the request is
+// typically 100–300 KB and uploads in seconds on any connection.
+const BANNER_JSON_BUDGET_CHARS = 1_400_000; // ≈1.05 MB binary — safely inside the API envelope
+async function compressBannerImage(originalDataUrl: string, file: File): Promise<{ dataUrl: string; mimeType: string; sizeBytes: number }> {
+  const readBlob = (blob: Blob) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("Could not encode the image"));
+    reader.readAsDataURL(blob);
+  });
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("decode-failed"));
+      img.src = originalDataUrl;
+    });
+    // Progressive passes: stop as soon as the encoded size fits the envelope.
+    const passes: Array<{ maxEdge: number; quality: number }> = [
+      { maxEdge: 1600, quality: 0.85 },
+      { maxEdge: 1280, quality: 0.72 },
+      { maxEdge: 1024, quality: 0.6 },
+    ];
+    for (const pass of passes) {
+      const scale = Math.min(1, pass.maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
+      const width = Math.max(1, Math.round(image.naturalWidth * scale));
+      const height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) break;
+      ctx.fillStyle = "#ffffff"; // JPEG has no alpha — flatten transparency onto white
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(image, 0, 0, width, height);
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", pass.quality));
+      if (blob && Math.ceil((blob.size * 4) / 3) + 32 <= BANNER_JSON_BUDGET_CHARS) {
+        return { dataUrl: await readBlob(blob), mimeType: "image/jpeg", sizeBytes: blob.size };
+      }
+    }
+  } catch {
+    // Decode failed (e.g. HEIC in some browsers) — fall through to the
+    // original-size check below.
+  }
+  if (originalDataUrl.length <= BANNER_JSON_BUDGET_CHARS + 32) {
+    return { dataUrl: originalDataUrl, mimeType: file.type || "image/jpeg", sizeBytes: file.size };
+  }
+  throw new Error("This image is too large to upload. Please pick a JPG or PNG — smaller images are compressed automatically.");
+}
+
 const SETTINGS_TABS: Array<{ key: SettingsTab; label: string; icon: React.ReactNode }> = [
   { key: "programs", label: "Loan Products", icon: <Icon name="target" size={15} /> },
   { key: "branding", label: "Branding & Access", icon: <Icon name="bank" size={15} /> },
@@ -1122,15 +1174,22 @@ function EngagementSettings() {
       setBannerErr("Banner must be an image (JPG, PNG or WebP).");
       return;
     }
-    if (file.size > 3 * 1024 * 1024) {
-      setBannerErr("Banner must be 3 MB or smaller.");
+    if (file.size > 8 * 1024 * 1024) {
+      setBannerErr("Banner must be 8 MB or smaller.");
       return;
     }
     setBannerErr("");
+    setBannerMsg("");
     const reader = new FileReader();
+    reader.onerror = () => setBannerErr("Could not read the image file. Please try another one.");
     reader.onload = () => {
-      setBannerData({ dataUrl: String(reader.result ?? ""), mimeType: file.type, sizeBytes: file.size });
-      if (!bannerName.trim()) setBannerName(file.name.replace(/\.[^.]+$/, ""));
+      void compressBannerImage(String(reader.result ?? ""), file)
+        .then((result) => {
+          setBannerData(result);
+          setBannerMsg(`Image optimized to ${Math.max(1, Math.round(result.sizeBytes / 1024))} KB — uploads stay fast on any connection.`);
+          if (!bannerName.trim()) setBannerName(file.name.replace(/\.[^.]+$/, ""));
+        })
+        .catch((err) => setBannerErr(err instanceof Error ? err.message : "Could not process the image. Please use a JPG or PNG."));
     };
     reader.readAsDataURL(file);
   }
@@ -1311,7 +1370,7 @@ function EngagementSettings() {
       >
         <div className="py-3 space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <SettingRow label="Banner image" description="JPG, PNG or WebP · max 3 MB. Recommended width 1200×400." stacked>
+            <SettingRow label="Banner image" description="JPG, PNG or WebP · up to 8 MB. Large photos are compressed automatically before upload. Recommended width 1200×400." stacked>
               <input type="file" accept="image/*" onChange={pickBannerFile} className="velo-input text-sm" />
             </SettingRow>
             <SettingRow label="Banner name" description="Internal label for the banner list." stacked>
