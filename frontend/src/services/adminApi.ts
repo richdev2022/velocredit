@@ -164,17 +164,78 @@ export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payo
 export type AdminPermission = typeof ADMIN_PERMISSIONS[number];
 export interface LoanManager { id: string; email: string; fullName: string; phone: string; role: "LOAN_MANAGER"; adminPermissions?: AdminPermission[]; isActive?: boolean; createdAt: string; }
 export async function adminListLoanManagers(): Promise<{ ok: true; managers: LoanManager[] }> { return request("/api/v1/admin/loan-managers"); }
-export async function adminCreateLoanManager(email: string, name: string, _appUrl: string, phone: string, password: string, permissions: AdminPermission[] = [...ADMIN_PERMISSIONS]) {
-        return request<{ ok: true; manager: LoanManager; notifiedByEmail?: boolean }>("/api/v1/admin/loan-managers", { method: "POST", body: JSON.stringify({ email, fullName: name, phone, password, role: "LOAN_MANAGER", permissions }) });
+export async function adminCreateLoanManager(email: string, name: string, _appUrl: string, phone: string, password: string, permissions?: AdminPermission[], roleId?: string) {
+        return request<{ ok: true; manager: LoanManager; notifiedByEmail?: boolean }>("/api/v1/admin/loan-managers", { method: "POST", body: JSON.stringify({ email, fullName: name, phone, password, role: "LOAN_MANAGER", ...(permissions ? { permissions } : {}), ...(roleId ? { roleId } : {}) }) });
 }
 export async function adminSetLoanManagerStatus(id: string, isActive: boolean) { return request<{ ok: true; manager: LoanManager }>(`/api/v1/admin/loan-managers/${encodeURIComponent(id)}/status`, { method: "PATCH", body: JSON.stringify({ isActive }) }); }
 export async function adminDeleteLoanManager(id: string) { return request<{ ok: true; deleted: true }>(`/api/v1/admin/loan-managers/${encodeURIComponent(id)}`, { method: "DELETE" }); }
 export interface Administrator { id: string; email: string; fullName: string; phone: string; roles: string[]; adminPermissions?: AdminPermission[]; isActive?: boolean; createdAt: string; }
 export async function adminListAdministrators() { return request<{ ok: true; administrators: Administrator[] }>("/api/v1/admin/administrators"); }
-export async function adminCreateAdministrator(email: string, name: string, phone: string, password: string, roles: string[] = ["ADMIN"], permissions: AdminPermission[] = [...ADMIN_PERMISSIONS]) { return request<{ ok: true; administrator: Administrator; notifiedByEmail?: boolean }>("/api/v1/admin/administrators", { method: "POST", body: JSON.stringify({ email, fullName: name, phone, password, roles, permissions }) }); }
+export async function adminCreateAdministrator(email: string, name: string, phone: string, password: string, roles: string[] = ["ADMIN"], permissions?: AdminPermission[], roleId?: string) { return request<{ ok: true; administrator: Administrator; notifiedByEmail?: boolean }>("/api/v1/admin/administrators", { method: "POST", body: JSON.stringify({ email, fullName: name, phone, password, roles, ...(permissions ? { permissions } : {}), ...(roleId ? { roleId } : {}) }) }); }
 export async function adminSetAdministratorStatus(id: string, isActive: boolean) { return request<{ ok: true; administrator: Administrator }>(`/api/v1/admin/administrators/${encodeURIComponent(id)}/status`, { method: "PATCH", body: JSON.stringify({ isActive }) }); }
 export async function adminDeleteAdministrator(id: string) { return request<{ ok: true; deleted: true }>(`/api/v1/admin/administrators/${encodeURIComponent(id)}`, { method: "DELETE" }); }
 export async function setLoanManagerPassword(_token: string, _password: string) { return { ok: false, error: "Loan manager provisioning API is not yet enabled on the Node backend." }; }
+
+// ============================================================================
+// Team management (RBAC) — unified staff directory + staff-role templates.
+// ============================================================================
+
+// Friendly labels + descriptions for the 16 back-office permission keys,
+// grouped the way admins think about them (not raw snake_case keys).
+export const PERMISSION_META: Record<AdminPermission, { label: string; description: string; group: string }> = {
+  overview: { label: "Portfolio overview", description: "Executive summary and platform KPIs", group: "Insights" },
+  reports: { label: "Reports", description: "Generate and export operational reports", group: "Insights" },
+  audit: { label: "Audit log", description: "Read the back-office audit trail", group: "Insights" },
+  reconciliation: { label: "Reconciliation", description: "Investigate and resolve payment mismatches", group: "Insights" },
+  users: { label: "User management", description: "View and manage borrower and investor accounts", group: "Customers" },
+  investors: { label: "Investor management", description: "View and manage investor portfolios", group: "Customers" },
+  kyc: { label: "KYC review", description: "Review and decide identity verification cases", group: "Customers" },
+  loan_applications: { label: "Loan applications", description: "View and process loan applications", group: "Lending" },
+  loan_decisions: { label: "Loan decisions", description: "Approve, counter-offer or reject loans", group: "Lending" },
+  loan_disbursements: { label: "Loan disbursements", description: "Disburse approved loans and retry failures", group: "Lending" },
+  loan_repayments: { label: "Loan repayments", description: "Monitor and reconcile loan repayments", group: "Lending" },
+  loan_notifications: { label: "Loan notifications", description: "Receive and manage loan alert notifications", group: "Lending" },
+  payouts: { label: "Payout operations", description: "Approve, retry and monitor payouts", group: "Treasury" },
+  investments: { label: "Investment plans", description: "Create and manage investment plans", group: "Treasury" },
+  staff: { label: "Team management", description: "Invite and manage back-office staff accounts", group: "Administration" },
+  settings: { label: "Platform settings", description: "Change platform-wide configuration", group: "Administration" },
+};
+
+export const PERMISSION_GROUPS = ["Insights", "Customers", "Lending", "Treasury", "Administration"] as const;
+
+export function permissionLabel(permission: AdminPermission): string {
+  return PERMISSION_META[permission]?.label ?? permission;
+}
+
+export interface StaffRole { id: string; name: string; description?: string; permissions: AdminPermission[]; isSystem?: boolean; createdAt: string; updatedAt: string; memberCount?: number; }
+export interface StaffMember {
+  id: string;
+  email: string;
+  phone: string;
+  fullName: string;
+  roles: string[];
+  platformRole: "ADMIN" | "LOAN_MANAGER";
+  kycStatus?: string;
+  createdAt: string;
+  updatedAt?: string;
+  lastLoginAt?: string;
+  isActive?: boolean;
+  adminPermissions?: AdminPermission[];
+  staffRoleId?: string;
+  staffRoleName?: string;
+  effectivePermissions?: AdminPermission[];
+  isPrimary?: boolean;
+}
+
+export async function adminListStaff() { return request<{ ok: true; staff: StaffMember[] }>("/api/v1/admin/staff"); }
+export async function adminSetStaffStatus(id: string, isActive: boolean) { return request<{ ok: true; staff: StaffMember | null }>(`/api/v1/admin/staff/${encodeURIComponent(id)}/status`, { method: "PATCH", body: JSON.stringify({ isActive }) }); }
+export async function adminDeleteStaff(id: string) { return request<{ ok: true; deleted: true }>(`/api/v1/admin/staff/${encodeURIComponent(id)}`, { method: "DELETE" }); }
+export async function adminUpdateStaffAccess(id: string, access: { staffRoleId?: string | null; permissions?: AdminPermission[] }) { return request<{ ok: true; staff: StaffMember | null }>(`/api/v1/admin/staff/${encodeURIComponent(id)}/access`, { method: "PATCH", body: JSON.stringify(access) }); }
+
+export async function adminListStaffRoles() { return request<{ ok: true; roles: StaffRole[] }>("/api/v1/admin/staff/roles"); }
+export async function adminCreateStaffRole(name: string, description: string, permissions: AdminPermission[]) { return request<{ ok: true; role: StaffRole }>("/api/v1/admin/staff/roles", { method: "POST", body: JSON.stringify({ name, description, permissions }) }); }
+export async function adminUpdateStaffRole(id: string, changes: { name?: string; description?: string; permissions?: AdminPermission[] }) { return request<{ ok: true; role: StaffRole }>(`/api/v1/admin/staff/roles/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(changes) }); }
+export async function adminDeleteStaffRole(id: string) { return request<{ ok: true; deleted: true }>(`/api/v1/admin/staff/roles/${encodeURIComponent(id)}`, { method: "DELETE" }); }
 export async function requestAdminPasswordReset(email: string, channel: AdminOtpChannel) { return request<{ ok: true; message: string } & AdminOtpChallenge>("/api/v1/auth/admin/password-reset/request", { method: "POST", body: JSON.stringify({ email, channel }) }); }
 export async function resetAdminPassword(challengeId: string, otp: string, password: string) { return request<{ ok: true; message: string }>("/api/v1/auth/admin/password-reset/confirm", { method: "POST", body: JSON.stringify({ challengeId, code: otp, newPassword: password }) }); }
 

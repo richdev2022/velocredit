@@ -170,7 +170,7 @@ The API is self-documenting. The OpenAPI 3.0.3 spec lives in **`backend/server/o
 | Swagger UI | `https://api.velocredit.ng/docs` |
 | OpenAPI JSON | `https://api.velocredit.ng/openapi.json` |
 
-The spec documents **every route the server exposes** (162 operations across 107 paths): auth + OTP, profile/consents/notifications, all KYC endpoints, the full investor surface (wallet, funding, investments, early liquidity, withdrawals, payout accounts, exports), the full borrower surface (dashboard, products, drafts, applications, loans, credit, disbursement account, exports), the complete admin workspace (users, loan managers, administrators, KYC cases, application drafts, loans with staged review and disbursement, investment plans, loan products, platform settings, announcements, banners, ledger, withdrawals, payouts, disbursements, account-change requests, reports, reconciliation, audit logs, CSV exports), provider reference data and all webhook receivers (Flutterwave, Prembly, Kudi, Meta WhatsApp).
+The spec documents **every route the server exposes** (170 operations across 113 paths): auth + OTP, profile/consents/notifications, all KYC endpoints, the full investor surface (wallet, funding, investments, early liquidity, withdrawals, payout accounts, exports), the full borrower surface (dashboard, products, drafts, applications, loans, credit, disbursement account, exports), the complete admin workspace (users, loan managers, administrators, KYC cases, application drafts, loans with staged review and disbursement, investment plans, loan products, platform settings, announcements, banners, ledger, withdrawals, payouts, disbursements, account-change requests, reports, reconciliation, audit logs, CSV exports), provider reference data and all webhook receivers (Flutterwave, Prembly, Kudi, Meta WhatsApp).
 
 Authenticated routes use **Bearer JWT** (`Authorize` button in Swagger UI). Admin routes additionally require the ADMIN role — that token is only issued through the two-step admin login.
 
@@ -196,6 +196,8 @@ Authenticated routes use **Bearer JWT** (`Authorize` button in Swagger UI). Admi
 
 ### Admin / Loan manager
 - Log in at `/admin` with **two-step authentication** (password → OTP). Loan managers are the same workspace with scoped permissions. Newly created staff (administrators / loan managers) automatically receive an **invite email** with their login details (sign-in page, email, temporary password, role) and step-by-step sign-in instructions — the UI confirms whether the email went out (`notifiedByEmail`).
+- **RBAC**: staff carry permissions from an assignable **staff role** (Team management → Roles & permissions) or a direct permission override. Permissions live in the `users.admin_permissions` / `users.staff_role_id` Postgres columns and the `roles`/`role_permissions` tables, so they survive restarts; permission and role changes take effect on the member's very next request, and deactivation signs a member out immediately.
+- Staff management is **database-authoritative** — create/deactivate/delete/update-access writes Postgres synchronously first, so actions work from any serving instance (this fixes the historic `DELETE /admin/administrators/:id → 404 "Administrator not found"` cross-instance bug). The primary (environment) administrator and the acting admin cannot be deleted or deactivated.
 - Operate everything from one workspace (§8). Every sensitive action lands in the audit log.
 
 ---
@@ -296,7 +298,8 @@ The unified workspace (`frontend/src/components/admin/AdminWorkspace.tsx`) cover
 | Loan management | List with **status filter, search, pagination** (`limit/offset/status/borrowerId/search`), detail with documents + credit snapshots, **staged review** (per-stage approve/reject, approve-all), decision recording, disbursement + retry, "request account update" |
 | KYC cases | Queue, per-requirement decisions, overall decisions, KYC reset |
 | Users | Create/edit/roles/suspend, KYC reset, investor earning-rate override, manual wallet credit (ledgered + audited) |
-| Loan managers / Administrators | Create (invite email with login details + sign-in instructions sent automatically), permission scoping, activate/suspend, delete |
+| Team management | Unified staff directory (administrators + loan managers): searchable table with role/access/status columns, click-through detail drawer (profile, role assignment, per-permission checklist, activate/deactivate, delete), "Add staff" with invite email (login details + sign-in instructions sent automatically) |
+| Roles & permissions | Create/rename/delete reusable permission templates (roles); check/untick the 16 granular back-office permissions per role; role edits propagate to every member automatically; role deletion is blocked while members are assigned |
 | Investments & plans | All investments; plan CRUD with liquidity rules and rate types |
 | Withdrawal history | Filters (status, date range), search, pagination, detail with ledger trail + timeline, retry |
 | Disbursements | All transfers (self-healing status read), per-borrower history, retry |

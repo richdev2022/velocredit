@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { Router } from "express";
+import { Router, type NextFunction, type Response } from "express";
 import multer from "multer";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -87,6 +87,9 @@ import {
   resolveTenorMonthlyRate,
   resolveTenorStatus,
   type TenorInterestRate,
+  staffRoles,
+  effectiveAdminPermissions,
+  type StaffRole,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { env } from "./config.js";
@@ -1154,7 +1157,7 @@ router.post("/auth/admin/login", async (req, res) => {
     fullName: databaseAdmin.fullName,
     passwordHash: databaseAdmin.passwordHash,
     roles: databaseAdmin.roles,
-    adminPermissions: databaseAdmin.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : databaseAdmin.adminPermissions,
+    adminPermissions: effectiveAdminPermissions(databaseAdmin),
     kycStatus: databaseAdmin.kycStatus,
     createdAt: databaseAdmin.createdAt,
   };
@@ -1215,7 +1218,7 @@ router.post("/auth/admin/login/verify-otp", async (req, res) => {
   const configuredAdminPasswordHash = env.ADMIN_PASSWORD_HASH;
   const admin = persistedAdmin ?? { id: "env-admin", email: env.ADMIN_EMAIL!, phone: "", fullName: "Velo Administrator", passwordHash: configuredAdminPasswordHash ?? "", roles: ["ADMIN"] as Role[], adminPermissions: [...ADMIN_PERMISSIONS], kycStatus: "VERIFIED" as KycStatus, createdAt: new Date().toISOString() };
   auditLogs.push({ id: randomUUID(), userId: admin.id, action: "ADMIN_LOGIN_VERIFIED", resourceType: "AUTH", resourceId: admin.email, ipAddress: req.ip, userAgent: req.get("user-agent") ?? undefined, createdAt: new Date().toISOString() });
-  const adminPermissions = admin.roles.includes("ADMIN") ? [...ADMIN_PERMISSIONS] : admin.adminPermissions;
+  const adminPermissions = effectiveAdminPermissions(admin);
   res.json({ ok: true, verified: true, accessToken: issueToken({ ...admin, adminPermissions }), user: { id: admin.id, email: admin.email, fullName: admin.fullName, roles: admin.roles, adminPermissions } });
 });
 
@@ -4860,6 +4863,452 @@ router.post("/admin/users/:id/kyc-reset", requireAuth, requireRole("ADMIN"), asy
   });
 });
 
+// ============================================================================
+// Team management (RBAC) — unified staff directory + staff-role CRUD.
+//
+// Staff accounts and their permissions previously lived ONLY in the serving
+// instance's memory: the snapshot persist is best-effort, so a staff row
+// could vanish before reaching Postgres — the exact bug behind
+// "DELETE /admin/administrators/:id → 404 Administrator not found" and
+// loan managers silently losing their permissions after every cold start.
+//
+// These endpoints are DB-authoritative: every mutation writes Postgres
+// synchronously first (preventing ghost accounts), and the staff list merges
+// the database with the in-memory store so a stale instance can never hide
+// or strand a staff account again.
+// ============================================================================
+
+const requireFullAdmin = (req: AuthRequest, res: Response, next: NextFunction): void => {
+  if (!req.user?.roles.includes("ADMIN")) {
+    res.status(403).json({ ok: false, error: "Only full administrators can manage team roles and permissions" });
+    return;
+  }
+  next();
+};
+
+const permissionsSchema = z.array(z.enum(ADMIN_PERMISSIONS));
+
+type StaffMutationResult = { ok: true; user?: (typeof users)[number]; dbStaff?: ReturnType<typeof serializeDbStaffRow> } | { ok: false; status: 400 | 404 | 409 | 503; error: string };
+
+function staffMutationError(res: Response, result: Extract<StaffMutationResult, { ok: false }>): void {
+  res.status(result.status).json({ ok: false, error: result.error });
+}
+
+function isStaffUser(user: (typeof users)[number]): boolean {
+  return user.roles.includes("ADMIN") || user.roles.includes("LOAN_MANAGER");
+}
+
+// The environment-bootstrapped primary administrator exists in Postgres but
+// may be absent from a cold instance's memory; match it by id OR email.
+function isPrimaryAdministrator(user: (typeof users)[number]): boolean {
+  return user.id === "env-admin" || (Boolean(env.ADMIN_EMAIL) && user.email.toLowerCase() === env.ADMIN_EMAIL!.toLowerCase());
+}
+
+function staffRoleName(staffRoleId: string | undefined): string | undefined {
+  if (!staffRoleId) return undefined;
+  return staffRoles.find((role) => role.id === staffRoleId)?.name;
+}
+
+function serializeStaffMember(user: (typeof users)[number]) {
+  const { passwordHash: _passwordHash, ...safe } = user;
+  return {
+    ...safe,
+    platformRole: user.roles.includes("ADMIN") ? "ADMIN" : "LOAN_MANAGER",
+    staffRoleName: staffRoleName(user.staffRoleId),
+    effectivePermissions: effectiveAdminPermissions(user),
+  };
+}
+
+// Load one staff member directly from Postgres — the safety net that lets a
+// freshly-booted instance (whose memory may lag) still deactivate, re-role or
+// delete an account another instance created.
+async function loadDbStaffRow(id: string): Promise<Record<string, unknown> | null> {
+  if (!sql) return null;
+  try {
+    const rows = await sql.query(
+      `SELECT u.id, u.email, u.phone, u.full_name, u.kyc_status, u.created_at, u.updated_at, u.last_login_at,
+              u.is_active, u.admin_permissions, u.staff_role_id,
+              COALESCE(json_agg(ur.role_id) FILTER (WHERE ur.role_id IS NOT NULL), '[]'::json) AS role_ids
+       FROM users u
+       LEFT JOIN user_roles ur ON ur.user_id = u.id
+       WHERE u.id = $1
+       GROUP BY u.id`,
+      [id]
+    ) as Array<Record<string, unknown>>;
+    const row = rows[0];
+    if (!row) return null;
+    const roleIds = Array.isArray(row.role_ids) ? row.role_ids.map(String) : [];
+    return roleIds.some((role) => role === "ADMIN" || role === "LOAN_MANAGER") ? row : null;
+  } catch (error) {
+    console.error("[staff] database lookup for staff member failed:", error);
+    return null;
+  }
+}
+
+function serializeDbStaffRow(row: Record<string, unknown>) {
+  const roleIds = Array.isArray(row.role_ids) ? row.role_ids.map(String) : [];
+  const staffRoleId = row.staff_role_id == null ? undefined : String(row.staff_role_id);
+  const adminPermissions = Array.isArray(row.admin_permissions)
+    ? (row.admin_permissions as string[]).filter((permission): permission is typeof ADMIN_PERMISSIONS[number] => (ADMIN_PERMISSIONS as readonly string[]).includes(permission))
+    : [];
+  const roles = roleIds.filter((role) => role === "ADMIN" || role === "LOAN_MANAGER");
+  return {
+    id: String(row.id),
+    email: String(row.email),
+    phone: String(row.phone ?? ""),
+    fullName: String(row.full_name ?? ""),
+    roles,
+    platformRole: roles.includes("ADMIN") ? "ADMIN" : "LOAN_MANAGER",
+    kycStatus: String(row.kyc_status ?? "NOT_STARTED"),
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at ?? new Date().toISOString()),
+    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : undefined,
+    lastLoginAt: row.last_login_at instanceof Date ? row.last_login_at.toISOString() : undefined,
+    isActive: row.is_active !== false,
+    adminPermissions,
+    staffRoleId,
+    staffRoleName: staffRoleName(staffRoleId),
+    effectivePermissions: roles.includes("ADMIN")
+      ? [...ADMIN_PERMISSIONS]
+      : staffRoleId
+        ? (staffRoles.find((role) => role.id === staffRoleId)?.permissions ?? adminPermissions)
+        : adminPermissions,
+  };
+}
+
+// Unified staff directory: ADMIN + LOAN_MANAGER accounts, database merged
+// over memory so cross-instance ghosts are visible (and therefore deletable).
+router.get("/admin/staff", requireAuth, requireFullAdmin, async (_req, res) => {
+  const directory = new Map<string, unknown>();
+  for (const user of users) {
+    if (isStaffUser(user)) directory.set(user.id, serializeStaffMember(user));
+  }
+  if (sql) {
+    try {
+      const rows = await sql.query(
+        `SELECT u.id, u.email, u.phone, u.full_name, u.kyc_status, u.created_at, u.updated_at, u.last_login_at,
+                u.is_active, u.admin_permissions, u.staff_role_id,
+                COALESCE(json_agg(ur.role_id) FILTER (WHERE ur.role_id IS NOT NULL), '[]'::json) AS role_ids
+         FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id
+         WHERE ur.role_id IN ('ADMIN', 'LOAN_MANAGER')
+         GROUP BY u.id
+         ORDER BY u.created_at ASC`
+      ) as Array<Record<string, unknown>>;
+      for (const row of rows) {
+        const dbEntry = serializeDbStaffRow(row);
+        // Memory wins for accounts both sides know (fresher updatedAt);
+        // database-only rows are the ghosts this merge exists to surface.
+        directory.set(dbEntry.id, directory.has(dbEntry.id) ? directory.get(dbEntry.id) : dbEntry);
+      }
+    } catch (error) {
+      console.error("[staff] directory database read failed — serving memory only:", error);
+    }
+  }
+  // The primary (environment) administrator must always appear in the
+  // directory even when neither store has an explicit row for it.
+  if (env.ADMIN_EMAIL && ![...directory.values()].some((entry: any) => entry.email?.toLowerCase() === env.ADMIN_EMAIL!.toLowerCase())) {
+    directory.set("env-admin", {
+      id: "env-admin",
+      email: env.ADMIN_EMAIL.toLowerCase(),
+      phone: "",
+      fullName: "Velo Administrator",
+      roles: ["ADMIN"],
+      platformRole: "ADMIN",
+      kycStatus: "VERIFIED",
+      createdAt: new Date().toISOString(),
+      isActive: true,
+      adminPermissions: [...ADMIN_PERMISSIONS],
+      effectivePermissions: [...ADMIN_PERMISSIONS],
+      isPrimary: true,
+    });
+  }
+  res.json({ ok: true, staff: [...directory.values()] });
+});
+
+// Deactivate / reactivate any staff member. Writes Postgres FIRST so the
+// change is durable even when this instance has never seen the account.
+async function setStaffStatusById(id: string, isActive: boolean, actingAdminId?: string): Promise<StaffMutationResult> {
+  const memoryUser = users.find((user) => user.id === id && isStaffUser(user));
+  if (memoryUser && isPrimaryAdministrator(memoryUser) && !isActive) {
+    return { ok: false, status: 400, error: "The primary administrator account cannot be deactivated" };
+  }
+  if (actingAdminId && actingAdminId === id && !isActive) {
+    return { ok: false, status: 400, error: "You cannot deactivate your own account" };
+  }
+  if (sql) {
+    try {
+      const updated = await sql.query("UPDATE users SET is_active = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING id", [id, isActive]) as Array<{ id: string }>;
+      if (updated.length === 0 && !memoryUser) return { ok: false, status: 404, error: "Staff member not found" };
+    } catch (error) {
+      console.error("[staff] status update failed:", error);
+      return { ok: false, status: 503, error: "Unable to update the staff member — the database rejected the change" };
+    }
+  } else if (!memoryUser) {
+    return { ok: false, status: 404, error: "Staff member not found" };
+  }
+  if (memoryUser) {
+    memoryUser.isActive = isActive;
+    memoryUser.updatedAt = new Date().toISOString();
+  }
+  return { ok: true, user: memoryUser };
+}
+
+// Change a staff member's role assignment and/or direct permissions.
+async function updateStaffAccessById(id: string, access: { staffRoleId?: string | null; permissions?: (typeof ADMIN_PERMISSIONS)[number][] }): Promise<StaffMutationResult> {
+  const memoryUser = users.find((user) => user.id === id && isStaffUser(user));
+  const dbRow = memoryUser ? null : await loadDbStaffRow(id);
+  if (!memoryUser && !dbRow) return { ok: false, status: 404, error: "Staff member not found" };
+  if (memoryUser && isPrimaryAdministrator(memoryUser)) {
+    return { ok: false, status: 400, error: "The primary administrator always holds full access — assign roles to other staff members instead" };
+  }
+  if (access.staffRoleId && !staffRoles.some((role) => role.id === access.staffRoleId)) {
+    return { ok: false, status: 400, error: "Unknown staff role" };
+  }
+  if (sql) {
+    try {
+      const updated = await sql.query(
+        "UPDATE users SET staff_role_id = $2, admin_permissions = $3::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING id",
+        [id, access.staffRoleId ?? null, JSON.stringify(access.permissions ?? [])]
+      ) as Array<{ id: string }>;
+      if (updated.length === 0) return { ok: false, status: 404, error: "Staff member not found" };
+    } catch (error) {
+      console.error("[staff] access update failed:", error);
+      return { ok: false, status: 503, error: "Unable to update access — the database rejected the change" };
+    }
+  }
+  if (memoryUser) {
+    memoryUser.staffRoleId = access.staffRoleId ?? undefined;
+    if (access.permissions) memoryUser.adminPermissions = access.permissions;
+    memoryUser.updatedAt = new Date().toISOString();
+    return { ok: true, user: memoryUser };
+  }
+  // Database-only account (this instance has never seen it in memory): the
+  // update succeeded in Postgres, so surface the refreshed DB row.
+  const refreshed = await loadDbStaffRow(id);
+  return { ok: true, dbStaff: refreshed ? serializeDbStaffRow(refreshed) : undefined };
+}
+
+// Delete a staff member everywhere: Postgres first (user_roles + admin_profiles
+// + users), then the in-memory copy. Cross-instance safe — the reported 404
+// happened because this used to be memory-only.
+async function deleteStaffById(id: string, actingAdminId?: string): Promise<StaffMutationResult> {
+  const memoryUser = users.find((user) => user.id === id && isStaffUser(user));
+  if (actingAdminId && actingAdminId === id) {
+    return { ok: false, status: 400, error: "You cannot delete your own account" };
+  }
+  if (memoryUser) {
+    if (isPrimaryAdministrator(memoryUser)) return { ok: false, status: 400, error: "The primary administrator account cannot be deleted — deactivate it instead" };
+  } else if (id === "env-admin") {
+    return { ok: false, status: 400, error: "The primary administrator account cannot be deleted — deactivate it instead" };
+  }
+  if (sql) {
+    try {
+      await sql.query("DELETE FROM user_roles WHERE user_id = $1", [id]);
+      await sql.query("DELETE FROM admin_profiles WHERE user_id = $1", [id]);
+      const deleted = await sql.query("DELETE FROM users WHERE id = $1 RETURNING id", [id]) as Array<{ id: string }>;
+      if (deleted.length === 0 && !memoryUser) return { ok: false, status: 404, error: "Staff member not found" };
+    } catch (error) {
+      console.error("[staff] delete failed:", error);
+      return { ok: false, status: 503, error: "Unable to delete the staff member — the database rejected the change" };
+    }
+  } else if (!memoryUser) {
+    return { ok: false, status: 404, error: "Staff member not found" };
+  }
+  const memoryIndex = users.findIndex((user) => user.id === id);
+  if (memoryIndex >= 0) users.splice(memoryIndex, 1);
+  return { ok: true, user: memoryUser };
+}
+
+// Durable staff account insert — the snapshot persist is best-effort, so new
+// staff accounts are written to Postgres explicitly, guaranteeing the row
+// exists for every other instance before the create response is sent.
+async function insertStaffRowDurable(user: (typeof users)[number]): Promise<void> {
+  if (!sql) return;
+  await sql.query(
+    `INSERT INTO users (id, email, phone, full_name, password_hash, kyc_status, created_at, updated_at, is_active, admin_permissions, staff_role_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $7, TRUE, $8::jsonb, $9)
+     ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, phone = EXCLUDED.phone, full_name = EXCLUDED.full_name,
+       password_hash = EXCLUDED.password_hash, updated_at = EXCLUDED.updated_at, is_active = TRUE,
+       admin_permissions = EXCLUDED.admin_permissions, staff_role_id = EXCLUDED.staff_role_id`,
+    [user.id, user.email, user.phone, user.fullName, user.passwordHash, user.kycStatus, user.createdAt, JSON.stringify(user.adminPermissions ?? []), user.staffRoleId ?? null]
+  );
+  for (const role of user.roles) {
+    await sql.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [user.id, role]);
+  }
+  await sql.query(
+    "INSERT INTO admin_profiles (id, user_id, created_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO NOTHING",
+    [`admin-${user.id}`, user.id, user.createdAt]
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Staff roles (permission templates)
+// ---------------------------------------------------------------------------
+
+router.get("/admin/staff/roles", requireAuth, requireFullAdmin, (_req, res) => {
+  const roles = staffRoles.map((role) => ({
+    ...role,
+    memberCount: users.filter((user) => user.staffRoleId === role.id).length,
+  }));
+  res.json({ ok: true, roles });
+});
+
+function staffRolePayload(role: StaffRole) {
+  return { ...role, memberCount: users.filter((user) => user.staffRoleId === role.id).length };
+}
+
+async function writeStaffRoleToDatabase(role: StaffRole): Promise<void> {
+  if (!sql) return;
+  await sql.query(
+    `INSERT INTO roles (id, name, description, created_at)
+     VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description`,
+    [role.id, role.name, role.description ?? null]
+  );
+  await sql.query("DELETE FROM role_permissions WHERE role_id = $1", [role.id]);
+  if (role.permissions.length) {
+    const tuples = role.permissions.map((permission, index) => `($1, $${index + 2})`).join(", ");
+    await sql.query(
+      `INSERT INTO role_permissions (role_id, permission_id) VALUES ${tuples} ON CONFLICT DO NOTHING`,
+      [role.id, ...role.permissions]
+    );
+  }
+}
+
+router.post("/admin/staff/roles", requireAuth, requireFullAdmin, async (req: AuthRequest, res) => {
+  const parsed = z.object({
+    name: z.string().trim().min(2).max(60),
+    description: z.string().trim().max(280).optional(),
+    permissions: permissionsSchema.default([]),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const name = parsed.data.name;
+  if (staffRoles.some((role) => role.name.toLowerCase() === name.toLowerCase())) {
+    res.status(409).json({ ok: false, error: "A role with this name already exists" });
+    return;
+  }
+  const now = new Date().toISOString();
+  const role: StaffRole = { id: `staff-${randomUUID()}`, name, description: parsed.data.description, permissions: parsed.data.permissions, isSystem: false, createdAt: now, updatedAt: now };
+  try {
+    await writeStaffRoleToDatabase(role);
+  } catch (error) {
+    console.error("[staff-roles] create failed:", error);
+    res.status(503).json({ ok: false, error: "Unable to create the role — the database rejected the change" });
+    return;
+  }
+  staffRoles.push(role);
+  recordAdminAudit(req, "STAFF_ROLE_CREATED", "STAFF_ROLE", role.id, { name: role.name, permissions: role.permissions });
+  res.status(201).json({ ok: true, role: staffRolePayload(role) });
+});
+
+router.patch("/admin/staff/roles/:id", requireAuth, requireFullAdmin, async (req: AuthRequest, res) => {
+  const role = staffRoles.find((entry) => entry.id === String(req.params.id));
+  if (!role) { res.status(404).json({ ok: false, error: "Staff role not found" }); return; }
+  const parsed = z.object({
+    name: z.string().trim().min(2).max(60).optional(),
+    description: z.string().trim().max(280).optional(),
+    permissions: permissionsSchema.optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  if (role.isSystem && parsed.data.name && parsed.data.name.toLowerCase() !== role.name.toLowerCase()) {
+    res.status(400).json({ ok: false, error: "System roles cannot be renamed" });
+    return;
+  }
+  if (parsed.data.name && staffRoles.some((entry) => entry.id !== role.id && entry.name.toLowerCase() === parsed.data.name!.toLowerCase())) {
+    res.status(409).json({ ok: false, error: "A role with this name already exists" });
+    return;
+  }
+  const permissionsChanged = parsed.data.permissions !== undefined && parsed.data.permissions.join("|") !== role.permissions.join("|");
+  if (parsed.data.name !== undefined) role.name = parsed.data.name;
+  if (parsed.data.description !== undefined) role.description = parsed.data.description;
+  if (parsed.data.permissions !== undefined) role.permissions = parsed.data.permissions;
+  role.updatedAt = new Date().toISOString();
+  try {
+    await writeStaffRoleToDatabase(role);
+    // Propagate the new permission set to every member so role retuning is
+    // effective without re-assigning each staff member one by one.
+    if (permissionsChanged && sql) {
+      await sql.query("UPDATE users SET admin_permissions = $2::jsonb, updated_at = CURRENT_TIMESTAMP WHERE staff_role_id = $1", [role.id, JSON.stringify(role.permissions)]);
+    }
+  } catch (error) {
+    console.error("[staff-roles] update failed:", error);
+    res.status(503).json({ ok: false, error: "Unable to update the role — the database rejected the change" });
+    return;
+  }
+  if (permissionsChanged) {
+    for (const user of users) {
+      if (user.staffRoleId === role.id) user.adminPermissions = [...role.permissions];
+    }
+  }
+  recordAdminAudit(req, "STAFF_ROLE_UPDATED", "STAFF_ROLE", role.id, { name: role.name, permissions: role.permissions });
+  res.json({ ok: true, role: staffRolePayload(role) });
+});
+
+router.delete("/admin/staff/roles/:id", requireAuth, requireFullAdmin, async (req: AuthRequest, res) => {
+  const roleIndex = staffRoles.findIndex((entry) => entry.id === String(req.params.id));
+  if (roleIndex < 0) { res.status(404).json({ ok: false, error: "Staff role not found" }); return; }
+  const role = staffRoles[roleIndex];
+  if (role.isSystem) { res.status(400).json({ ok: false, error: "System roles cannot be deleted" }); return; }
+  const members = users.filter((user) => user.staffRoleId === role.id);
+  if (members.length > 0) {
+    res.status(409).json({ ok: false, error: `${members.length} staff member(s) still hold this role — reassign them before deleting it` });
+    return;
+  }
+  try {
+    if (sql) {
+      await sql.query("DELETE FROM role_permissions WHERE role_id = $1", [role.id]);
+      await sql.query("DELETE FROM roles WHERE id = $1", [role.id]);
+    }
+  } catch (error) {
+    console.error("[staff-roles] delete failed:", error);
+    res.status(503).json({ ok: false, error: "Unable to delete the role — the database rejected the change" });
+    return;
+  }
+  staffRoles.splice(roleIndex, 1);
+  recordAdminAudit(req, "STAFF_ROLE_DELETED", "STAFF_ROLE", role.id, { name: role.name });
+  res.json({ ok: true, deleted: true });
+});
+
+// ---------------------------------------------------------------------------
+// Unified staff mutation endpoints
+// ---------------------------------------------------------------------------
+
+router.patch("/admin/staff/:id/status", requireAuth, requireFullAdmin, async (req: AuthRequest, res) => {
+  const staffId = String(req.params.id);
+  const parsed = z.object({ isActive: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const result = await setStaffStatusById(staffId, parsed.data.isActive, req.user?.id);
+  if (!result.ok) { staffMutationError(res, result); return; }
+  recordAdminAudit(req, parsed.data.isActive ? "STAFF_ACTIVATED" : "STAFF_DEACTIVATED", "USER", staffId, { isActive: parsed.data.isActive });
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, staff: result.user ? serializeStaffMember(result.user) : null });
+});
+
+router.patch("/admin/staff/:id/access", requireAuth, requireFullAdmin, async (req: AuthRequest, res) => {
+  const staffId = String(req.params.id);
+  const parsed = z.object({
+    staffRoleId: z.string().nullable().optional(),
+    permissions: permissionsSchema.optional(),
+  }).refine((value) => value.staffRoleId !== undefined || value.permissions !== undefined, { message: "Provide a role or permissions to update" }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
+  const access: { staffRoleId?: string | null; permissions?: (typeof ADMIN_PERMISSIONS)[number][] } = {};
+  if (parsed.data.staffRoleId !== undefined) access.staffRoleId = parsed.data.staffRoleId || null;
+  if (parsed.data.permissions !== undefined) access.permissions = parsed.data.permissions;
+  const result = await updateStaffAccessById(staffId, access);
+  if (!result.ok) { staffMutationError(res, result); return; }
+  recordAdminAudit(req, "STAFF_ACCESS_UPDATED", "USER", staffId, { staffRoleId: access.staffRoleId ?? null, permissions: access.permissions });
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, staff: result.user ? serializeStaffMember(result.user) : result.dbStaff ?? null });
+});
+
+router.delete("/admin/staff/:id", requireAuth, requireFullAdmin, async (req: AuthRequest, res) => {
+  const result = await deleteStaffById(String(req.params.id), req.user?.id);
+  if (!result.ok) { staffMutationError(res, result); return; }
+  recordAdminAudit(req, "STAFF_DELETED", "USER", String(req.params.id), { email: result.user?.email });
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true, deleted: true });
+});
+
 router.get("/admin/loan-managers", requireAuth, requireRole("ADMIN"), (_req, res) => {
   res.json({
     ok: true,
@@ -4876,8 +5325,11 @@ router.post("/admin/loan-managers", requireAuth, requireRole("ADMIN"), async (re
     phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/, "Enter a valid Nigerian phone number")),
     password: z.string().min(12),
     role: z.literal("LOAN_MANAGER").optional(),
-    permissions: z.array(z.enum(ADMIN_PERMISSIONS)).default([...ADMIN_PERMISSIONS]),
-  }).safeParse(req.body);
+    // Optional RBAC template — when set, the staff role drives the member's
+    // effective permissions (see effectiveAdminPermissions).
+    roleId: z.string().optional(),
+    permissions: z.array(z.enum(ADMIN_PERMISSIONS)).optional(),
+  }).refine((value) => !value.roleId || staffRoles.some((role) => role.id === value.roleId), { message: "Unknown staff role", path: ["roleId"] }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
@@ -4886,6 +5338,7 @@ router.post("/admin/loan-managers", requireAuth, requireRole("ADMIN"), async (re
     res.status(409).json({ ok: false, error: "An account with this email already exists" });
     return;
   }
+  const assignedRole = parsed.data.roleId ? staffRoles.find((role) => role.id === parsed.data.roleId) : undefined;
   const now = new Date().toISOString();
   const manager = {
     id: randomUUID(),
@@ -4894,14 +5347,27 @@ router.post("/admin/loan-managers", requireAuth, requireRole("ADMIN"), async (re
     fullName: parsed.data.fullName,
     passwordHash: await bcrypt.hash(parsed.data.password, 12),
     roles: ["LOAN_MANAGER"] as Role[],
-    adminPermissions: parsed.data.permissions,
+    adminPermissions: parsed.data.permissions ?? assignedRole?.permissions ?? [...ADMIN_PERMISSIONS],
+    staffRoleId: assignedRole?.id,
     kycStatus: "NOT_STARTED" as KycStatus,
     createdAt: now,
     updatedAt: now,
     isActive: true,
   };
   users.push(manager);
-  recordAdminAudit(req, "LOAN_MANAGER_CREATED", "USER", manager.id, { role: "LOAN_MANAGER", email: manager.email });
+  // Durable insert — the snapshot persist is best-effort, so new staff rows
+  // are written to Postgres explicitly. A database failure aborts the create
+  // (memory rolled back) instead of leaving a ghost account that 404s later.
+  try {
+    await insertStaffRowDurable(manager);
+  } catch (error) {
+    const index = users.findIndex((user) => user.id === manager.id);
+    if (index >= 0) users.splice(index, 1);
+    console.error("[staff] durable insert for loan manager failed:", error);
+    res.status(503).json({ ok: false, error: "Unable to create the staff account — the database rejected the change. Please retry." });
+    return;
+  }
+  recordAdminAudit(req, "LOAN_MANAGER_CREATED", "USER", manager.id, { role: "LOAN_MANAGER", email: manager.email, roleId: manager.staffRoleId });
   if (!(await persistMutation(res))) return;
   // Invite email with the login details + sign-in instructions. A delivery
   // failure must never roll back or block the account creation itself.
@@ -4920,28 +5386,23 @@ router.patch("/admin/loan-managers/:id/status", requireAuth, requireRole("ADMIN"
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
-  const manager = users.find((user) => user.id === req.params.id && user.roles.includes("LOAN_MANAGER"));
-  if (!manager) {
-    res.status(404).json({ ok: false, error: "Loan manager not found" });
-    return;
-  }
-  manager.isActive = parsed.data.isActive;
-  manager.updatedAt = new Date().toISOString();
-  recordAdminAudit(req, parsed.data.isActive ? "LOAN_MANAGER_ACTIVATED" : "LOAN_MANAGER_DEACTIVATED", "USER", manager.id, { isActive: manager.isActive });
+  // Delegates to the DB-authoritative staff helper: works cross-instance and
+  // refuses to deactivate the acting admin or the primary administrator.
+  const result = await setStaffStatusById(String(req.params.id), parsed.data.isActive, req.user?.id);
+  if (!result.ok) { staffMutationError(res, result); return; }
+  recordAdminAudit(req, parsed.data.isActive ? "LOAN_MANAGER_ACTIVATED" : "LOAN_MANAGER_DEACTIVATED", "USER", String(req.params.id), { isActive: parsed.data.isActive });
   if (!(await persistMutation(res))) return;
-  res.json({ ok: true, manager: { ...manager, passwordHash: undefined, role: "LOAN_MANAGER" } });
+  res.json({ ok: true, manager: result.user ? { ...result.user, passwordHash: undefined, role: "LOAN_MANAGER" } : null });
 });
 
 router.delete("/admin/loan-managers/:id", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
-  const managerIndex = users.findIndex((user) => user.id === req.params.id && user.roles.includes("LOAN_MANAGER"));
-  if (managerIndex < 0) {
-    res.status(404).json({ ok: false, error: "Loan manager not found" });
-    return;
-  }
-  const [manager] = users.splice(managerIndex, 1);
-  recordAdminAudit(req, "LOAN_MANAGER_DELETED", "USER", manager.id, { email: manager.email, role: "LOAN_MANAGER" });
+  // Delegates to the DB-authoritative staff helper — this endpoint used to be
+  // memory-only and returned 404 for accounts created on another instance.
+  const result = await deleteStaffById(String(req.params.id), req.user?.id);
+  if (!result.ok) { staffMutationError(res, result); return; }
+  recordAdminAudit(req, "LOAN_MANAGER_DELETED", "USER", String(req.params.id), { email: result.user?.email, role: "LOAN_MANAGER" });
   if (!(await persistMutation(res))) return;
-  res.json({ ok: true, deleted: true, managerId: manager.id });
+  res.json({ ok: true, deleted: true, managerId: String(req.params.id) });
 });
 
 router.get("/admin/administrators", requireAuth, requireRole("ADMIN"), (_req, res) => {
@@ -4953,13 +5414,25 @@ router.get("/admin/administrators", requireAuth, requireRole("ADMIN"), (_req, re
 });
 
 router.post("/admin/administrators", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
-  const parsed = z.object({ email: z.string().email(), fullName: z.string().min(2).max(120), phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/)), password: z.string().min(12), roles: z.array(z.enum(["ADMIN", "LOAN_MANAGER"])).min(1).default(["ADMIN"]), permissions: z.array(z.enum(ADMIN_PERMISSIONS)).default([...ADMIN_PERMISSIONS]) }).safeParse(req.body);
+  const parsed = z.object({ email: z.string().email(), fullName: z.string().min(2).max(120), phone: z.preprocess(normalizePhone, z.string().regex(/^0\d{10}$/)), password: z.string().min(12), roles: z.array(z.enum(["ADMIN", "LOAN_MANAGER"])).min(1).default(["ADMIN"]), roleId: z.string().optional(), permissions: z.array(z.enum(ADMIN_PERMISSIONS)).optional() }).refine((value) => !value.roleId || staffRoles.some((role) => role.id === value.roleId), { message: "Unknown staff role", path: ["roleId"] }).safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
-  if (findUserByEmail(parsed.data.email)) { res.status(409).json({ ok: false, error: "An account with this email already exists" }); return; }
+  if (findUserByEmail(parsed.data.email) || (env.ADMIN_EMAIL && parsed.data.email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase())) { res.status(409).json({ ok: false, error: "An account with this email already exists" }); return; }
+  const assignedRole = parsed.data.roleId ? staffRoles.find((role) => role.id === parsed.data.roleId) : undefined;
   const now = new Date().toISOString();
-  const administrator = { id: randomUUID(), email: parsed.data.email.toLowerCase(), phone: parsed.data.phone, fullName: parsed.data.fullName, passwordHash: await bcrypt.hash(parsed.data.password, 12), roles: parsed.data.roles as Role[], adminPermissions: parsed.data.permissions, kycStatus: "VERIFIED" as KycStatus, createdAt: now, updatedAt: now, isActive: true };
+  const administrator = { id: randomUUID(), email: parsed.data.email.toLowerCase(), phone: parsed.data.phone, fullName: parsed.data.fullName, passwordHash: await bcrypt.hash(parsed.data.password, 12), roles: parsed.data.roles as Role[], adminPermissions: parsed.data.permissions ?? assignedRole?.permissions ?? [...ADMIN_PERMISSIONS], staffRoleId: assignedRole?.id, kycStatus: "VERIFIED" as KycStatus, createdAt: now, updatedAt: now, isActive: true };
   users.push(administrator);
-  recordAdminAudit(req, "ADMIN_CREATED", "USER", administrator.id, { email: administrator.email });
+  // Durable insert (see insertStaffRowDurable) — aborts the create instead of
+  // leaving a ghost account other instances cannot see.
+  try {
+    await insertStaffRowDurable(administrator);
+  } catch (error) {
+    const index = users.findIndex((user) => user.id === administrator.id);
+    if (index >= 0) users.splice(index, 1);
+    console.error("[staff] durable insert for administrator failed:", error);
+    res.status(503).json({ ok: false, error: "Unable to create the administrator account — the database rejected the change. Please retry." });
+    return;
+  }
+  recordAdminAudit(req, "ADMIN_CREATED", "USER", administrator.id, { email: administrator.email, roleId: administrator.staffRoleId });
   if (!(await persistMutation(res))) return;
   // Invite email with the login details + sign-in instructions. A delivery
   // failure must never roll back or block the account creation itself.
@@ -4974,22 +5447,22 @@ router.post("/admin/administrators", requireAuth, requireRole("ADMIN"), async (r
 
 router.patch("/admin/administrators/:id/status", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z.object({ isActive: z.boolean() }).safeParse(req.body);
-  const administrator = users.find((user) => user.id === req.params.id && user.roles.includes("ADMIN"));
   if (!parsed.success) { res.status(400).json({ ok: false, error: parsed.error.flatten() }); return; }
-  if (!administrator) { res.status(404).json({ ok: false, error: "Administrator not found" }); return; }
-  administrator.isActive = parsed.data.isActive;
-  administrator.updatedAt = new Date().toISOString();
-  recordAdminAudit(req, parsed.data.isActive ? "ADMIN_ACTIVATED" : "ADMIN_DEACTIVATED", "USER", administrator.id);
+  // DB-authoritative staff helper: fixes the cross-instance
+  // "Administrator not found" 404 on deactivate.
+  const result = await setStaffStatusById(String(req.params.id), parsed.data.isActive, req.user?.id);
+  if (!result.ok) { staffMutationError(res, result); return; }
+  recordAdminAudit(req, parsed.data.isActive ? "ADMIN_ACTIVATED" : "ADMIN_DEACTIVATED", "USER", String(req.params.id));
   if (!(await persistMutation(res))) return;
-  const { passwordHash: _passwordHash, ...safeAdministrator } = administrator;
-  res.json({ ok: true, administrator: safeAdministrator });
+  res.json({ ok: true, administrator: result.user ? { ...result.user, passwordHash: undefined } : null });
 });
 
 router.delete("/admin/administrators/:id", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
-  const index = users.findIndex((user) => user.id === req.params.id && user.roles.includes("ADMIN"));
-  if (index < 0) { res.status(404).json({ ok: false, error: "Administrator not found" }); return; }
-  const [administrator] = users.splice(index, 1);
-  recordAdminAudit(req, "ADMIN_DELETED", "USER", administrator.id, { email: administrator.email });
+  // DB-authoritative staff helper: deletes in Postgres first, then memory —
+  // fixes the cross-instance "Administrator not found" 404 on delete.
+  const result = await deleteStaffById(String(req.params.id), req.user?.id);
+  if (!result.ok) { staffMutationError(res, result); return; }
+  recordAdminAudit(req, "ADMIN_DELETED", "USER", String(req.params.id), { email: result.user?.email });
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, deleted: true });
 });

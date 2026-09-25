@@ -33,7 +33,10 @@ import type {
   LoanDisbursement,
   AccountChangeRequest,
   ApplicationDraft,
+  StaffRole,
+  AdminPermission,
 } from "./store.js";
+import { ADMIN_PERMISSIONS } from "./store.js";
 
 type Row = Record<string, unknown>;
 
@@ -203,6 +206,11 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
         fullName: str(row, "full_name"),
         passwordHash: str(row, "password_hash"),
         roles: rolesByUser.get(str(row, "id")) ?? [],
+        // RBAC: direct permission override + staff-role assignment. adminPermissions
+        // was historically dropped here, silently stripping loan managers of their
+        // access on every cold start.
+        adminPermissions: parseJson<AdminPermission[] | undefined>(row.admin_permissions, undefined),
+        staffRoleId: strNull(row, "staff_role_id") ?? undefined,
         kycStatus: (strNull(row, "kyc_status") ?? "NOT_STARTED") as User["kycStatus"],
         createdAt: iso(row.created_at) ?? new Date().toISOString(),
         updatedAt: iso(row.updated_at),
@@ -618,5 +626,48 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
   } catch (error) {
     console.error("[rebuildFromDatabase] Error — falling back to runtime_state JSONB:", error);
     return null;
+  }
+}
+
+// Back-office staff roles are stored in the shared roles/role_permissions
+// tables with "staff-" prefixed ids (platform roles keep their fixed ids).
+// Called once during boot so permission templates survive server restarts —
+// before this, role assignments only lived in memory and evaporated on every
+// cold start, silently revoking loan managers' access.
+export async function rebuildStaffRolesFromDatabase(db: NeonQueryFunction<false, false>): Promise<StaffRole[]> {
+  const PLATFORM_ROLE_IDS = new Set(["ADMIN", "LOAN_MANAGER", "BORROWER", "INVESTOR"]);
+  try {
+    const rows = await db.query(
+      `SELECT r.id, r.name, r.description, r.created_at,
+              COALESCE(json_agg(rp.permission_id) FILTER (WHERE rp.permission_id IS NOT NULL), '[]'::json) AS permissions
+       FROM roles r
+       LEFT JOIN role_permissions rp ON rp.role_id = r.id
+       GROUP BY r.id, r.name, r.description, r.created_at
+       ORDER BY r.created_at ASC`
+    ) as Array<Row & { permissions: unknown }>;
+    const roles: StaffRole[] = [];
+    for (const row of rows) {
+      const id = str(row, "id");
+      if (PLATFORM_ROLE_IDS.has(id) || !id.startsWith("staff-")) continue;
+      const rawPermissions = Array.isArray(row.permissions) ? row.permissions : [];
+      // Keep only permissions the platform actually knows about — stale
+      // permission rows must not widen a role's access.
+      const permissions = rawPermissions.filter((permission): permission is AdminPermission =>
+        typeof permission === "string" && (ADMIN_PERMISSIONS as readonly string[]).includes(permission)
+      );
+      roles.push({
+        id,
+        name: str(row, "name"),
+        description: strNull(row, "description"),
+        permissions,
+        isSystem: false,
+        createdAt: iso(row.created_at) ?? new Date().toISOString(),
+        updatedAt: iso(row.created_at) ?? new Date().toISOString(),
+      });
+    }
+    return roles;
+  } catch (error) {
+    console.error("[rebuildStaffRolesFromDatabase] Failed to load staff roles:", error);
+    return [];
   }
 }

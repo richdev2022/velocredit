@@ -3,7 +3,7 @@ import { randomInt } from "node:crypto";
 import type { NeonQueryFunction } from "@neondatabase/serverless";
 import { sql } from "./db.js";
 import { decomposeAndUpsertAll, type EntityCounts, type Snapshot } from "./decompose.js";
-import { rebuildFromDatabase, rebuildLoanProductsFromDatabase } from "./rebuildFromDatabase.js";
+import { rebuildFromDatabase, rebuildLoanProductsFromDatabase, rebuildStaffRolesFromDatabase } from "./rebuildFromDatabase.js";
 
 export type Role = "INVESTOR" | "BORROWER" | "ADMIN" | "LOAN_MANAGER";
 export const ADMIN_PERMISSIONS = ["overview", "users", "investors", "kyc", "payouts", "loan_applications", "loan_decisions", "loan_disbursements", "loan_repayments", "loan_notifications", "reconciliation", "audit", "staff", "settings", "reports", "investments"] as const;
@@ -17,6 +17,21 @@ export type DocumentStatus = "PENDING_REVIEW" | "VERIFIED" | "REJECTED" | "EXPIR
 export type OtpAction = "SIGNUP_VERIFY" | "LOGIN_STEP_UP" | "PAYOUT_ACCOUNT_CHANGE" | "EARLY_LIQUIDITY" | "PASSWORD_RESET" | "KYC_VERIFICATION" | "WITHDRAWAL" | "PROFILE_UPDATE";
 export type NotificationChannel = "SMS" | "EMAIL" | "IN_APP";
 
+// A reusable permission template assigned to back-office staff. Creating a
+// staff member with a roleId copies the role's permission set at assignment
+// time and keeps the live link so later role edits can propagate.
+export interface StaffRole {
+  id: string;
+  name: string;
+  description?: string;
+  permissions: AdminPermission[];
+  // System roles (e.g. the built-in "Administrator" / "Loan Manager" pairs)
+  // cannot be renamed or deleted from the back-office UI.
+  isSystem?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -24,7 +39,11 @@ export interface User {
   fullName: string;
   passwordHash: string;
   roles: Role[];
-    adminPermissions?: AdminPermission[];
+  adminPermissions?: AdminPermission[];
+  // Durable staff-role assignment (RBAC). Points at a StaffRole id in the
+  // staffRoles collection; when set, the role's permission set drives the
+  // staff member's effective access (see effectiveAdminPermissions).
+  staffRoleId?: string;
   kycStatus: KycStatus;
   createdAt: string;
   updatedAt?: string;
@@ -1194,6 +1213,29 @@ export const loanDisbursements = createPersistentArray<LoanDisbursement>("loanDi
 export const accountChangeRequests = createPersistentArray<AccountChangeRequest>("accountChangeRequests");
 export const applicationDrafts = createPersistentArray<ApplicationDraft>("applicationDrafts");
 
+// Back-office staff roles (RBAC templates). Unlike the collections above this
+// is NOT part of the runtime_state snapshot pipeline: staff roles live in the
+// durable roles/role_permissions Postgres tables (ids prefixed "staff-"), are
+// written synchronously by the staff-role endpoints, and are rehydrated on
+// boot by rebuildStaffRolesFromDatabase().
+export const staffRoles: StaffRole[] = [];
+
+// Resolve the permissions a staff member actually holds:
+//   - ADMIN platform role always implies every permission;
+//   - otherwise a staff-role assignment drives access from the role's live
+//     permission set, so admins can retune a role once and every member
+//     picks it up on their next request (requireAuth re-resolves per call);
+//   - staff without a role (or with a deleted role) fall back to their direct
+//     adminPermissions override.
+export function effectiveAdminPermissions(user: Pick<User, "roles" | "adminPermissions" | "staffRoleId">): AdminPermission[] {
+  if (user.roles.includes("ADMIN")) return [...ADMIN_PERMISSIONS];
+  if (user.staffRoleId) {
+    const role = staffRoles.find((entry) => entry.id === user.staffRoleId);
+    if (role) return [...role.permissions];
+  }
+  return [...(user.adminPermissions ?? [])];
+}
+
 const collections: Record<StoreKey, unknown[]> = {
   users, wallets, ledgerEntries, walletTransactions, kycCases, identityVerificationEvents,
   documents, payoutAccounts, investmentPlans, investments, loanApplications, loans,
@@ -1350,6 +1392,12 @@ async function doInitializeStore(): Promise<void> {
       await persistStore();
     }
   }
+
+  // Staff roles live in the relational roles/role_permissions tables, outside
+  // the snapshot collections — rehydrate them separately (and AFTER users so
+  // effectiveAdminPermissions resolves on first use).
+  staffRoles.length = 0;
+  staffRoles.push(...await rebuildStaffRolesFromDatabase(sql as unknown as NeonQueryFunction<false, false>));
 
   for (const app of loanApplications) {
     seedLoanStageStatuses(app);
