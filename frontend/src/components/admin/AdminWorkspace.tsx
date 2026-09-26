@@ -28,6 +28,7 @@ import {
   adminRequestDisbursementAccountUpdate,
   adminGetKycFaceImages,
   type AdminKycFaceImages,
+  type AdminKycFaceDocument,
   type KycResetCategory,
   type LoanDisbursement,
 } from "../../services/adminApi";
@@ -552,7 +553,9 @@ function Kyc() {
       ID_CARD_FRONT: { label: "ID Card (Front)" },
       ID_CARD_BACK: { label: "ID Card (Back)" },
     };
-    const docs = Array.isArray(selected.documents) ? selected.documents : [];
+    const docs: AdminKycFaceDocument[] = Array.isArray(faceImages?.documents) && faceImages.documents.length
+      ? faceImages.documents
+      : (Array.isArray(selected.documents) ? selected.documents : []) as AdminKycFaceDocument[];
     const isImage = (type: string) => /^image\//i.test(type || "") || /\.(png|jpe?g|gif|webp)$/i.test(type || "");
     return (
       <div className="space-y-5 animate-fade-in">

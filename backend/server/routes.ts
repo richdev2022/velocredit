@@ -51,6 +51,7 @@ import {
   applicationDrafts,
   loanSchedules,
   notifications,
+  activityNotifications,
   consents,
   auditLogs,
   otpChallenges,
@@ -82,6 +83,7 @@ import {
   decomposeRuntimeStateIntoTables,
   reloadStoreFromRelationalTables,
   persistStore,
+  requestPersist,
   normalizeLoanProducts,
   ensureLoanProductsLoaded,
   purgeGhostCatalogRows,
@@ -92,6 +94,7 @@ import {
   staffRoles,
   effectiveAdminPermissions,
   type StaffRole,
+  type ActivityNotification,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { env } from "./config.js";
@@ -126,7 +129,7 @@ import {
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, compareFaces } from "./providers/prembly.js";
 import { customFaceMatch } from "./faceMatch.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, kycManualReviewEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, kycManualReviewEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail, notificationBroadcastEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult, PlatformAnnouncement, PlatformBanner, Document as StoreDocument } from "./store.js";
 
 const router = Router();
@@ -474,6 +477,87 @@ async function notifyKycBlocked(user: { id: string; email: string; fullName: str
 }
 
 // ---------------------------------------------------------------------------
+// Activity feed (the in-app notification bell). One durable record per
+// platform event that concerns a user, each carrying a deep-link so the CTA
+// opens the exact page (loan detail, KYC, wallet…). Fire-and-forget safe:
+// push failures must never break the business transaction.
+// ---------------------------------------------------------------------------
+const MAX_ACTIVITY_NOTIFICATIONS_PER_USER = 300;
+
+function pushActivityNotification(input: {
+  userId: string;
+  title: string;
+  body: string;
+  category: ActivityNotification["category"];
+  kind?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+  actorUserId?: string;
+  relatedEntityType?: string;
+  relatedEntityId?: string;
+}): ActivityNotification | undefined {
+  try {
+    if (!input.userId || !users.some((user) => user.id === input.userId)) return undefined;
+    const now = new Date().toISOString();
+    const notification: ActivityNotification = {
+      id: randomUUID(),
+      userId: input.userId,
+      title: input.title.slice(0, 160),
+      body: input.body.slice(0, 1200),
+      category: input.category,
+      kind: input.kind,
+      actionLabel: input.actionLabel,
+      actionUrl: input.actionUrl,
+      actorUserId: input.actorUserId,
+      relatedEntityType: input.relatedEntityType,
+      relatedEntityId: input.relatedEntityId,
+      createdAt: now,
+    };
+    activityNotifications.push(notification);
+    // Keep the feed bounded — drop the oldest rows beyond the per-user cap.
+    const userRows = indexes.activityNotificationsByUserId.get(input.userId);
+    if (userRows && userRows.length > MAX_ACTIVITY_NOTIFICATIONS_PER_USER) {
+      const overflow = userRows
+        .slice()
+        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+        .slice(0, userRows.length - MAX_ACTIVITY_NOTIFICATIONS_PER_USER);
+      const overflowIds = new Set(overflow.map((row) => row.id));
+      for (let i = activityNotifications.length - 1; i >= 0; i -= 1) {
+        if (overflowIds.has(activityNotifications[i].id)) activityNotifications.splice(i, 1);
+      }
+    }
+    return notification;
+  } catch (error) {
+    console.warn("[routes] pushActivityNotification failed (non-fatal):", error);
+    return undefined;
+  }
+}
+
+/** Every active back-office staff member (administrators + loan managers). */
+function activeStaffMembers(): Array<{ id: string; email: string; fullName: string }> {
+  return users
+    .filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || user.roles.includes("LOAN_MANAGER")))
+    .map((user) => ({ id: user.id, email: user.email, fullName: user.fullName }));
+}
+
+/** Push one activity notification to every staff member (in-app bell). */
+function notifyStaffActivity(input: {
+  title: string;
+  body: string;
+  category: ActivityNotification["category"];
+  kind?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+  actorUserId?: string;
+  relatedEntityType?: string;
+  relatedEntityId?: string;
+}): void {
+  for (const staff of activeStaffMembers()) {
+    pushActivityNotification({ ...input, userId: staff.id });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Profile hydration — the customer already provided their profile details
 // (phone, date of birth, address, occupation…) during the loan application.
 // Backfill ONLY empty user fields from the most recent application snapshot
@@ -705,7 +789,6 @@ function applicationKycPrefill(userId: string): Record<string, unknown> | null {
   };
 }
 
-const loanNotificationPermission = "loan_notifications" as const;
 function hasUnresolvedBorrowing(userId: string, excludeApplicationId?: string): boolean {
   const openApplication = loanApplications.some((application) => application.borrowerId === userId && application.id !== excludeApplicationId && ["SUBMITTED", "KYC_PENDING", "UNDER_REVIEW", "MORE_INFORMATION_REQUIRED"].includes(application.status));
   const openLoan = loans.some((loan) => loan.borrowerId === userId && !["REPAID", "CANCELLED", "WRITTEN_OFF"].includes(loan.status));
@@ -724,11 +807,14 @@ async function sendLoanEmails(application: (typeof loanApplications)[number], ev
   const messages = [{ email: borrowerEmail, name: borrowerName, ...borrowerMessage }];
 
   if (event === "SUBMITTED" || event === "APPROVED") {
-    const admins = users.filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || (user.roles.includes("LOAN_MANAGER") && user.adminPermissions?.includes(loanNotificationPermission))));
-    const recipients = [...admins.map((user) => ({ email: user.email, name: user.fullName })), ...(env.ADMIN_EMAIL ? [{ email: env.ADMIN_EMAIL, name: "Velo Administrator" }] : [])];
+    // Owner requirement: EVERY admin staff member (administrators + loan
+    // managers) is notified of each submission — no permission filtering.
+    const admins = activeStaffMembers();
+    const recipients = [...admins.map((user) => ({ email: user.email, name: user.fullName, id: user.id })), ...(env.ADMIN_EMAIL ? [{ email: env.ADMIN_EMAIL, name: "Velo Administrator", id: "" }] : [])];
     const uniqueRecipients = recipients.filter((recipient, index, all) => all.findIndex((item) => item.email.toLowerCase() === recipient.email.toLowerCase()) === index);
     messages.push(...uniqueRecipients.map((recipient) => ({
-      ...recipient,
+      email: recipient.email,
+      name: recipient.name,
       ...(event === "SUBMITTED"
         ? loanApplicationSubmittedEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira, recipient: "reviewer" })
         : loanAwaitingDisbursementEmail({ name: recipient.name, applicationId: application.applicationId, amountNaira })),
@@ -2105,9 +2191,10 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     // not destroy the other identifier's NIBSS/NIMC raw response.
     kyc.providerRaw = { ...(kyc.providerRaw ?? {}), ...(result.rawResponse ?? {}) };
     // Persist the government portrait (NIBSS base64Image) so the face
-    // comparison endpoint always has image_two available.
+    // comparison endpoint and the admin KYC review always have image_two
+    // available — remote URLs are downloaded immediately (they expire).
     const bvnPortrait = (result.normalizedFields as { identityPhoto?: unknown } | undefined)?.identityPhoto;
-    if (typeof bvnPortrait === "string" && bvnPortrait.length > 50 && !kyc.identityPhoto) kyc.identityPhoto = bvnPortrait;
+    await persistIdentityPortrait(kyc, bvnPortrait);
     // Cross-harvest: the NIBSS BVN Advance response can carry the customer's
     // linked NIN — capture it so the raw store holds both identifiers.
     const linkedNin =
@@ -2330,6 +2417,47 @@ function toDataUriPayload(base64OrDataUri: string, mimetype = "image/jpeg"): str
   if (base64OrDataUri.startsWith("data:")) return base64OrDataUri;
   if (/^https?:\/\//i.test(base64OrDataUri)) return base64OrDataUri;
   return `data:${mimetype};base64,${base64OrDataUri}`;
+}
+
+// Government portraits arrive either as raw base64 or as a Prembly CDN URL
+// that EXPIRES within hours. The admin KYC review and the face-comparison
+// ladder both depend on this image being available days later, so at verify
+// time we immediately download remote portraits and persist the bytes as
+// base64 (capped — the passport crop is a small JPEG). The original URL is
+// kept separately for reference/audit.
+const MAX_IDENTITY_PHOTO_BYTES = 2_500_000;
+
+async function fetchRemotePortraitAsBase64(url: string): Promise<string | undefined> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+    if (!response.ok) return undefined;
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length < 64 || buffer.length > MAX_IDENTITY_PHOTO_BYTES) return undefined;
+    return buffer.toString("base64");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Persists the freshest government portrait on the KYC case. Remote URLs are
+ * downloaded to base64 right away (expiring links are the #1 cause of "BVN/NIN
+ * image not showing" in the admin review); inline base64/data-URIs are stored
+ * as-is. Older portraits are ALWAYS overwritten by the newer verification so
+ * an expired value can never wedge the record.
+ */
+async function persistIdentityPortrait(kyc: ReturnType<typeof findOrCreateKycCase>, portrait: unknown): Promise<void> {
+  if (typeof portrait !== "string" || portrait.length < 50) return;
+  const isHttp = /^https?:\/\//i.test(portrait);
+  kyc.identityPhotoUrl = portrait;
+  if (isHttp) {
+    const downloaded = await fetchRemotePortraitAsBase64(portrait);
+    if (downloaded) kyc.identityPhoto = downloaded;
+    else if (!kyc.identityPhoto || /^https?:\/\//i.test(kyc.identityPhoto)) kyc.identityPhoto = portrait;
+    return;
+  }
+  const base64 = portrait.startsWith("data:") ? portrait.slice(portrait.indexOf(",") + 1) : portrait;
+  if (base64.length > 50) kyc.identityPhoto = base64;
 }
 
 router.post("/me/kyc/face-comparison/verify", requireAuth, livenessUpload.single("image"), async (req: AuthRequest, res) => {
@@ -2581,6 +2709,31 @@ router.post("/me/kyc/face-comparison/manual-review", requireAuth, livenessUpload
       await sendEmail({ to: recipient.email, name: recipient.name, subject: template.subject, html: template.html });
     } catch { /* notification failure must not block the submission */ }
   }));
+  // Bell notifications: the review team gets a deep-link into the KYC queue,
+  // the customer gets an acknowledgement with the current state.
+  notifyStaffActivity({
+    title: "Manual face review requested",
+    body: `${user.fullName} (${user.email}) submitted a selfie for manual review. ${faceMatchContext}`,
+    category: "KYC",
+    kind: "KYC_MANUAL_REVIEW_STAFF",
+    actionLabel: "Open KYC review",
+    actionUrl: "/admin#view=kyc",
+    relatedEntityType: "KYC_CASE",
+    relatedEntityId: kyc.id,
+    actorUserId: user.id,
+  });
+  pushActivityNotification({
+    userId: user.id,
+    title: "Selfie submitted for manual review",
+    body: "We received your verification selfie. Our team will compare it with your identity record and notify you of the outcome — this usually completes within one business day.",
+    category: "KYC",
+    kind: "KYC_MANUAL_REVIEW",
+    actionLabel: "Open verification",
+    actionUrl: "/kyc",
+    relatedEntityType: "KYC_CASE",
+    relatedEntityId: kyc.id,
+    actorUserId: user.id,
+  });
   res.json({
     ok: true,
     verificationStatus: "PENDING_ADMIN_REVIEW",
@@ -2746,9 +2899,10 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     // not destroy the other identifier's NIBSS/NIMC raw response.
     kyc.providerRaw = { ...(kyc.providerRaw ?? {}), ...(result.rawResponse ?? {}) };
     // Persist the government portrait (NIMC base64Image) so the face
-    // comparison endpoint always has image_two available.
+    // comparison endpoint and the admin KYC review always have image_two
+    // available — remote URLs are downloaded immediately (they expire).
     const ninPortrait = (result.normalizedFields as { identityPhoto?: unknown } | undefined)?.identityPhoto;
-    if (typeof ninPortrait === "string" && ninPortrait.length > 50 && !kyc.identityPhoto) kyc.identityPhoto = ninPortrait;
+    await persistIdentityPortrait(kyc, ninPortrait);
     // Cross-harvest: the NIMC NIN Advance response can carry the customer's
     // linked BVN — capture it so the raw store holds both identifiers. BVN is
     // mandatory for the credit bureau pipeline, so every source of it counts.
@@ -3288,6 +3442,17 @@ router.post("/investor/wallet/funding/verify", requireAuth, requireRole("INVESTO
       });
       // Email is fire-and-forget — it must never delay the wallet credit.
       void sendEmail({ to: settled.user.email, name: settled.user.fullName, subject: email.subject, html: email.html }).catch(() => undefined);
+      pushActivityNotification({
+        userId: settled.user.id,
+        title: "Wallet funded",
+        body: `₦${Number((settled.tx?.amountMinor ?? 0) / 100).toLocaleString("en-NG")} was credited to your wallet (ref ${txRef}). Your available balance is now ₦${Number(settled.wallet.availableMinor / 100).toLocaleString("en-NG")}.`,
+        category: "WALLET",
+        kind: "WALLET_FUNDED",
+        actionLabel: "Open wallet",
+        actionUrl: "/investor",
+        relatedEntityType: "WALLET_TRANSACTION",
+        relatedEntityId: settled.tx?.id,
+      });
     }
     schedulePersist();
     res.json({ ok: true, settled: settled.tx, txRef, amount, chargeAmount, reason: settled.reason ?? "settled" });
@@ -3363,6 +3528,17 @@ router.get("/payments/flutterwave/return", async (req, res) => {
       } catch (_emailErr) {
         // Non-fatal
       }
+      pushActivityNotification({
+        userId: settled.user.id,
+        title: "Wallet funded",
+        body: `₦${Number((settled.tx?.amountMinor ?? 0) / 100).toLocaleString("en-NG")} was credited to your wallet (ref ${txRef}). Your available balance is now ₦${Number(settled.wallet.availableMinor / 100).toLocaleString("en-NG")}.`,
+        category: "WALLET",
+        kind: "WALLET_FUNDED",
+        actionLabel: "Open wallet",
+        actionUrl: "/investor",
+        relatedEntityType: "WALLET_TRANSACTION",
+        relatedEntityId: settled.tx?.id,
+      });
     }
     safeRedirect(settled.ok, settled.ok ? "Wallet has been credited successfully" : (settled.reason ?? "Unable to credit wallet"));
     return;
@@ -4626,7 +4802,6 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
       res.status(409).json({ ok: false, error: "You cannot apply for another loan until your current loan is fully repaid." });
       return;
     }
-    const wasSubmitted = Boolean(application.submittedAt);
     const isResubmission = application.status === "REJECTED";
     application.status = "SUBMITTED";
     application.submittedAt = new Date().toISOString();
@@ -4669,7 +4844,32 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
     }
     if (!(await persistMutation(res))) return;
     res.json({ ok: true, application, resubmitted: isResubmission, kycPulled, kycAutoSubmitted });
-    if (!wasSubmitted) void sendLoanEmails(application, "SUBMITTED");
+    // Notify on EVERY submission (first submission AND resubmission after a
+    // rejection): the borrower gets a confirmation, and every admin staff
+    // member receives the review email + an in-app bell notification.
+    void sendLoanEmails(application, "SUBMITTED").catch(() => undefined);
+    const submitAmount = Number(application.amountNaira ?? 0);
+    pushActivityNotification({
+      userId: application.borrowerId,
+      title: isResubmission ? "Loan application resubmitted" : "Loan application received",
+      body: `Your application ${application.applicationId} for ₦${submitAmount.toLocaleString("en-NG")} has been submitted and is now awaiting review. We will notify you as soon as a decision is made.`,
+      category: "LOAN",
+      kind: "LOAN_SUBMITTED",
+      actionLabel: "Track application",
+      actionUrl: "/borrower",
+      relatedEntityType: "LOAN_APPLICATION",
+      relatedEntityId: application.id,
+    });
+    notifyStaffActivity({
+      title: isResubmission ? "Loan application resubmitted for review" : "New loan application submitted",
+      body: `${users.find((user) => user.id === application.borrowerId)?.fullName ?? "A borrower"} submitted application ${application.applicationId} for ₦${submitAmount.toLocaleString("en-NG")}. Open it in the admin console to review.`,
+      category: "LOAN",
+      kind: "LOAN_SUBMITTED_STAFF",
+      actionLabel: "Review application",
+      actionUrl: `/admin#view=detail&id=${encodeURIComponent(application.applicationId || application.id)}`,
+      relatedEntityType: "LOAN_APPLICATION",
+      relatedEntityId: application.id,
+    });
   } catch (_e) {
     console.error("[routes] unexpected POST /borrower/applications/:id/submit error:", _e);
     if (res.headersSent) return;
@@ -5915,7 +6115,17 @@ router.get("/admin/kyc-cases", requireAuth, requireRole("ADMIN"), (_req, res) =>
     bvn: k.bvn ? `***-***-${k.bvn.slice(-4)}` : undefined,
     nin: k.nin ? `***-***-${k.nin.slice(-4)}` : undefined,
     user: users.find((u) => u.id === k.userId) ? { id: k.userId, fullName: users.find((u) => u.id === k.userId)!.fullName, email: users.find((u) => u.id === k.userId)!.email, phone: users.find((u) => u.id === k.userId)!.phone } : undefined,
-    documents: documents.filter((d) => d.userId === k.userId),
+    // Attach browser-usable preview/download URLs to every document (Drive
+    // links, snapshot/inline data-URIs) and strip the heavy raw inline bytes
+    // from the list payload — previously the raw rows reached the admin UI
+    // with NEITHER, so uploaded documents rendered as empty boxes.
+    documents: documents
+      .filter((d) => d.userId === k.userId)
+      .map((d) => {
+        const resolved = resolveDocumentUrls(d);
+        const { inlineData: _inlineData, ...rest } = d;
+        return { ...rest, previewUrl: resolved.previewUrl, downloadUrl: resolved.downloadUrl, source: resolved.source };
+      }),
     events: identityVerificationEvents.filter((e) => e.kycCaseId === k.id),
   }));
   const page = paginate(cases, _req.query as Record<string, unknown>);
@@ -5927,33 +6137,71 @@ router.get("/admin/kyc-cases", requireAuth, requireRole("ADMIN"), (_req, res) =>
 });
 
 // Face-comparison evidence for the KYC review detail view: the government
-// portrait, the customer's captured selfie, and every verification event
-// (with confidence scores) recorded for the case.
-router.get("/admin/kyc-cases/:id/face-images", requireAuth, requireRole("ADMIN"), (req, res) => {
+// portrait, the customer's captured selfie, every verification event
+// (with confidence scores) recorded for the case, and every uploaded
+// document with browser-usable preview URLs.
+router.get("/admin/kyc-cases/:id/face-images", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const kyc = kycCases.find((item) => item.id === req.params.id);
   if (!kyc) { res.status(404).json({ ok: false, error: "KYC case not found" }); return; }
   const portraitRaw = kyc.identityPhoto ?? kyc.identityPhotoUrl;
-  const identityPhoto = portraitRaw
-    ? portraitRaw.startsWith("data:") || /^https?:\/\//i.test(portraitRaw)
-      ? portraitRaw
-      : `data:image/jpeg;base64,${portraitRaw}`
-    : undefined;
+  let identityPhoto: string | undefined;
+  if (portraitRaw) {
+    if (portraitRaw.startsWith("data:") || /^https?:\/\//i.test(portraitRaw)) {
+      identityPhoto = portraitRaw;
+      // Expiring provider CDN links break the admin review days later —
+      // when the stored value is a remote URL, re-fetch it server-side and
+      // inline the bytes so the portrait ALWAYS renders.
+      if (/^https?:\/\//i.test(portraitRaw)) {
+        const downloaded = await fetchRemotePortraitAsBase64(portraitRaw);
+        if (downloaded) {
+          identityPhoto = `data:image/jpeg;base64,${downloaded}`;
+          kyc.identityPhoto = downloaded;
+        }
+      }
+    } else {
+      identityPhoto = `data:image/jpeg;base64,${portraitRaw}`;
+    }
+  }
   const selfieImageData = kyc.selfieImageData;
   const events = identityVerificationEvents
     .filter((event) => event.kycCaseId === kyc.id)
     .map(({ rawResponse: _rawResponse, ...event }) => event)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  // Uploaded documents for this customer, with preview/download URLs
+  // resolved server-side (Drive, application snapshot, inline bytes).
+  const caseDocuments = documents
+    .filter((d) => d.userId === kyc.userId)
+    .map((d) => {
+      const resolved = resolveDocumentUrls(d);
+      return {
+        id: d.id,
+        documentType: d.documentType,
+        documentSlot: d.documentSlot,
+        fileName: d.fileName,
+        mimeType: d.mimeType,
+        sizeBytes: d.sizeBytes,
+        status: d.status,
+        createdAt: d.createdAt,
+        previewUrl: resolved.previewUrl,
+        downloadUrl: resolved.downloadUrl,
+      };
+    });
+  if (portraitRaw && kyc.identityPhoto !== portraitRaw) {
+    // A refreshed portrait was cached onto the case — persist it.
+    void persistStore().catch(() => undefined);
+  }
   res.json({
     ok: true,
     identityPhoto,
     selfieImageData,
     identityAvailable: Boolean(identityPhoto),
     selfieAvailable: Boolean(selfieImageData),
+    documents: caseDocuments,
     events,
   });
 });
 
-router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), async (req, res) => {
+router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z
     .object({
       decision: z.enum(["VERIFIED", "PARTIALLY_VERIFIED", "REJECTED", "ACTION_REQUIRED", "SUSPENDED"]),
@@ -6009,6 +6257,24 @@ router.post("/admin/kyc-cases/:id/decision", requireAuth, requireRole("ADMIN"), 
   if (user) {
     user.kycStatus = kyc.status;
     await notifyKyc(user, parsed.data.decision === "VERIFIED" ? "APPROVED" : "REJECTED", "KYC", kyc.rejectionReason);
+  }
+  // Activity-feed notification for the customer whose KYC was decided.
+  if (user && kyc.status !== before.status) {
+    const approvedLike = parsed.data.decision === "VERIFIED";
+    pushActivityNotification({
+      userId: user.id,
+      title: approvedLike ? "Identity verification approved" : "Identity verification needs attention",
+      body: approvedLike
+        ? "Your identity verification (KYC) has been approved. You can now complete loan applications, investing and payouts without restrictions."
+        : `Your identity verification was not approved${kyc.rejectionReason ? `: ${kyc.rejectionReason}` : "."} Please sign in to review the reason and re-verify.`,
+      category: "KYC",
+      kind: approvedLike ? "KYC_VERIFIED" : "KYC_REJECTED",
+      actionLabel: "Open verification",
+      actionUrl: "/kyc",
+      relatedEntityType: "KYC_CASE",
+      relatedEntityId: kyc.id,
+      actorUserId: req.user?.id,
+    });
   }
   recordAdminAudit(req, `KYC_${parsed.data.decision}`, "KYC_CASE", kyc.id, { userId: kyc.userId, previousStatus: before.status, newStatus: kyc.status, note: parsed.data.note, rejectedReason: parsed.data.rejectedReason });
   if (!(await persistMutation(res))) return;
@@ -6362,17 +6628,13 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req
     const signature = userDocs.find((d) => d.documentType === "SIGNATURE" || d.documentSlot === "signature");
     const selfie = userDocs.find((d) => (d.documentType as string) === "LIVENESS_SELFIE" || d.documentSlot === "selfie");
     // Attach preview/download URLs directly so the admin UI can render images
-    // inline without a second round-trip.
+    // inline without a second round-trip. resolveDocumentUrls covers every
+    // storage path (Drive, application snapshot, inline bytes) — before this,
+    // snapshot/inline documents showed as empty boxes on the loan detail page.
     const withUrls = (d: typeof documents[number] | undefined) => {
       if (!d) return undefined;
-      const isGd = d.provider === "google_drive";
-      const previewUrl = isGd && d.providerFileId
-        ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(d.providerFileId)}`
-        : (d as { previewUrl?: string }).previewUrl ?? "";
-      const downloadUrl = isGd && d.providerFileId
-        ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(d.providerFileId)}`
-        : (d as { downloadUrl?: string }).downloadUrl ?? "";
-      return { ...d, previewUrl, downloadUrl };
+      const resolved = resolveDocumentUrls(d);
+      return { ...d, previewUrl: resolved.previewUrl, downloadUrl: resolved.downloadUrl, source: resolved.source };
     };
     if (proofOfAddress) kycDocuments.proofOfAddress = withUrls(proofOfAddress);
     if (passport) kycDocuments.passportPhoto = withUrls(passport);
@@ -6380,7 +6642,14 @@ router.get("/admin/loans/:loanId", requireAuth, requireRole("ADMIN"), async (req
     if (selfie) kycDocuments.selfie = withUrls(selfie);
   }
   if (borrowerKyc?.identityPhoto || borrowerKyc?.identityPhotoUrl) {
-    kycDocuments.identityPhoto = borrowerKyc.identityPhotoUrl ?? borrowerKyc.identityPhoto;
+    // Prefer the persisted base64 bytes (remote provider URLs expire);
+    // only fall back to the URL when no bytes were ever captured.
+    const portrait = borrowerKyc.identityPhoto;
+    kycDocuments.identityPhoto = portrait
+      ? portrait.startsWith("data:") || /^https?:\/\//i.test(portrait)
+        ? portrait
+        : `data:image/jpeg;base64,${portrait}`
+      : borrowerKyc.identityPhotoUrl;
   }
   if (borrowerKyc?.selfieImageData) {
     kycDocuments.selfieImageData = borrowerKyc.selfieImageData;
@@ -6475,10 +6744,47 @@ router.post("/admin/loan-applications/:applicationId/credit-bureau", requireAuth
   }
 });
 
-// Admin: proxy-download a KYC document by documentId. Streams the file from
-// Google Drive (or whatever storage provider is configured) so the admin
-// can preview/download without exposing the raw provider file ID to the
-// browser. Used by the document preview grid on the admin detail page.
+/**
+ * Resolves the browser-usable preview/download URLs for a stored document.
+ * Handles every storage path we use:
+ *   • google_drive  -> Drive preview/download URLs
+ *   • snapshot:*    -> base64 re-hydrated from the loan application snapshot
+ *   • inlineData    -> fast-path uploads that still carry their bytes inline
+ *   • legacy fields -> any previewUrl/downloadUrl already stored on the row
+ * Returns data-URIs for inline payloads so <img> tags render without a
+ * second round-trip (this is what makes uploaded documents VISIBLE in the
+ * admin KYC review and loan detail pages).
+ */
+function resolveDocumentUrls(doc: StoreDocument): { previewUrl: string; downloadUrl: string; source: string } {
+  const isGoogleDrive = doc.provider === "google_drive";
+  let snapshotUrl = "";
+  if (doc.provider === "manual" && doc.providerFileId.startsWith("snapshot:")) {
+    const [, applicationId, slot] = doc.providerFileId.split(":");
+    const application = loanApplications.find((item) => item.id === applicationId);
+    const snapshotDoc = slot
+      ? ((application?.customerSnapshot as Record<string, unknown> | undefined)?.documents as Record<string, { data?: string; type?: string } | undefined> | undefined)?.[slot]
+      : undefined;
+    if (snapshotDoc?.data) {
+      const mimeType = snapshotDoc.type || doc.mimeType || "application/octet-stream";
+      snapshotUrl = `data:${mimeType};base64,${snapshotDoc.data}`;
+    }
+  }
+  let inlineUrl = "";
+  if (!isGoogleDrive && doc.inlineData) inlineUrl = doc.inlineData;
+  const inlineFallback = (doc as { previewUrl?: string }).previewUrl ?? "";
+  const inlineDownloadFallback = (doc as { downloadUrl?: string }).downloadUrl ?? "";
+  const previewUrl = isGoogleDrive && doc.providerFileId
+    ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(doc.providerFileId)}`
+    : snapshotUrl || inlineUrl || inlineFallback;
+  const downloadUrl = isGoogleDrive && doc.providerFileId
+    ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(doc.providerFileId)}`
+    : snapshotUrl || inlineUrl || inlineDownloadFallback;
+  return { previewUrl, downloadUrl, source: doc.providerFileId.startsWith("snapshot:") ? "loan_application" : doc.provider };
+}
+
+// Admin: fetch a single KYC document by documentId — returns the metadata
+// plus browser-usable preview/download URLs (Drive URLs, snapshot/inline
+// data-URIs) so the admin can preview or download without a second hop.
 router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const documentId = String(req.params.documentId ?? "").trim();
   if (!documentId) {
@@ -6490,43 +6796,7 @@ router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), as
     res.status(404).json({ ok: false, error: "Document not found" });
     return;
   }
-  // Return the document metadata + a public-facing URL the browser can use.
-  // For Google Drive documents we expose a /uc?export=view URL (preview) and
-  // /uc?export=download URL (download). For other providers we fall back to
-  // any URL fields already stored on the document.
-  const isGoogleDrive = doc.provider === "google_drive";
-  // Documents pulled automatically from a loan application snapshot reference
-  // the original upload (`snapshot:<applicationId>:<slot>`) — serve them from
-  // the application's stored base64 payload.
-  let snapshotPreviewUrl = "";
-  let snapshotDownloadUrl = "";
-  if (doc.provider === "manual" && doc.providerFileId.startsWith("snapshot:")) {
-    const [, applicationId, slot] = doc.providerFileId.split(":");
-    const application = loanApplications.find((item) => item.id === applicationId);
-    const snapshotDoc = slot
-      ? ((application?.customerSnapshot as Record<string, unknown> | undefined)?.documents as Record<string, { data?: string; type?: string } | undefined> | undefined)?.[slot]
-      : undefined;
-    if (snapshotDoc?.data) {
-      const mimeType = snapshotDoc.type || doc.mimeType || "application/octet-stream";
-      const dataUrl = `data:${mimeType};base64,${snapshotDoc.data}`;
-      snapshotPreviewUrl = dataUrl;
-      snapshotDownloadUrl = dataUrl;
-    }
-  }
-  // Fast-path uploads keep their bytes inline until the background archive
-  // upload finishes (or permanently when Drive is unavailable).
-  let inlinePreviewUrl = "";
-  let inlineDownloadUrl = "";
-  if (!isGoogleDrive && doc.inlineData) {
-    inlinePreviewUrl = doc.inlineData;
-    inlineDownloadUrl = doc.inlineData;
-  }
-  const previewUrl = isGoogleDrive && doc.providerFileId
-    ? `https://drive.google.com/uc?export=view&id=${encodeURIComponent(doc.providerFileId)}`
-    : snapshotPreviewUrl || inlinePreviewUrl || ((doc as { previewUrl?: string }).previewUrl ?? "");
-  const downloadUrl = isGoogleDrive && doc.providerFileId
-    ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(doc.providerFileId)}`
-    : snapshotDownloadUrl || inlineDownloadUrl || ((doc as { downloadUrl?: string }).downloadUrl ?? "");
+  const resolved = resolveDocumentUrls(doc);
   res.json({
     ok: true,
     document: {
@@ -6541,14 +6811,14 @@ router.get("/admin/documents/:documentId", requireAuth, requireRole("ADMIN"), as
       status: doc.status,
       createdAt: doc.createdAt,
       uploadError: doc.uploadError,
-      previewUrl,
-      downloadUrl,
-      source: doc.providerFileId.startsWith("snapshot:") ? "loan_application" : doc.provider,
+      previewUrl: resolved.previewUrl,
+      downloadUrl: resolved.downloadUrl,
+      source: resolved.source,
     },
   });
 });
 
-router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), async (req, res) => {
+router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
   const parsed = z
     .object({
       decision: z.enum(["APPROVED", "REJECTED", "MORE_INFORMATION_REQUIRED"]),
@@ -6557,6 +6827,13 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
     .safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  // Owner requirement: an admin can NEVER reject a loan application without
+  // stating the reason — the borrower sees it in their dashboard, notification
+  // bell and rejection email.
+  if (parsed.data.decision === "REJECTED" && parsed.data.note.trim().length < 3) {
+    res.status(400).json({ ok: false, error: "A rejection reason is required. Tell the borrower why the application was declined." });
     return;
   }
   const application = loanApplications.find((a) => a.id === req.params.loanId || a.applicationId === req.params.loanId);
@@ -6575,13 +6852,15 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
   application.manualDecision = parsed.data.decision;
   application.manualNote = parsed.data.note;
   application.updatedAt = new Date().toISOString();
+  let approvedLoanId = "";
   if (parsed.data.decision === "APPROVED" && !loans.some((loan) => loan.applicationId === application.id)) {
     application.status = "APPROVED";
     application.approvedAt = new Date().toISOString();
     // Shared builder: resolves the RIGHT product for this application
     // (applicant type + stored ids + snapshot fallback), honours the borrower's
     // saved calculation, and captures an immutable terms snapshot.
-    ensureApprovedLoanRecord(application);
+    const createdLoan = ensureApprovedLoanRecord(application);
+    approvedLoanId = String((createdLoan as { id?: string } | undefined)?.id ?? "");
   } else if (parsed.data.decision === "REJECTED") {
     application.status = "REJECTED";
   } else {
@@ -6591,6 +6870,57 @@ router.post("/admin/loans/:loanId/decision", requireAuth, requireRole("ADMIN"), 
   if (parsed.data.decision === "APPROVED" && previousStatus !== "APPROVED") void sendLoanEmails(application, "APPROVED").catch(() => undefined);
   if (parsed.data.decision === "REJECTED" && previousStatus !== "REJECTED") void sendLoanEmails(application, "REJECTED").catch(() => undefined);
   recordAdminAudit(req, `LOAN_${parsed.data.decision}`, "LOAN_APPLICATION", application.id, { applicationId: application.applicationId, previousStatus, newStatus: application.status, note: parsed.data.note });
+  // Activity-feed notifications for the borrower (every decision) and the
+  // reviewing staff (audit trail in their own bell).
+  if (previousStatus !== application.status) {
+    const amountNaira = Number(application.amountNaira ?? 0);
+    const borrowerName = users.find((user) => user.id === application.borrowerId)?.fullName ?? "there";
+    const decisionMeta = {
+      category: "LOAN" as const,
+      relatedEntityType: "LOAN_APPLICATION",
+      relatedEntityId: application.id,
+      actorUserId: req.user?.id,
+    };
+    if (parsed.data.decision === "APPROVED") {
+      pushActivityNotification({
+        ...decisionMeta,
+        userId: application.borrowerId,
+        title: "Your loan application was approved",
+        body: `Congratulations ${borrowerName}! Your application ${application.applicationId} for ₦${amountNaira.toLocaleString("en-NG")} has been approved and is being prepared for disbursement.`,
+        kind: "LOAN_APPROVED",
+        actionLabel: "View loan",
+        actionUrl: approvedLoanId ? `/borrower/loans/${encodeURIComponent(approvedLoanId)}` : "/borrower",
+      });
+      notifyStaffActivity({
+        ...decisionMeta,
+        title: "Loan application approved",
+        body: `Application ${application.applicationId} (₦${amountNaira.toLocaleString("en-NG")}) was approved and is awaiting disbursement.`,
+        kind: "LOAN_APPROVED_STAFF",
+        actionLabel: "Open application",
+        actionUrl: `/admin#view=detail&id=${encodeURIComponent(application.applicationId || application.id)}`,
+      });
+    } else if (parsed.data.decision === "REJECTED") {
+      pushActivityNotification({
+        ...decisionMeta,
+        userId: application.borrowerId,
+        title: "Your loan application was not approved",
+        body: `We reviewed your application ${application.applicationId} for ₦${amountNaira.toLocaleString("en-NG")} and could not approve it at this time. Reason: ${parsed.data.note.trim()} You can update your details and reapply whenever you are ready.`,
+        kind: "LOAN_REJECTED",
+        actionLabel: "View details",
+        actionUrl: "/borrower",
+      });
+    } else {
+      pushActivityNotification({
+        ...decisionMeta,
+        userId: application.borrowerId,
+        title: "More information needed on your application",
+        body: `We need a few more details on application ${application.applicationId}${parsed.data.note.trim() ? `: ${parsed.data.note.trim()}` : "."} Please sign in and update your application so we can continue the review.`,
+        kind: "LOAN_MORE_INFO",
+        actionLabel: "Update application",
+        actionUrl: "/borrower",
+      });
+    }
+  }
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, application });
 });
@@ -7018,6 +7348,18 @@ async function executeLoanTransferAttempt(params: {
       if (borrower) {
         const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? loan.id, amountNaira });
         void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+        pushActivityNotification({
+          userId: borrower.id,
+          title: "Your loan has been disbursed",
+          body: `₦${amountNaira.toLocaleString("en-NG")} has been sent to your registered bank account for application ${application?.applicationId ?? loan.id}. It should land shortly — sign in to view your loan schedule and repayments.`,
+          category: "LOAN",
+          kind: "LOAN_DISBURSED",
+          actionLabel: "View loan",
+          actionUrl: `/borrower/loans/${encodeURIComponent(loan.id)}`,
+          relatedEntityType: "LOAN",
+          relatedEntityId: loan.id,
+          actorUserId: req.user?.id,
+        });
       }
       schedulePersist();
       return { outcome: "SUCCESSFUL", message: `Disbursement successful. ₦${amountNaira.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} sent to ${account.accountName ?? "the borrower"} (${accountLabel}).` };
@@ -7096,6 +7438,17 @@ async function reconcileStaleDisbursements(): Promise<void> {
       // disbursement is represented exactly once on the admin ledger.
       backfillLoanDisbursementLedger(row.id, loan.id, loan.borrowerId, Number(row.amountNaira), `reconciled via Flutterwave ${reference || providerId}`);
       creditHistory.push({ id: randomUUID(), userId: loan.borrowerId, loanId: loan.id, eventType: "LOAN_DISBURSED", detail: `Disbursement confirmed via Flutterwave reconciliation (${reference || providerId})`, occurredAt: settledAt, createdAt: settledAt });
+      pushActivityNotification({
+        userId: loan.borrowerId,
+        title: "Your loan has been disbursed",
+        body: `₦${Number(row.amountNaira ?? 0).toLocaleString("en-NG")} has been sent to your registered bank account. It should land shortly — sign in to view your loan schedule and repayments.`,
+        category: "LOAN",
+        kind: "LOAN_DISBURSED",
+        actionLabel: "View loan",
+        actionUrl: `/borrower/loans/${encodeURIComponent(loan.id)}`,
+        relatedEntityType: "LOAN",
+        relatedEntityId: loan.id,
+      });
       schedulePersist();
     } else if (verification.failed) {
       const complete = String(verification.data?.complete_message || verification.data?.processor_message || verification.status || "transfer failed");
@@ -7464,6 +7817,159 @@ router.get("/admin/reports", requireAuth, requireRole("ADMIN"), (req, res) => {
       rejected: kycCases.filter((k) => k.status === "REJECTED" && k.reviewedAt && inRange(k.reviewedAt)).length,
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// Activity feed endpoints — the in-app notification bell on every dashboard.
+// ---------------------------------------------------------------------------
+router.get("/me/activity-notifications", requireAuth, (req: AuthRequest, res) => {
+  const rows = (indexes.activityNotificationsByUserId.get(req.user!.id) ?? [])
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+  res.json({
+    ok: true,
+    notifications: rows.slice(0, limit),
+    unreadCount: rows.filter((row) => !row.readAt).length,
+    total: rows.length,
+  });
+});
+
+// Mark notifications as read: either a specific list of ids, or EVERY row
+// when the client taps "mark all read". Idempotent — readAt is set once.
+router.post("/me/activity-notifications/read", requireAuth, (req: AuthRequest, res) => {
+  const parsed = z.object({ ids: z.array(z.string().min(1)).max(200).optional(), all: z.boolean().optional() }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const now = new Date().toISOString();
+  const rows = indexes.activityNotificationsByUserId.get(req.user!.id) ?? [];
+  const byId = parsed.data.ids ? new Set(parsed.data.ids) : null;
+  let updated = 0;
+  for (const row of rows) {
+    if (row.readAt) continue;
+    if (byId && !byId.has(row.id)) continue;
+    row.readAt = now;
+    updated += 1;
+  }
+  if (updated > 0) requestPersist("activityNotifications");
+  res.json({ ok: true, updated });
+});
+
+// Admin "send notification" — push an in-app notification (and optionally an
+// email) to one user, every user of a role, or the entire customer base.
+router.post("/admin/notifications/send", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  const parsed = z
+    .object({
+      userId: z.string().min(1).optional(),
+      targetRole: z.enum(["BORROWER", "INVESTOR", "ALL"]).optional(),
+      title: z.string().min(2).max(160),
+      body: z.string().min(2).max(2000),
+      category: z.enum(["LOAN", "KYC", "WALLET", "INVESTMENT", "SYSTEM", "BROADCAST"]).default("BROADCAST"),
+      actionUrl: z.string().max(300).optional(),
+      actionLabel: z.string().max(60).optional(),
+      sendEmail: z.boolean().default(false),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    return;
+  }
+  const { userId, targetRole, title, body, category, actionUrl, actionLabel, sendEmail: alsoEmail } = parsed.data;
+  let recipients: Array<{ id: string; email: string; fullName: string }> = [];
+  if (userId) {
+    const user = users.find((item) => item.id === userId);
+    if (!user) {
+      res.status(404).json({ ok: false, error: "Recipient user not found" });
+      return;
+    }
+    recipients = [user];
+  } else {
+    const wanted = targetRole ?? "ALL";
+    recipients = users.filter((user) => user.isActive !== false && (wanted === "ALL" || user.roles.includes(wanted)));
+  }
+  if (recipients.length === 0) {
+    res.status(400).json({ ok: false, error: "No active users match this recipient selection" });
+    return;
+  }
+  const batchId = randomUUID();
+  const createdAt = new Date().toISOString();
+  for (const recipient of recipients) {
+    pushActivityNotification({
+      userId: recipient.id,
+      title,
+      body,
+      category,
+      kind: "ADMIN_BROADCAST",
+      actionLabel: actionLabel ?? (actionUrl ? "Open" : undefined),
+      actionUrl,
+      actorUserId: req.user?.id,
+      relatedEntityType: "BROADCAST",
+      relatedEntityId: batchId,
+    });
+  }
+  if (alsoEmail) {
+    // Fire-and-forget: email delivery must never delay the admin response.
+    void Promise.all(recipients.map(async (recipient) => {
+      if (!recipient.email) return;
+      try {
+        const template = notificationBroadcastEmail({ name: recipient.fullName, title, body, actionUrl, actionLabel });
+        await sendEmail({ to: recipient.email, name: recipient.fullName, ...template });
+        notifications.push({
+          id: randomUUID(),
+          userId: recipient.id,
+          channel: "EMAIL",
+          kind: "ADMIN_BROADCAST",
+          template: "notificationBroadcast",
+          subject: title,
+          content: body,
+          recipientMasked: recipient.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"),
+          status: "SENT",
+          relatedEntityType: "BROADCAST",
+          relatedEntityId: batchId,
+          retryCount: 0,
+          createdAt,
+          sentAt: new Date().toISOString(),
+        });
+      } catch { /* individual email failures are logged by the provider layer */ }
+    })).catch(() => undefined);
+  }
+  recordAdminAudit(req, "NOTIFICATION_BROADCAST", "NOTIFICATION", batchId, { recipients: recipients.length, title, sendEmail: alsoEmail, targetRole: targetRole ?? (userId ? "USER" : "ALL") });
+  if (!(await persistMutation(res))) return;
+  res.status(201).json({ ok: true, batchId, recipients: recipients.length, emailed: alsoEmail });
+});
+
+// History of admin-sent broadcasts (grouped per batch) for the admin console.
+router.get("/admin/notifications/sent", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const batches = new Map<string, { id: string; title: string; body: string; category: string; createdAt: string; sentBy: string; recipients: number; emailed: boolean }>();
+  for (const row of activityNotifications) {
+    if (row.kind !== "ADMIN_BROADCAST" || !row.relatedEntityId) continue;
+    const existing = batches.get(row.relatedEntityId);
+    if (existing) {
+      existing.recipients += 1;
+      continue;
+    }
+    batches.set(row.relatedEntityId, {
+      id: row.relatedEntityId,
+      title: row.title,
+      body: row.body,
+      category: row.category,
+      createdAt: row.createdAt,
+      sentBy: row.actorUserId ?? "",
+      recipients: 1,
+      emailed: false,
+    });
+  }
+  const list = [...batches.values()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 50)
+    .map((batch) => ({
+      ...batch,
+      sentByName: users.find((user) => user.id === batch.sentBy)?.fullName ?? "Administrator",
+      emailed: notifications.some((n) => n.relatedEntityId === batch.id && n.kind === "ADMIN_BROADCAST" && n.channel === "EMAIL"),
+    }));
+  res.json({ ok: true, broadcasts: list });
 });
 
 router.get("/me/notifications", requireAuth, (req: AuthRequest, res) => {
@@ -8304,6 +8810,20 @@ router.post("/investor/wallet/withdraw", requireAuth, requireRole("INVESTOR"), a
     if (execution.error) {
       console.error(`[routes] withdrawal ${withdrawalId} execution error:`, execution.error);
     }
+    pushActivityNotification({
+      userId: investor.id,
+      title: execution.error ? "Withdrawal needs attention" : "Withdrawal request received",
+      body: execution.error
+        ? `Your withdrawal of ₦${parsed.data.amountNaira.toLocaleString("en-NG")} (ref ${withdrawalId}) could not be completed: ${execution.error}. Our team will retry it automatically — no funds are lost.`
+        : `Your withdrawal of ₦${(Math.round(netMinor) / 100).toLocaleString("en-NG")} (net of fees) to ${resolvedBankName} ${parsed.data.accountNumber} is being processed (ref ${withdrawalId}). You will receive a confirmation once the bank settles it.`,
+      category: "WALLET",
+      kind: "WITHDRAWAL_REQUEST",
+      actionLabel: "Open wallet",
+      actionUrl: "/investor",
+      relatedEntityType: "WITHDRAWAL",
+      relatedEntityId: withdrawalId,
+      actorUserId: investor.id,
+    });
   })();
 });
 
@@ -8590,6 +9110,18 @@ router.post("/admin/investors/:investorId/credit-wallet", requireAuth, requireRo
       sentAt: emailRes.sent ? new Date().toISOString() : undefined,
     });
   }).catch(() => undefined);
+  pushActivityNotification({
+    userId: investorId,
+    title: "Wallet credited by Velo Finance",
+    body: `₦${parsed.data.amountNaira.toLocaleString("en-NG")} was credited to your wallet (${reasonVal}). Your available balance is now ₦${balanceNaira.toLocaleString("en-NG")}.`,
+    category: "WALLET",
+    kind: "WALLET_FUNDED",
+    actionLabel: "Open wallet",
+    actionUrl: "/investor",
+    relatedEntityType: "WALLET_TRANSACTION",
+    relatedEntityId: refId,
+    actorUserId: req.user?.id,
+  });
   res.json({
     ok: true,
     walletBalanceMinor: wallet.availableMinor,

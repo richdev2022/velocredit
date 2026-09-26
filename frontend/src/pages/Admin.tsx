@@ -10,6 +10,7 @@ import StaffAdmin from "../components/admin/StaffAdmin";
 import RolesPermissions from "../components/admin/RolesPermissions";
 import AdminWorkspace, { type AdminSection } from "../components/admin/AdminWorkspace";
 import AdminAccountRequests from "../components/admin/AdminAccountRequests";
+import AdminNotifications from "../components/admin/AdminNotifications";
 import { config } from "../utils/config";
 import {
   getAdminToken,
@@ -30,7 +31,8 @@ type View =
   | "roles"
   | "ledger"
   | "withdrawals"
-  | "investor-tools";
+  | "investor-tools"
+  | "notifications";
 
 type MenuItem = {
   key: View;
@@ -120,6 +122,12 @@ const Icons = {
       <path d="M18 8V5m3 3h-6" />
     </svg>
   ),
+  Bell: (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 8a6 6 0 0112 0c0 7 3 9 3 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 003.4 0" />
+    </svg>
+  ),
   RolesShield: (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
@@ -170,6 +178,7 @@ const menu: MenuItem[] = [
   { key: "audit", label: "Audit log", group: "Insights", icon: Icons.History },
   { key: "managers", label: "Team management", group: "Administration", icon: Icons.UserShield },
   { key: "roles", label: "Roles & permissions", group: "Administration", icon: Icons.RolesShield },
+  { key: "notifications", label: "Notifications", group: "Administration", icon: Icons.Bell },
   { key: "settings", label: "Platform settings", group: "Administration", icon: Icons.Settings },
 ];
 
@@ -190,6 +199,7 @@ const titles: Record<View, string> = {
   managers: "Team management",
   roles: "Roles & permissions",
   settings: "Platform settings",
+  notifications: "Send notifications",
   detail: "Application detail",
   "borrower-detail": "Borrower detail",
 };
@@ -205,7 +215,7 @@ export default function Admin() {
     const hash = window.location.hash.replace(/^#/, "");
     const params = new URLSearchParams(hash);
     const v = params.get("view") as View | null;
-    const validViews: View[] = ["overview", "applications", "borrowers", "borrower-detail", "investors", "account-requests", "kyc", "payouts", "loans", "detail", "ledger", "withdrawals", "investor-tools", "reconciliation", "audit", "managers", "roles", "settings"];
+    const validViews: View[] = ["overview", "applications", "borrowers", "borrower-detail", "investors", "account-requests", "kyc", "payouts", "loans", "detail", "ledger", "withdrawals", "investor-tools", "reconciliation", "audit", "managers", "roles", "notifications", "settings"];
     const id = params.get("id");
     return {
       view: v && validViews.includes(v) ? v : "overview",
@@ -302,7 +312,7 @@ export default function Admin() {
   };
 
   const visibleMenu = menu.filter((item) => {
-    if ((item.key === "managers" || item.key === "roles" || item.key === "settings") && role !== "ADMIN") return false;
+    if ((item.key === "managers" || item.key === "roles" || item.key === "settings" || item.key === "notifications") && role !== "ADMIN") return false;
     return true;
   });
 
@@ -536,12 +546,14 @@ export default function Admin() {
             {view === "investor-tools" && renderSettingsLike("investor-tools")}
             {view === "managers" && <StaffAdmin />}
             {view === "roles" && <RolesPermissions />}
+            {view === "notifications" && <AdminNotifications />}
             {view !== "applications" &&
               view !== "detail" &&
               view !== "borrower-detail" &&
               view !== "settings" &&
               view !== "managers" &&
               view !== "roles" &&
+              view !== "notifications" &&
               view !== "ledger" &&
               view !== "withdrawals" &&
               view !== "investor-tools" &&

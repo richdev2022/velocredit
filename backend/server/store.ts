@@ -610,6 +610,29 @@ export interface Notification {
   failedAt?: string;
 }
 
+/**
+ * In-app activity-feed notification (the user-facing bell), distinct from the
+ * channel-log `Notification` above which records every email/SMS we send.
+ * Every platform event that concerns a user (loan decision, KYC outcome,
+ * disbursement, wallet funding, admin broadcast…) pushes one row here with a
+ * deep-link (`actionUrl`) so the bell CTA lands on the exact page.
+ */
+export interface ActivityNotification {
+  id: string;
+  userId: string;
+  title: string;
+  body: string;
+  category: "LOAN" | "KYC" | "WALLET" | "INVESTMENT" | "SYSTEM" | "BROADCAST";
+  kind?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+  readAt?: string;
+  actorUserId?: string;
+  relatedEntityType?: string;
+  relatedEntityId?: string;
+  createdAt: string;
+}
+
 export interface ProviderWebhookEvent {
   id?: string;
   provider: "flutterwave" | "prembly" | "kudi" | "meta";
@@ -772,7 +795,8 @@ export type StoreKey =
   | "payouts" | "creditHistory" | "creditScores" | "creditReports" | "otpChallenges"
   | "passwordResetTokens" | "notifications" | "providerEvents" | "consents" | "loanProducts" | "auditLogs"
   | "adminLedger" | "platformSettings" | "investorWithdrawals"
-  | "disbursementAccounts" | "loanDisbursements" | "accountChangeRequests" | "applicationDrafts";
+  | "disbursementAccounts" | "loanDisbursements" | "accountChangeRequests" | "applicationDrafts"
+  | "activityNotifications";
 
 const storeKeys: StoreKey[] = [
   "users", "wallets", "ledgerEntries", "walletTransactions", "kycCases",
@@ -782,6 +806,7 @@ const storeKeys: StoreKey[] = [
   "notifications", "providerEvents", "consents", "loanProducts", "auditLogs",
   "adminLedger", "platformSettings", "investorWithdrawals",
   "disbursementAccounts", "loanDisbursements", "accountChangeRequests", "applicationDrafts",
+  "activityNotifications",
 ];
 
 const rawState = {} as Record<StoreKey, unknown[]>;
@@ -845,6 +870,7 @@ export const indexes = {
   creditReportsByUserId: new Map<string, CreditReport[]>(),
   notificationsByUserId: new Map<string, Notification[]>(),
   notificationsByIdempotencyKey: new Map<string, Notification>(),
+  activityNotificationsByUserId: new Map<string, ActivityNotification[]>(),
   auditLogsByUserId: new Map<string, AuditLog[]>(),
   auditLogsByAction: new Map<string, AuditLog[]>(),
   adminLedgerByEntryType: new Map<string, AdminLedgerEntry[]>(),
@@ -939,6 +965,9 @@ export function rebuildIndexes(): void {
   for (const n of notifications) {
     appendToMultiIndex(indexes.notificationsByUserId, n.userId, n);
     if (n.idempotencyKey) indexes.notificationsByIdempotencyKey.set(n.idempotencyKey, n);
+  }
+  for (const a of activityNotifications) {
+    appendToMultiIndex(indexes.activityNotificationsByUserId, a.userId, a);
   }
   for (const a of auditLogs) {
     if (a.userId) appendToMultiIndex(indexes.auditLogsByUserId, a.userId, a);
@@ -1098,6 +1127,9 @@ function indexSingleItem<T>(key: StoreKey, item: T): void {
       if (n.idempotencyKey) indexes.notificationsByIdempotencyKey.set(n.idempotencyKey, n);
       break;
     }
+    case "activityNotifications":
+      appendToMultiIndex(indexes.activityNotificationsByUserId, (wrapped as unknown as ActivityNotification).userId, wrapped as unknown as ActivityNotification);
+      break;
     case "auditLogs": {
       const a = wrapped as unknown as AuditLog;
       if (a.userId) appendToMultiIndex(indexes.auditLogsByUserId, a.userId, a);
@@ -1202,6 +1234,7 @@ export const creditReports = createPersistentArray<CreditReport>("creditReports"
 export const otpChallenges = createPersistentArray<OtpChallenge>("otpChallenges");
 export const passwordResetTokens = createPersistentArray<PasswordResetToken>("passwordResetTokens");
 export const notifications = createPersistentArray<Notification>("notifications");
+export const activityNotifications = createPersistentArray<ActivityNotification>("activityNotifications");
 export const providerEvents = createPersistentArray<ProviderWebhookEvent>("providerEvents");
 export const consents = createPersistentArray<Consent>("consents");
 export const loanProducts = createPersistentArray<LoanProduct>("loanProducts");
@@ -1244,6 +1277,7 @@ const collections: Record<StoreKey, unknown[]> = {
   otpChallenges, passwordResetTokens, notifications, providerEvents, consents, loanProducts, auditLogs,
   adminLedger, platformSettings, investorWithdrawals,
   disbursementAccounts, loanDisbursements, accountChangeRequests, applicationDrafts,
+  activityNotifications,
 };
 
 function snapshotStore(): Record<StoreKey, unknown[]> {

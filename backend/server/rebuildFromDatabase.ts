@@ -22,6 +22,7 @@ import type {
   OtpChallenge,
   PasswordResetToken,
   Notification,
+  ActivityNotification,
   ProviderWebhookEvent,
   Consent,
   LoanProduct,
@@ -187,6 +188,7 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
     notifications: [], providerEvents: [], consents: [], loanProducts: [], auditLogs: [], adminLedger: [],
     platformSettings: [], investorWithdrawals: [], disbursementAccounts: [], loanDisbursements: [],
     accountChangeRequests: [], applicationDrafts: [],
+    activityNotifications: [],
   };
 
   try {
@@ -620,6 +622,22 @@ export async function rebuildFromDatabase(db: NeonQueryFunction<false, false>): 
     for (const row of await db.query("SELECT * FROM system_settings WHERE key = 'platform' ORDER BY updated_at ASC") as Row[]) {
       const setting = parseJson<PlatformSettings | null>(row.value, null);
       if (setting) snapshot.platformSettings.push(setting);
+    }
+
+    for (const row of await db.query("SELECT * FROM activity_notifications ORDER BY created_at ASC") as Row[]) {
+      const activity: ActivityNotification = {
+        id: str(row, "id"), userId: str(row, "user_id"), title: str(row, "title"), body: str(row, "body"),
+        category: (str(row, "category") ?? "SYSTEM") as ActivityNotification["category"],
+        kind: strNull(row, "kind") ?? undefined,
+        actionLabel: strNull(row, "action_label") ?? undefined,
+        actionUrl: strNull(row, "action_url") ?? undefined,
+        readAt: iso(row.read_at) ?? undefined,
+        actorUserId: strNull(row, "actor_user_id") ?? undefined,
+        relatedEntityType: strNull(row, "related_entity_type") ?? undefined,
+        relatedEntityId: strNull(row, "related_entity_id") ?? undefined,
+        createdAt: iso(row.created_at) ?? new Date().toISOString(),
+      };
+      snapshot.activityNotifications.push(activity);
     }
 
     return snapshot;

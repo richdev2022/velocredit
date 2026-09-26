@@ -112,6 +112,21 @@ export function backOfficeAccountCreatedEmail(input: { name: string; loginEmail:
   };
 }
 
+/**
+ * Generic admin-sent broadcast notification (title + message, optional
+ * deep-link button). Used by the admin "send notification" feature for the
+ * email leg of an in-app + email notification.
+ */
+export function notificationBroadcastEmail(input: { name: string; title: string; body: string; actionUrl?: string; actionLabel?: string }): { subject: string; html: string } {
+  const button = input.actionUrl
+    ? `<p style="margin:22px 0 0"><a href="${escapeHtml(input.actionUrl)}" style="display:inline-block;background:#1d4ed8;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:12px 22px;border-radius:10px">${escapeHtml(input.actionLabel || "Open Velo")}</a></p>`
+    : "";
+  return {
+    subject: input.title,
+    html: `<div style="font-family:Arial,sans-serif;color:#17243d"><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#6d28d918;color:#6d28d9;font-size:12px;font-weight:700">VELO NOTIFICATION</div><h1 style="font-size:24px;line-height:1.25;margin:18px 0 10px">${escapeHtml(input.title)}</h1><p style="font-size:15px;line-height:1.7;color:#526173">Hello ${escapeHtml(input.name)},</p><div style="margin:20px 0;padding:18px;background:#f7fafc;border:1px solid #e5edf5;border-radius:12px"><p style="margin:0;font-size:15px;line-height:1.7;color:#17243d;white-space:pre-wrap">${escapeHtml(input.body)}</p></div>${button}<p style="margin-top:24px;font-size:13px;line-height:1.6;color:#8195a8">You are receiving this message because you have a Velo Finance account. Sign in to your dashboard to review your account at any time.</p></div>`,
+  };
+}
+
 export async function sendEmail(input: { to: string; name: string; subject: string; html: string }): Promise<{ sent: boolean; providerReference?: string }> {
   if (!env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL) return { sent: false };
   const response = await fetch(`${env.BREVO_API_URL}/smtp/email`, { method: "POST", headers: { "api-key": env.BREVO_API_KEY, "Content-Type": "application/json" }, body: JSON.stringify({ sender: { email: env.BREVO_SENDER_EMAIL, name: env.BREVO_SENDER_NAME }, to: [{ email: input.to, name: input.name }], subject: input.subject, htmlContent: brandedEmailHtml(input.html) }) });
