@@ -125,6 +125,7 @@ import {
   normalizeBankCodeForFlutterwave,
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, compareFaces } from "./providers/prembly.js";
+import { customFaceMatch } from "./faceMatch.js";
 import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, kycManualReviewEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult, PlatformAnnouncement, PlatformBanner, Document as StoreDocument } from "./store.js";
 
@@ -2233,14 +2234,22 @@ router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image
 //
 //   1. The customer captures a selfie with the device camera (no uploads).
 //   2. The selfie is uploaded here and compared against the BVN/NIN
-//      government portrait via Prembly
-//      POST /verification/biometrics/face/comparison ({ image_one, image_two }).
-//      Both images are passed as base64 — Prembly's docs accept "face image
-//      URL (base64)" and our identity portraits/Drive files are not publicly
-//      fetchable, so base64 is the only reliable transport.
-//   3. On a match at or above PREMBLY_FACE_MATCH_MIN_CONFIDENCE the liveness
-//      checklist item is auto-approved. Otherwise the customer can retry or
-//      submit the case for manual review (admins get an email alert).
+//      government portrait through a ROBUST FALLBACK LADDER (a genuine
+//      customer must never be blocked by a single provider opinion):
+//        a. Prembly POST /verification/biometrics/face/comparison
+//           (raw base64 transport),
+//        b. the same endpoint re-tried with data-URI transport (some
+//           payloads parse differently),
+//        c. Prembly BVN/NIN-with-face endpoint (bvn_w_face / nin_w_face) —
+//           the selfie is compared against the FRESH NIBSS/NIMC portrait
+//           fetched server-side, bypassing any degraded stored copy,
+//        d. the CUSTOM in-house face matcher (faceMatch.ts — face-api.js
+//           embeddings) as the final fallback before any failure is recorded.
+//      The first attempt that clears its threshold wins; every attempt is
+//      recorded on the verification event for admin review.
+//   3. On a pass the liveness checklist item is auto-approved. Otherwise the
+//      customer can retry or submit the case for manual review (admins get
+//      an email alert).
 // ---------------------------------------------------------------------------
 
 /**
@@ -2287,6 +2296,42 @@ function resolvedIdentityId(kyc: ReturnType<typeof findOrCreateKycCase>): { type
   return undefined;
 }
 
+/** True when a Prembly error means "the service could not be reached/used". */
+function premblyUnavailableMessage(message: string | undefined): boolean {
+  if (!message) return false;
+  return /not configured|aborted|timeout|timed out|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed|HTTP 5\d\d|HTTP 429|Internal Server Error/i.test(message);
+}
+
+/**
+ * Turns the stored portrait (base64, data-URI or http(s) URL) into raw bytes
+ * for the custom matcher. Returns undefined when it cannot be fetched — the
+ * ladder simply skips the custom attempt then.
+ */
+async function portraitToBuffer(portrait: string): Promise<Buffer | undefined> {
+  try {
+    if (portrait.startsWith("data:")) {
+      const base64 = portrait.slice(portrait.indexOf(",") + 1);
+      return base64.length > 50 ? Buffer.from(base64, "base64") : undefined;
+    }
+    if (/^https?:\/\//i.test(portrait)) {
+      const response = await fetch(portrait, { signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) return undefined;
+      return Buffer.from(await response.arrayBuffer());
+    }
+    if (portrait.length > 50) return Buffer.from(portrait, "base64");
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Wraps a base64 payload in a data-URI (Prembly accepts both transports). */
+function toDataUriPayload(base64OrDataUri: string, mimetype = "image/jpeg"): string {
+  if (base64OrDataUri.startsWith("data:")) return base64OrDataUri;
+  if (/^https?:\/\//i.test(base64OrDataUri)) return base64OrDataUri;
+  return `data:${mimetype};base64,${base64OrDataUri}`;
+}
+
 router.post("/me/kyc/face-comparison/verify", requireAuth, livenessUpload.single("image"), async (req: AuthRequest, res) => {
   if (!req.file) { res.status(400).json({ ok: false, error: "A captured selfie image is required" }); return; }
   const kyc = findOrCreateKycCase(req.user!.id);
@@ -2300,13 +2345,95 @@ router.post("/me/kyc/face-comparison/verify", requireAuth, livenessUpload.single
     res.status(409).json({ ok: false, error: "The government portrait for your BVN/NIN is unavailable. Please re-verify your BVN or NIN, then try the selfie again.", code: "PORTRAIT_UNAVAILABLE" });
     return;
   }
-  const selfieBase64 = req.file.buffer.toString("base64");
-  const selfieImageData = `data:${req.file.mimetype};base64,${selfieBase64}`;
-  const comparison = await compareFaces({ imageOne: selfieBase64, imageTwo: portrait });
+
+  const selfieBuffer = req.file.buffer;
+  const selfieBase64 = selfieBuffer.toString("base64");
+  const selfieDataUri = `data:${req.file.mimetype};base64,${selfieBase64}`;
   const minConfidence = env.PREMBLY_FACE_MATCH_MIN_CONFIDENCE;
-  const confidenceOk = typeof comparison.confidence === "number" ? comparison.confidence >= minConfidence : comparison.matched;
-  const passed = comparison.matched && confidenceOk;
-  kyc.selfieImageData = selfieImageData;
+
+  interface FaceAttempt {
+    source: "prembly_comparison" | "prembly_comparison_datauri" | "prembly_id_face" | "custom_local";
+    label: string;
+    matched: boolean;
+    confidence?: number;
+    message?: string;
+    /** true ⇒ the attempt could not produce a verdict at all. */
+    unavailable: boolean;
+    raw?: Record<string, unknown>;
+  }
+
+  const attempts: FaceAttempt[] = [];
+  let winner: FaceAttempt | undefined;
+
+  // (a) Primary Prembly comparison — raw base64 transport (as documented).
+  const primary = await compareFaces({ imageOne: selfieBase64, imageTwo: portrait });
+  const primaryAttempt: FaceAttempt = {
+    source: "prembly_comparison",
+    label: "Prembly face comparison",
+    matched: primary.matched && (typeof primary.confidence === "number" ? primary.confidence >= minConfidence : true),
+    confidence: primary.confidence,
+    message: primary.errorMessage ?? primary.message,
+    unavailable: primary.unavailable === true || premblyUnavailableMessage(primary.errorMessage),
+    raw: primary.rawResponse,
+  };
+  attempts.push(primaryAttempt);
+  if (primaryAttempt.matched) winner = primaryAttempt;
+
+  // (b) Alternate transport — only worth trying when the first call COMPLETED
+  // (an unreachable service will not behave better with a different payload).
+  if (!winner && !primaryAttempt.unavailable) {
+    const alternate = await compareFaces({ imageOne: selfieDataUri, imageTwo: toDataUriPayload(portrait, "image/jpeg") });
+    const alternateAttempt: FaceAttempt = {
+      source: "prembly_comparison_datauri",
+      label: "Prembly face comparison (data-URI transport)",
+      matched: alternate.matched && (typeof alternate.confidence === "number" ? alternate.confidence >= minConfidence : true),
+      confidence: alternate.confidence,
+      message: alternate.errorMessage ?? alternate.message,
+      unavailable: alternate.unavailable === true || premblyUnavailableMessage(alternate.errorMessage),
+    };
+    attempts.push(alternateAttempt);
+    if (alternateAttempt.matched) winner = alternateAttempt;
+  }
+
+  // (c) Prembly ID-with-face — the selfie is matched against the FRESH
+  // NIBSS/NIMC portrait fetched by Prembly server-side for the verified ID.
+  if (!winner) {
+    const idFace = await verifyIdentityWithFace({ type: identity.type, number: identity.number, image: selfieBase64 });
+    const idFaceAttempt: FaceAttempt = {
+      source: "prembly_id_face",
+      label: `Prembly ${identity.type} + face`,
+      matched: idFace.status === "SUCCESS",
+      confidence: idFace.matchScore,
+      message: idFace.errorMessage ?? (idFace.status === "SUCCESS" ? "Face matches the official identity record" : undefined),
+      unavailable: premblyUnavailableMessage(idFace.errorMessage),
+    };
+    attempts.push(idFaceAttempt);
+    if (idFaceAttempt.matched) winner = idFaceAttempt;
+  }
+
+  // (d) CUSTOM in-house fallback — runs BEFORE any failure is recorded, so a
+  // genuine customer is not blocked when Prembly mis-verifies.
+  if (!winner) {
+    const portraitBuffer = await portraitToBuffer(portrait);
+    if (portraitBuffer) {
+      const custom = await customFaceMatch(selfieBuffer, portraitBuffer);
+      const customAttempt: FaceAttempt = {
+        source: "custom_local",
+        label: "Custom in-house face matcher",
+        matched: custom.available && custom.matched,
+        confidence: custom.confidence,
+        message: custom.detail,
+        unavailable: !custom.available,
+      };
+      attempts.push(customAttempt);
+      if (customAttempt.matched) winner = customAttempt;
+    }
+  }
+
+  const passed = winner !== undefined;
+  const definitiveVerdict = attempts.some((attempt) => attempt.matched || (attempt.matched === false && !attempt.unavailable));
+  const verificationUnavailable = !passed && !definitiveVerdict;
+  kyc.selfieImageData = selfieDataUri;
   if (passed) {
     kyc.checklist.liveness = true;
     kyc.livenessStatus = "SUCCESS";
@@ -2314,17 +2441,25 @@ router.post("/me/kyc/face-comparison/verify", requireAuth, livenessUpload.single
     setKycCategoryResult(kyc, "LIVENESS", "VERIFIED");
   } else {
     kyc.livenessStatus = "FAILED";
-    setKycCategoryResult(kyc, "LIVENESS", "REJECTED", comparison.errorMessage ?? comparison.message ?? "Face comparison did not pass — try again or request a manual review");
+    setKycCategoryResult(kyc, "LIVENESS", "REJECTED", verificationUnavailable
+      ? "Face verification service unavailable — all providers failed to answer"
+      : winner?.message ?? attempts.find((attempt) => !attempt.unavailable)?.message ?? "Face comparison did not pass — try again or request a manual review");
   }
   identityVerificationEvents.push({
     id: randomUUID(),
     kycCaseId: kyc.id,
-    provider: "prembly",
+    provider: winner?.source === "custom_local" ? "custom" : "prembly",
     verificationType: "LIVENESS",
-    providerReference: comparison.providerReference,
+    providerReference: winner?.source === "prembly_comparison" ? primary.providerReference : undefined,
     status: passed ? "SUCCESS" : "FAILED",
-    matchScore: comparison.confidence,
-    rawResponse: comparison.rawResponse,
+    matchScore: winner?.confidence,
+    rawResponse: {
+      ladder: "prembly→datauri→id_face→custom_local",
+      minimumConfidence: minConfidence,
+      customMatcherMaxDistance: env.CUSTOM_FACE_MATCH_MAX_DISTANCE,
+      attempts: attempts.map(({ raw: _raw, ...attempt }) => attempt),
+      premblyPrimaryRaw: primary.rawResponse,
+    },
     createdAt: new Date().toISOString(),
   });
   if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
@@ -2335,21 +2470,61 @@ router.post("/me/kyc/face-comparison/verify", requireAuth, livenessUpload.single
   res.json({
     ok: true,
     verificationStatus: passed ? "SUCCESS" : "FAILED",
+    verificationUnavailable,
     faceMatch: {
-      matched: comparison.matched,
-      confidence: comparison.confidence,
-      message: comparison.message,
+      matched: passed,
+      confidence: winner?.confidence,
+      message: winner?.message ?? (verificationUnavailable
+        ? "The face verification service is temporarily unavailable."
+        : "Face comparison did not pass"),
       minimumConfidence: minConfidence,
+      source: winner?.source,
+      attempts: attempts.map(({ raw: _raw, ...attempt }) => attempt),
+      unavailable: verificationUnavailable,
     },
-    providerConfigured: !comparison.errorMessage?.includes("not configured"),
-    error: comparison.errorMessage,
+    providerConfigured: Boolean(env.PREMBLY_API_KEY),
+    error: verificationUnavailable ? "The face verification service is temporarily unavailable. Please try again in a few minutes." : undefined,
     checklist: kyc.checklist,
-    selfieImageData,
+    selfieImageData: selfieDataUri,
     message: passed
-      ? "Your selfie matches your identity record — face verification complete."
-      : "We could not match your selfie to your identity record. Try again with better lighting, or submit it for manual review.",
+      ? winner?.source === "custom_local"
+        ? "Your selfie matches your identity record — verified with our in-house face matcher."
+        : "Your selfie matches your identity record — face verification complete."
+      : verificationUnavailable
+        ? "The face verification service is temporarily unavailable. Please try again in a few minutes."
+        : "We could not match your selfie to your identity record. Try again with better lighting, or submit it for manual review.",
     canRetry: !passed,
-    canRequestManualReview: !passed,
+    canRequestManualReview: !passed && !verificationUnavailable,
+  });
+});
+
+// LIVE HANDOFF SIGNAL — the desktop polls this endpoint while the customer
+// takes the selfie on their phone. Returns the current liveness state and the
+// latest automated attempt so the desktop reacts instantly (success, failure
+// with the provider message, or manual-review pending) without the phone
+// user having to report back manually.
+router.get("/me/kyc/face-comparison/status", requireAuth, (req: AuthRequest, res) => {
+  const kyc = kycCases.find((item) => item.userId === req.user!.id);
+  const lastAttempt = kyc
+    ? [...identityVerificationEvents].reverse().find((event) => event.kycCaseId === kyc.id && event.verificationType === "LIVENESS" && event.provider !== "manual")
+    : undefined;
+  res.json({
+    ok: true,
+    exists: Boolean(kyc),
+    livenessStatus: kyc?.livenessStatus ?? "NOT_STARTED",
+    checklistLiveness: kyc?.checklist.liveness ?? false,
+    categoryStatus: kyc?.categoryResults?.LIVENESS?.status ?? null,
+    reason: kyc?.categoryResults?.LIVENESS?.reason ?? null,
+    pendingManualReview: kyc?.livenessStatus === "PENDING_REVIEW",
+    lastAttempt: lastAttempt
+      ? {
+          status: lastAttempt.status,
+          matchScore: typeof lastAttempt.matchScore === "number" ? lastAttempt.matchScore : null,
+          provider: lastAttempt.provider,
+          at: lastAttempt.createdAt,
+        }
+      : null,
+    selfieImageData: kyc?.selfieImageData ?? null,
   });
 });
 

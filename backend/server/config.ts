@@ -47,6 +47,11 @@ const envSchema = z.object({
   // automatic pass. Anything below it (or an explicit non-match) routes the
   // customer to "try again" or "submit for manual review".
   PREMBLY_FACE_MATCH_MIN_CONFIDENCE: z.coerce.number().int().min(0).max(100).default(60),
+  // Custom in-house face matcher (face-api.js embeddings, backend/server/faceMatch.ts)
+  // used as the fallback when the Prembly ladder does not produce a match.
+  // Max Euclidean distance between 128-d face descriptors for a same-person
+  // verdict — face-api's standard is 0.6; we default slightly stricter.
+  CUSTOM_FACE_MATCH_MAX_DISTANCE: z.coerce.number().min(0.2).max(1.0).default(0.55),
   PREMBLY_CREDIT_REPORT_PATH: z.string().startsWith("/").default("/verification/credit_bureau/consumer/advance"),
   PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH: z.string().startsWith("/").default("/verification/credit_bureau/commercial/advance"),
   PREMBLY_CREDIT_DATA_MODE: z.enum(["BASIC", "ADVANCE"]).default("ADVANCE"),

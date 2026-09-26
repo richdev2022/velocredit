@@ -315,6 +315,8 @@ export interface FaceComparisonResult {
   providerReference?: string;
   rawResponse?: Record<string, unknown>;
   errorMessage?: string;
+  /** true ⇒ the call itself failed (network/HTTP/timeout) — the verdict is UNKNOWN, not "no match". */
+  unavailable?: boolean;
 }
 
 export async function compareFaces(input: FaceComparisonInput): Promise<FaceComparisonResult> {
@@ -325,8 +327,13 @@ export async function compareFaces(input: FaceComparisonInput): Promise<FaceComp
       30_000,
     );
     const rawStatus = (response as { status?: unknown }).status;
-    const responseCode = String((response as { response_code?: unknown }).response_code ?? "");
-    const matched = rawStatus === true || String(rawStatus ?? "").trim().toLowerCase() === "true" || responseCode === "00";
+    const responseCode = String((response as { response_code?: unknown }).response_code ?? "").trim();
+    // Docs: a match is { status: true, response_code: "00", message: "Fatch Match", confidence: N }.
+    // Only fall back to the response_code when the payload carries no explicit
+    // status — some failure envelopes still echo response_code "00".
+    const matched = rawStatus === undefined || rawStatus === null || rawStatus === ""
+      ? responseCode === "00"
+      : rawStatus === true || String(rawStatus).trim().toLowerCase() === "true";
     const confidenceRaw = (response as { confidence?: unknown }).confidence ?? (response as { data?: Record<string, unknown> }).data?.confidence;
     const confidence = typeof confidenceRaw === "number" ? confidenceRaw : typeof confidenceRaw === "string" && confidenceRaw.trim() !== "" && Number.isFinite(Number(confidenceRaw)) ? Number(confidenceRaw) : undefined;
     const message = String((response as { message?: unknown }).message ?? (response as { data?: Record<string, unknown> }).data?.message ?? "").trim() || undefined;
@@ -338,6 +345,7 @@ export async function compareFaces(input: FaceComparisonInput): Promise<FaceComp
       message: message ?? (matched ? "Face match" : "Face match did not pass"),
       providerReference,
       rawResponse: response,
+      unavailable: false,
     };
   } catch (error) {
     return {
@@ -345,6 +353,7 @@ export async function compareFaces(input: FaceComparisonInput): Promise<FaceComp
       status: "FAILED",
       message: "Face comparison unavailable",
       errorMessage: error instanceof Error ? error.message : "Face comparison unavailable",
+      unavailable: true,
     };
   }
 }

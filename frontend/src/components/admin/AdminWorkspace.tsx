@@ -622,7 +622,7 @@ function Kyc() {
                         <div className="mt-2 space-y-1.5">
                           {faceImages.events.slice(0, 6).map((event) => (
                             <div key={event.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] dark:border-slate-700 dark:bg-slate-800/50">
-                              <span className="font-semibold text-slate-700 dark:text-slate-200">{event.provider === "manual" ? "Manual review request" : "Prembly face comparison"} · {event.status.replace(/_/g, " ")}</span>
+                              <span className="font-semibold text-slate-700 dark:text-slate-200">{event.provider === "manual" ? "Manual review request" : event.provider === "custom" ? "In-house face matcher" : "Prembly face comparison"} · {event.status.replace(/_/g, " ")}</span>
                               <span className="text-slate-500 dark:text-slate-400">{typeof event.matchScore === "number" ? `confidence ${Math.round(event.matchScore)}% · ` : ""}{event.createdAt ? new Date(event.createdAt).toLocaleString() : "—"}</span>
                             </div>
                           ))}
