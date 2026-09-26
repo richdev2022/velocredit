@@ -1,6 +1,10 @@
 // ============================================================================
 // src/utils/qrcode.ts
-// Dependency-free QR Code encoder (byte mode, versions 1-10, EC levels L/M).
+// Dependency-free QR Code encoder (byte mode, versions 1-14, EC levels L/M).
+//
+// v11-14 exist because the face hand-off link (frontend origin + JWT) is
+// ~260 bytes — beyond the 213-byte ceiling of version 10 at EC M, which
+// silently blanked the QR canvas before.
 //
 // Why hand-rolled: the selfie hand-off link must be rendered as a QR code the
 // customer scans with their phone camera, and adding a QR npm dependency is
@@ -78,6 +82,10 @@ const RS_BLOCK_TABLE: number[][] = [
   /* v8  L */ [2, 121, 97], /* v8  M */ [2, 60, 38, 2, 61, 39],
   /* v9  L */ [2, 146, 116], /* v9  M */ [3, 58, 36, 2, 59, 37],
   /* v10 L */ [2, 86, 68, 2, 87, 69], /* v10 M */ [4, 69, 43, 1, 70, 44],
+  /* v11 L */ [4, 101, 81], /* v11 M */ [1, 80, 50, 4, 81, 51],
+  /* v12 L */ [2, 116, 92, 2, 117, 93], /* v12 M */ [6, 58, 36, 2, 59, 37],
+  /* v13 L */ [4, 133, 107], /* v13 M */ [8, 59, 37, 1, 60, 38],
+  /* v14 L */ [3, 145, 115, 1, 146, 116], /* v14 M */ [4, 64, 40, 5, 65, 41],
 ];
 
 interface RsBlock { totalCount: number; dataCount: number; }
@@ -154,6 +162,7 @@ function maskFunction(pattern: number): (i: number, j: number) => boolean {
 
 const PATTERN_POSITION_TABLE: number[][] = [
   [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50],
+  [6, 30, 54], [6, 32, 58], [6, 34, 62], [6, 26, 46, 66],
 ];
 
 /* ------------------------------ Core build ------------------------------- */
@@ -212,7 +221,7 @@ export interface QrMatrix { size: number; modules: boolean[][]; }
 export function debugCodewords(text: string, ecLevel: "L" | "M" = "M"): { version: number; codewords: number[] } {
   const bytes = new TextEncoder().encode(text);
   let version = 0;
-  for (let candidate = 1; candidate <= 10; candidate++) {
+  for (let candidate = 1; candidate <= 14; candidate++) {
     const blocks = rsBlocksFor(candidate, ecLevel);
     const dataCount = blocks.reduce((sum, block) => sum + block.dataCount, 0);
     if (4 + (candidate <= 9 ? 8 : 16) + bytes.length * 8 <= dataCount * 8) { version = candidate; break; }
@@ -223,7 +232,7 @@ export function debugCodewords(text: string, ecLevel: "L" | "M" = "M"): { versio
 
 /**
  * Encodes `text` (UTF-8, byte mode) into a QR matrix, automatically picking
- * the smallest version 1-10 that fits at the requested error-correction
+ * the smallest version 1-14 that fits at the requested error-correction
  * level and the mask pattern with the lowest penalty score.
  * `maskOverride` forces a specific mask 0-7 (used by the cross-verification
  * self-test against the reference implementation).
@@ -231,7 +240,7 @@ export function debugCodewords(text: string, ecLevel: "L" | "M" = "M"): { versio
 export function encodeQr(text: string, ecLevel: "L" | "M" = "M", maskOverride?: number): QrMatrix {
   const bytes = new TextEncoder().encode(text);
   let version = 0;
-  for (let candidate = 1; candidate <= 10; candidate++) {
+  for (let candidate = 1; candidate <= 14; candidate++) {
     const blocks = rsBlocksFor(candidate, ecLevel);
     const dataCount = blocks.reduce((sum, block) => sum + block.dataCount, 0);
     if (4 + (candidate <= 9 ? 8 : 16) + bytes.length * 8 <= dataCount * 8) { version = candidate; break; }

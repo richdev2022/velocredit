@@ -20,17 +20,29 @@ EC = {"L": qrcode.constants.ERROR_CORRECT_L, "M": qrcode.constants.ERROR_CORRECT
 
 # Payloads mirrored from qr_selftest.ts, in the same order — qr_selftest emits
 # entries grouped by payload, so we track a cursor instead of matching prefixes.
+jwt_like = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + "b" * 140 + "." + "c" * 43
+prefix = "https://velocredit.ng/face-verify?ht="
+
 full_payloads = [
     "HELLO",
     "https://velocredit.ng/face-verify?ht=abc123def456",
     "https://velocredit.ng/face-verify?ht=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
     "Velo Finance LTD — face verification handoff link test payload with spaces and punctuation; 0123456789.",
+    prefix + jwt_like,  # 258 chars → v12 M
+    prefix + "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + "b" * 120 + "." + "c" * 43,  # 238 chars → v11 M
+    prefix + jwt_like + "d" * 50,  # 308 chars → v13 M
+    prefix + jwt_like + "e" * 91,  # 349 chars → v14 M / v13 L
+    "z" + "f" * 429,  # 430 chars → v14 L (capacity 434)
 ]
 
-# qr_selftest.ts iterates payloads → ec → mask, in that order.
+# qr_selftest.ts iterates payloads → ec → mask, in that order, SKIPPING
+# EC-M for payloads beyond the v14-M capacity (362 bytes). Mirror that here.
+M_MAX = 362
 ordered = []
 for p in full_payloads:
     for ec in ("L", "M"):
+        if ec == "M" and len(p.encode("utf-8")) > M_MAX:
+            continue
         for mask in range(8):
             ordered.append((p, ec, mask))
 
