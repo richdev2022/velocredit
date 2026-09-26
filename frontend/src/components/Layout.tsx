@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import type { ReactNode } from "react";
 import Logo from "./Logo";
+import NotificationBell from "./NotificationBell";
 import { config } from "../utils/config";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
@@ -14,6 +15,9 @@ export default function Layout({ children, showHomeLink = true }: LayoutProps) {
   const { theme, toggleTheme } = useTheme();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  // The bell serves customers (user token) AND back-office staff (admin
+  // token in a separate sessionStorage key) — one header, both worlds.
+  const hasSession = Boolean(user) || Boolean(sessionStorage.getItem("velo:admin-token"));
 
   function handleLogout() {
     logout();
@@ -39,6 +43,7 @@ export default function Layout({ children, showHomeLink = true }: LayoutProps) {
             )}
             {user ? (
               <>
+                <NotificationBell />
                 <Link to={dashboardPath()} className="btn-ghost px-3 text-sm sm:px-4">
                   <span className="sm:hidden">Dashboard</span>
                   <span className="hidden sm:inline">Dashboard</span>
@@ -54,6 +59,7 @@ export default function Layout({ children, showHomeLink = true }: LayoutProps) {
               </>
             ) : (
               <>
+                {hasSession && <NotificationBell />}
                 <Link to="/account?mode=login#signin" className="btn-ghost px-3 text-sm sm:px-4">
                   <span className="sm:hidden">Login</span>
                   <span className="hidden sm:inline">Sign in</span>

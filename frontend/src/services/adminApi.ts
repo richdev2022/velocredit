@@ -135,7 +135,7 @@ export async function adminGetApplication(id: string): Promise<AdminApplicationD
     collateral: snapshot.collateral || {},
   };
 }
-export async function adminUpdateStatus(id: string, decision: "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED") { const response = await request<{ application: { status: string } }>(`/api/v1/admin/loans/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }); return { ok: true, status: response.application.status }; }
+export async function adminUpdateStatus(id: string, decision: "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED", note = "") { const response = await request<{ application: { status: string } }>(`/api/v1/admin/loans/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision, note }) }); return { ok: true, status: response.application.status }; }
 // The disburse/retry routes WAIT for Flutterwave's real final answer:
 //   ok: true  + final: true  -> transfer SUCCESSFUL
 //   ok: false + final: true  -> transfer FAILED (error = the provider's reason)
@@ -558,12 +558,14 @@ export async function adminResetKycCategory(userId: string, category: KycResetCa
 // Face-comparison evidence for the KYC review detail (government portrait +
 // captured selfie + verification events incl. confidence scores).
 export interface AdminKycFaceEvent { id: string; provider: string; verificationType: string; status: string; matchScore?: number; providerReference?: string; createdAt: string; }
+export interface AdminKycFaceDocument { id: string; documentType?: string; documentSlot?: string; fileName?: string; mimeType?: string; sizeBytes?: number; status?: string; createdAt?: string; previewUrl?: string; downloadUrl?: string; }
 export interface AdminKycFaceImages {
   ok: true;
   identityPhoto?: string;
   selfieImageData?: string;
   identityAvailable: boolean;
   selfieAvailable: boolean;
+  documents?: AdminKycFaceDocument[];
   events: AdminKycFaceEvent[];
 }
 export async function adminGetKycFaceImages(caseId: string): Promise<AdminKycFaceImages> {
@@ -612,6 +614,29 @@ export async function adminUpdateBanner(id: string, input: { isActive?: boolean;
 
 export async function adminDeleteBanner(id: string): Promise<{ ok: true; deleted: true }> {
   return request(`/api/v1/admin/banners/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Notifications: admin-sent broadcasts (in-app + optional email) and the
+// admin's own activity feed.
+// ---------------------------------------------------------------------------
+export interface AdminActivityNotification { id: string; userId: string; title: string; body: string; category: string; kind?: string; actionLabel?: string; actionUrl?: string; readAt?: string; createdAt: string; }
+export async function adminSendNotification(input: { userId?: string; targetRole?: "BORROWER" | "INVESTOR" | "ALL"; title: string; body: string; category?: string; actionUrl?: string; actionLabel?: string; sendEmail?: boolean }): Promise<{ ok: true; batchId: string; recipients: number; emailed: boolean }> {
+  return request("/api/v1/admin/notifications/send", { method: "POST", body: JSON.stringify(input) });
+}
+export interface AdminSentBroadcast { id: string; title: string; body: string; category: string; createdAt: string; sentBy: string; sentByName: string; recipients: number; emailed: boolean; }
+export async function adminListSentNotifications(): Promise<{ ok: true; broadcasts: AdminSentBroadcast[] }> {
+  return request("/api/v1/admin/notifications/sent");
+}
+export async function adminListNotificationUsers(opts: { role?: "BORROWER" | "INVESTOR"; search?: string } = {}): Promise<{ ok: true; users: Array<{ id: string; email: string; fullName: string; roles: string[]; isActive?: boolean }> }> {
+  const params = new URLSearchParams();
+  if (opts.role) params.set("role", opts.role);
+  params.set("limit", "200");
+  if (opts.search) params.set("search", opts.search);
+  return request(`/api/v1/admin/users?${params.toString()}`);
+}
+export async function adminGetActivityNotifications(limit = 50): Promise<{ ok: true; notifications: AdminActivityNotification[]; unreadCount: number; total: number }> {
+  return request(`/api/v1/me/activity-notifications?limit=${limit}`);
 }
 
 export const adminApi = {

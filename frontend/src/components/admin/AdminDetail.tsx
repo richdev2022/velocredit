@@ -46,6 +46,11 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
   const [bureauBusy, setBureauBusy] = useState(false);
   const [bureauMsg, setBureauMsg] = useState<string | null>(null);
   const [bureauModalOpen, setBureauModalOpen] = useState(false);
+  // Owner requirement: rejecting a loan application MUST capture a reason —
+  // the modal opens as soon as "Reject application" is selected and blocks
+  // the decision until a reason is entered (the backend enforces this too).
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -83,14 +88,23 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
     return () => window.clearInterval(interval);
   }, [applicationId]);
 
-  async function handleUpdateStatus() {
-    if (!app || !newStatus) return;
+  async function handleUpdateStatus(decisionOverride?: "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED", noteOverride?: string) {
+    if (!app) return;
+    const decision = decisionOverride ?? newStatus;
+    if (!decision) return;
+    // Selecting "Reject application" in the dropdown opens the reason prompt
+    // instead of applying the decision immediately.
+    if (!decisionOverride && decision === "REJECTED") {
+      setRejectionReason("");
+      setRejectModalOpen(true);
+      return;
+    }
     setSaving(true);
     setSaveMsg(null);
     try {
-      const res = await adminUpdateStatus(app.applicationId, newStatus as "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED");
+      const res = await adminUpdateStatus(app.applicationId, decision as "APPROVED" | "REJECTED" | "MORE_INFORMATION_REQUIRED", noteOverride ?? "");
       if (res.ok) {
-        setApp({ ...app, status: res.status });
+        setApp({ ...app, status: res.status, manualDecision: decision, manualNote: noteOverride ?? app.manualNote });
         setNewStatus("");
         setSaveMsg("Application updated to " + res.status.replace(/_/g, " "));
       } else {
@@ -276,6 +290,11 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
             }`}>
               {app.status.replace(/_/g, " ")}
             </span>
+            {app.status === "REJECTED" && app.manualNote && (
+              <span className="max-w-xs rounded-lg bg-red-50 border border-red-100 px-2.5 py-1.5 text-[11px] leading-snug text-red-700 dark:bg-red-900/20 dark:border-red-900 dark:text-red-300">
+                <strong className="font-semibold">Rejection reason:</strong> {app.manualNote}
+              </span>
+            )}
           </div>
         </div>
 
@@ -291,7 +310,7 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
                   <option value="REJECTED">Reject application</option>
                 </select>
               </div>
-              <button type="button" onClick={handleUpdateStatus} disabled={saving || !newStatus} className="btn-primary">
+              <button type="button" onClick={() => void handleUpdateStatus()} disabled={saving || !newStatus} className="btn-primary">
                 {saving ? "Saving…" : "Apply decision"}
               </button>
             </>
@@ -602,6 +621,54 @@ export default function AdminDetail({ applicationId, onBack }: AdminDetailProps)
         borrowerName={isPersonal ? app.personalInfo?.fullName : app.businessInfo?.businessName}
         applicationId={app.applicationId}
       />
+
+      {/* Rejection reason prompt — the decision cannot be applied without a
+          reason; it is emailed to the borrower and shown in their dashboard. */}
+      {rejectModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="reject-reason-title">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="reject-reason-title" className="text-base font-semibold text-velo-900 dark:text-white">Reject loan application</h2>
+              <button type="button" className="text-xs font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300" onClick={() => { setRejectModalOpen(false); setNewStatus(""); }}>
+                Cancel
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+              A reason is required before the application can be rejected. It will be emailed to the borrower, shown in their dashboard and included in their notification feed.
+            </p>
+            <textarea
+              value={rejectionReason}
+              onChange={(event) => setRejectionReason(event.target.value)}
+              rows={4}
+              maxLength={1000}
+              autoFocus
+              className="velo-input mt-3 w-full"
+              placeholder="e.g. The stated monthly income could not be verified against the submitted documents."
+            />
+            <div className="mt-1 flex justify-between text-[10px] text-slate-400">
+              <span>Minimum 3 characters</span>
+              <span>{rejectionReason.trim().length}/1000</span>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => { setRejectModalOpen(false); setNewStatus(""); }}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={rejectionReason.trim().length < 3 || saving}
+                onClick={async () => {
+                  const reason = rejectionReason.trim();
+                  setRejectModalOpen(false);
+                  await handleUpdateStatus("REJECTED", reason);
+                }}
+              >
+                {saving ? "Rejecting…" : "Confirm rejection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

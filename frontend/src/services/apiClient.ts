@@ -831,3 +831,30 @@ export async function recordConsent(userId: string, type: ConsentType): Promise<
 export async function getNotifications(limit = 50, offset = 0): Promise<{ ok: true; notifications: unknown[]; meta?: PaginationMeta; }> {
   return request(`/api/v1/notifications?limit=${limit}&offset=${offset}`);
 }
+
+// ---------------------------------------------------------------------------
+// Activity-feed notifications (the in-app bell on every dashboard).
+// ---------------------------------------------------------------------------
+export type ActivityCategory = "LOAN" | "KYC" | "WALLET" | "INVESTMENT" | "SYSTEM" | "BROADCAST";
+export interface ActivityNotification {
+  id: string;
+  userId: string;
+  title: string;
+  body: string;
+  category: ActivityCategory;
+  kind?: string;
+  actionLabel?: string;
+  actionUrl?: string;
+  readAt?: string;
+  actorUserId?: string;
+  relatedEntityType?: string;
+  relatedEntityId?: string;
+  createdAt: string;
+}
+export interface ActivityNotificationFeed { ok: true; notifications: ActivityNotification[]; unreadCount: number; total: number; }
+export async function getActivityNotifications(limit = 50): Promise<ActivityNotificationFeed> {
+  return request(`/api/v1/me/activity-notifications?limit=${limit}`);
+}
+export async function markActivityNotificationsRead(input: { ids?: string[]; all?: boolean } = {}): Promise<{ ok: true; updated: number }> {
+  return request("/api/v1/me/activity-notifications/read", { method: "POST", body: JSON.stringify(input) });
+}

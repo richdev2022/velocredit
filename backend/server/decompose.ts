@@ -22,6 +22,7 @@ import type {
   OtpChallenge,
   PasswordResetToken,
   Notification,
+  ActivityNotification,
   ProviderWebhookEvent,
   Consent,
   LoanProduct,
@@ -124,6 +125,7 @@ const allStoreKeys: StoreKey[] = [
   "passwordResetTokens", "notifications", "providerEvents", "consents", "loanProducts",
   "auditLogs", "adminLedger", "platformSettings", "investorWithdrawals",
   "disbursementAccounts", "loanDisbursements", "accountChangeRequests", "applicationDrafts",
+  "activityNotifications",
 ];
 
 export async function decomposeAndUpsertAll(
@@ -496,6 +498,28 @@ export async function decomposeAndUpsertAll(
         { snake: "sent_at", get: (row) => row.sentAt, asDate: true },
         { snake: "delivered_at", get: (row) => row.deliveredAt, asDate: true },
         { snake: "failed_at", get: (row) => row.failedAt, asDate: true },
+      ],
+    }));
+  }
+
+  if (has("activityNotifications") && Array.isArray(snapshot.activityNotifications)) {
+    add("activityNotifications", await upsertEntities<ActivityNotification>(db, snapshot.activityNotifications as readonly ActivityNotification[], {
+      table: "activity_notifications",
+      pkColumns: ["id"],
+      columns: [
+        { snake: "id", get: (row) => row.id },
+        { snake: "user_id", get: (row) => row.userId },
+        { snake: "title", get: (row) => row.title },
+        { snake: "body", get: (row) => row.body },
+        { snake: "category", get: (row) => row.category },
+        { snake: "kind", get: (row) => row.kind },
+        { snake: "action_label", get: (row) => row.actionLabel },
+        { snake: "action_url", get: (row) => row.actionUrl },
+        { snake: "read_at", get: (row) => row.readAt, asDate: true },
+        { snake: "actor_user_id", get: (row) => row.actorUserId },
+        { snake: "related_entity_type", get: (row) => row.relatedEntityType },
+        { snake: "related_entity_id", get: (row) => row.relatedEntityId },
+        { snake: "created_at", get: (row) => row.createdAt, asDate: true },
       ],
     }));
   }
