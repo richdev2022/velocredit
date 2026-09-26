@@ -163,7 +163,8 @@ export interface KycCase {
 export interface IdentityVerificationEvent {
   id: string;
   kycCaseId: string;
-  provider: "prembly" | "manual";
+  /** "custom" = the in-house face-embedding fallback (faceMatch.ts). */
+  provider: "prembly" | "manual" | "custom";
   verificationType: "BVN" | "NIN" | "LIVENESS" | "PASSPORT" | "ADDRESS" | "SIGNATURE";
   providerReference?: string;
   status: "PENDING" | "SUCCESS" | "FAILED" | "MANUAL_REVIEW" | "PENDING_REVIEW";

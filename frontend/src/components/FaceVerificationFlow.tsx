@@ -3,11 +3,12 @@ import QRCode from "./QRCode";
 import {
   claimFaceHandoffToken,
   createFaceHandoffSession,
-  getMyKyc,
+  getFaceComparisonStatus,
   requestFaceManualReview,
   verifyFaceComparison,
   type FaceComparisonResult,
 } from "../services/apiClient";
+import { resolvePhoneSync, type PhoneSyncState } from "../services/faceSync";
 
 /* ==========================================================================
    FaceVerificationFlow — the customer-facing face verification experience.
@@ -82,6 +83,12 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
   const [copied, setCopied] = useState(false);
   const [reviewNote, setReviewNote] = useState("");
   const [permissionDenied, setPermissionDenied] = useState(false);
+  /** Live desktop↔phone sync state while the QR panel is open. */
+  const [phoneSync, setPhoneSync] = useState<PhoneSyncState>({ kind: "waiting" });
+  const [phoneNote, setPhoneNote] = useState("");
+  const [phoneChecking, setPhoneChecking] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
+  const [phoneSelfie, setPhoneSelfie] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -156,28 +163,58 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
     if (pollRef.current !== null) { window.clearInterval(pollRef.current); pollRef.current = null; }
   }, []);
 
-  const checkPhoneVerification = useCallback(async () => {
+  // LIVE SIGNAL: asks the backend for the current verdict. Runs on a fast
+  // interval while the QR panel is open, and fires once more when the
+  // customer taps "I've completed verification on my phone" (explicit=true)
+  // — the click must verify the actual status, never assume it.
+  const checkPhoneVerification = useCallback(async (explicit = false) => {
+    if (explicit) setPhoneChecking(true);
     try {
-      const kyc = await getMyKyc();
-      if (kyc.checklist?.liveness) {
+      const status = await getFaceComparisonStatus();
+      setLastCheckedAt(new Date());
+      const next = resolvePhoneSync(status);
+      setPhoneSync(next);
+      if (next.kind === "success") {
         stopPolling();
+        setPhoneSelfie(status.selfieImageData ?? null);
+        setConfidence(status.lastAttempt?.matchScore ?? undefined);
         setResultMessage("Face verification completed on your phone.");
         setStep("success");
-        onVerified?.();
+        onVerified?.(status.selfieImageData ?? undefined);
+      } else if (next.kind === "manual-review") {
+        stopPolling();
+        setResultMessage("The selfie taken on your phone is now with our review team — you will be emailed with the outcome.");
+        setStep("manual-review-done");
+        onManualReviewRequested?.();
+      } else if (next.kind === "failed") {
+        setPhoneNote(explicit ? "The phone attempt did not pass — details below. Your phone can retry, or use this computer." : "");
+      } else {
+        setPhoneNote(explicit ? "No result from your phone yet — take the selfie there first, or use this computer." : "");
       }
-    } catch { /* transient network errors — keep polling */ }
-  }, [onVerified, stopPolling]);
+    } catch {
+      if (explicit) setPhoneNote("We couldn't reach the verification service — check your connection and try again.");
+    } finally {
+      if (explicit) setPhoneChecking(false);
+    }
+  }, [onManualReviewRequested, onVerified, stopPolling]);
 
   const openPhonePanel = useCallback(async () => {
     setHandoffBusy(true);
     setError("");
+    setPhoneSync({ kind: "waiting" });
+    setPhoneNote("");
+    setPhoneSelfie(null);
+    setLastCheckedAt(null);
     try {
       const session = await createFaceHandoffSession();
       setHandoffUrl(session.url);
       setCopied(false);
       setStep("phone");
       stopPolling();
-      pollRef.current = window.setInterval(() => void checkPhoneVerification(), 4000);
+      // First check immediately (catches a verification completed before the
+      // panel opened), then a fast live interval while the panel is open.
+      void checkPhoneVerification();
+      pollRef.current = window.setInterval(() => void checkPhoneVerification(), 2500);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create the phone verification link. Continue on this device instead.");
     } finally {
@@ -280,6 +317,8 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
     setError("");
     setResultMessage("");
     setConfidence(undefined);
+    setPhoneSync({ kind: "waiting" });
+    setPhoneNote("");
     setStep("camera");
   }, []);
 
@@ -293,6 +332,9 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
     setResultMessage("");
     setConfidence(undefined);
     setCountdown(null);
+    setPhoneSync({ kind: "waiting" });
+    setPhoneNote("");
+    setPhoneSelfie(null);
   }, [stopCamera, stopPolling, stopSpeaking]);
 
   // Auto-close after a verified success (desktop only — standalone keeps its panel).
@@ -432,15 +474,41 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
               </div>
             </div>
 
-            <div className="mt-4 flex items-center justify-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-              <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
-              Waiting for your phone verification…
+            {/* LIVE SIGNAL — reflects the phone's attempts the moment the
+                backend records them, and keeps listening across retries. */}
+            <div className="mt-4">
+              {phoneSync.kind === "failed" ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-900/20">
+                  <p className="text-xs font-bold text-amber-800 dark:text-amber-200">Phone attempt didn't pass{typeof phoneSync.confidence === "number" ? ` — confidence ${Math.round(phoneSync.confidence)}%` : ""}</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">{phoneSync.message}</p>
+                  <p className="mt-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300">You can retake the selfie on your phone — this page keeps listening — or verify here instead.</p>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  {phoneSync.kind === "manual-review" ? (
+                    <span className="font-semibold">Your phone submitted the case for manual review.</span>
+                  ) : (
+                    <>
+                      <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
+                      Waiting for your phone verification…
+                    </>
+                  )}
+                </div>
+              )}
+              {lastCheckedAt && phoneSync.kind !== "success" && (
+                <p className="mt-1.5 text-center text-[10px] text-slate-400">
+                  {phoneSync.kind === "failed" ? "Live: last checked" : "Auto-refreshing"} {lastCheckedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </p>
+              )}
+              {phoneNote && phoneSync.kind !== "failed" && (
+                <p className="mt-2 rounded-lg bg-velo-50 px-3 py-2 text-center text-[11px] font-semibold text-velo-700 dark:bg-velo-900/40 dark:text-velo-300">{phoneNote}</p>
+              )}
             </div>
 
             {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 dark:bg-red-900/20 dark:text-red-300">{error}</p>}
 
             <div className="mt-5 space-y-2.5">
-              <button type="button" className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-bold" onClick={() => void checkPhoneVerification()}>I've completed verification on my phone</button>
+              <button type="button" className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-bold" disabled={phoneChecking} onClick={() => void checkPhoneVerification(true)}>{phoneChecking ? "Checking…" : "I've completed verification on my phone"}</button>
               <div className="flex gap-2.5">
                 <button type="button" className="btn-secondary flex-1 rounded-xl px-4 py-2.5 text-xs font-bold" onClick={resetToCamera}>Use this computer instead</button>
                 <button type="button" className="btn-ghost flex-1 rounded-xl px-4 py-2.5 text-xs font-bold" onClick={closeFlow}>Cancel</button>
@@ -543,11 +611,14 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
             <span className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/40">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="#059669" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </span>
+            {(capturedImage?.dataUrl || phoneSelfie) && (
+              <img src={(capturedImage?.dataUrl || phoneSelfie) as string} alt="Verified selfie" className="h-28 w-28 rounded-2xl border-2 border-emerald-200 object-cover dark:border-emerald-800" />
+            )}
             <div>
               <p className="text-base font-bold text-velo-900 dark:text-white">Face verification complete</p>
               <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{resultMessage}{typeof confidence === "number" ? ` Match confidence: ${Math.round(confidence)}%.` : ""}</p>
             </div>
-            {standalone && <p className="rounded-lg bg-velo-50 px-3 py-2 text-xs font-semibold text-velo-700 dark:bg-velo-900/40 dark:text-velo-300">You can close this page and tap "I've completed verification on my phone" on your computer.</p>}
+            {standalone && <p className="rounded-lg bg-velo-50 px-3 py-2 text-xs font-semibold text-velo-700 dark:bg-velo-900/40 dark:text-velo-300">Your computer updates automatically — you can close this page now.</p>}
           </div>
         )}
 

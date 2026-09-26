@@ -400,7 +400,17 @@ export async function verifyMyLiveness(file: File, input?: { idType?: "BVN" | "N
 export interface FaceComparisonResult {
   ok: true;
   verificationStatus: "SUCCESS" | "FAILED" | "PENDING_ADMIN_REVIEW";
-  faceMatch?: { matched: boolean; confidence?: number; message?: string; minimumConfidence?: number };
+  verificationUnavailable?: boolean;
+  faceMatch?: {
+    matched: boolean;
+    confidence?: number;
+    message?: string;
+    minimumConfidence?: number;
+    /** Which ladder attempt produced the verdict (custom ⇒ in-house fallback won). */
+    source?: "prembly_comparison" | "prembly_comparison_datauri" | "prembly_id_face" | "custom_local";
+    attempts?: Array<{ source: string; label: string; matched: boolean; confidence?: number; message?: string; unavailable: boolean }>;
+    unavailable?: boolean;
+  };
   providerConfigured?: boolean;
   error?: string;
   checklist: KycChecklist;
@@ -409,6 +419,27 @@ export interface FaceComparisonResult {
   canRetry?: boolean;
   canRequestManualReview?: boolean;
   code?: string;
+}
+
+export interface FaceComparisonStatus {
+  ok: true;
+  exists: boolean;
+  livenessStatus: string;
+  checklistLiveness: boolean;
+  categoryStatus: string | null;
+  reason: string | null;
+  pendingManualReview: boolean;
+  lastAttempt: { status: string; matchScore: number | null; provider: string; at: string } | null;
+  selfieImageData: string | null;
+}
+
+/**
+ * LIVE HANDOFF SIGNAL — polled by the desktop while the customer takes the
+ * selfie on their phone; returns the current liveness verdict (or the latest
+ * failure with its provider message) the moment the backend has one.
+ */
+export async function getFaceComparisonStatus(): Promise<FaceComparisonStatus> {
+  return request("/api/v1/me/kyc/face-comparison/status");
 }
 
 /** Uploads the camera-captured selfie; the backend compares it against the BVN/NIN government portrait. */
