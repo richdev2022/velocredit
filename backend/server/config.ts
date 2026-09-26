@@ -80,6 +80,7 @@ const envSchema = z.object({
   LOAN_AUTO_ELIGIBLE_SCORE_MIN: z.coerce.number().int().min(300).max(850).default(650),
   LOAN_AUTO_REVIEW_SCORE_MIN: z.coerce.number().int().min(300).max(850).default(550),
   LOAN_REMINDER_DAYS: z.string().default("7,3,0"),
+  INVESTMENT_MATURITY_REMINDER_DAYS: z.string().default("7,3,0"),
   BREVO_API_URL: z.string().url().default("https://api.brevo.com/v3"),
   BREVO_API_KEY: z.string().optional(),
   BREVO_SENDER_EMAIL: z.string().email().optional(),

@@ -97,6 +97,8 @@ import {
   type ActivityNotification,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
+import { pushActivityNotification, notifyStaffActivity, activeStaffMembers } from "./notify.js";
+import { settleLoanRepayment, markRepaymentFailed, reconcileStalePendingRepayments } from "./repayments.js";
 import { env } from "./config.js";
 import { sql } from "./db.js";
 import { uploadPrivateDocument } from "./storage/googleDrive.js";
@@ -129,7 +131,7 @@ import {
 } from "./providers/flutterwave.js";
 import { verifyBvn, verifyNin, verifyIdentityWithFace, compareFaces } from "./providers/prembly.js";
 import { customFaceMatch } from "./faceMatch.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, kycManualReviewEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail, notificationBroadcastEmail } from "./email.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, kycManualReviewEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail, notificationBroadcastEmail, investmentCreatedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult, PlatformAnnouncement, PlatformBanner, Document as StoreDocument } from "./store.js";
 
 const router = Router();
@@ -476,86 +478,8 @@ async function notifyKycBlocked(user: { id: string; email: string; fullName: str
   });
 }
 
-// ---------------------------------------------------------------------------
-// Activity feed (the in-app notification bell). One durable record per
-// platform event that concerns a user, each carrying a deep-link so the CTA
-// opens the exact page (loan detail, KYC, wallet…). Fire-and-forget safe:
-// push failures must never break the business transaction.
-// ---------------------------------------------------------------------------
-const MAX_ACTIVITY_NOTIFICATIONS_PER_USER = 300;
-
-function pushActivityNotification(input: {
-  userId: string;
-  title: string;
-  body: string;
-  category: ActivityNotification["category"];
-  kind?: string;
-  actionLabel?: string;
-  actionUrl?: string;
-  actorUserId?: string;
-  relatedEntityType?: string;
-  relatedEntityId?: string;
-}): ActivityNotification | undefined {
-  try {
-    if (!input.userId || !users.some((user) => user.id === input.userId)) return undefined;
-    const now = new Date().toISOString();
-    const notification: ActivityNotification = {
-      id: randomUUID(),
-      userId: input.userId,
-      title: input.title.slice(0, 160),
-      body: input.body.slice(0, 1200),
-      category: input.category,
-      kind: input.kind,
-      actionLabel: input.actionLabel,
-      actionUrl: input.actionUrl,
-      actorUserId: input.actorUserId,
-      relatedEntityType: input.relatedEntityType,
-      relatedEntityId: input.relatedEntityId,
-      createdAt: now,
-    };
-    activityNotifications.push(notification);
-    // Keep the feed bounded — drop the oldest rows beyond the per-user cap.
-    const userRows = indexes.activityNotificationsByUserId.get(input.userId);
-    if (userRows && userRows.length > MAX_ACTIVITY_NOTIFICATIONS_PER_USER) {
-      const overflow = userRows
-        .slice()
-        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
-        .slice(0, userRows.length - MAX_ACTIVITY_NOTIFICATIONS_PER_USER);
-      const overflowIds = new Set(overflow.map((row) => row.id));
-      for (let i = activityNotifications.length - 1; i >= 0; i -= 1) {
-        if (overflowIds.has(activityNotifications[i].id)) activityNotifications.splice(i, 1);
-      }
-    }
-    return notification;
-  } catch (error) {
-    console.warn("[routes] pushActivityNotification failed (non-fatal):", error);
-    return undefined;
-  }
-}
-
-/** Every active back-office staff member (administrators + loan managers). */
-function activeStaffMembers(): Array<{ id: string; email: string; fullName: string }> {
-  return users
-    .filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || user.roles.includes("LOAN_MANAGER")))
-    .map((user) => ({ id: user.id, email: user.email, fullName: user.fullName }));
-}
-
-/** Push one activity notification to every staff member (in-app bell). */
-function notifyStaffActivity(input: {
-  title: string;
-  body: string;
-  category: ActivityNotification["category"];
-  kind?: string;
-  actionLabel?: string;
-  actionUrl?: string;
-  actorUserId?: string;
-  relatedEntityType?: string;
-  relatedEntityId?: string;
-}): void {
-  for (const staff of activeStaffMembers()) {
-    pushActivityNotification({ ...input, userId: staff.id });
-  }
-}
+// Activity feed helpers live in ./notify.js (shared with the Flutterwave
+// webhook in index.ts, the investment maturity sweep and the reminder sweeps).
 
 // ---------------------------------------------------------------------------
 // Profile hydration — the customer already provided their profile details
@@ -3466,6 +3390,92 @@ router.get("/payments/flutterwave/return", async (req, res) => {
   let txRef = tx_ref;
   let providerTxId = transaction_id;
   let providerRef = flw_ref;
+
+  // --- Loan repayment checkout return ---------------------------------------
+  // Repayment txRefs ("VELO-REPAY-…") never match a wallet DEPOSIT row, so
+  // without this branch the borrower was bounced to the investor dashboard
+  // with "funding=failed" and the repayment stayed PENDING forever unless the
+  // webhook happened to arrive. Verify against the provider, settle through
+  // the shared implementation (idempotent — the webhook may already have
+  // settled it) and send the borrower back to their dashboard.
+  if (txRef && txRef.startsWith("VELO-REPAY-")) {
+    const borrowerRedirect = (ok: boolean, message?: string) => {
+      const params = new URLSearchParams();
+      params.set("repayment", ok ? "success" : "failed");
+      if (txRef) params.set("tx_ref", txRef);
+      if (message) params.set("message", message.slice(0, 200));
+      res.redirect(302, `${env.API_ORIGIN}/borrower?${params.toString()}`);
+    };
+    try {
+      const repaymentRecord = repayments.find((item) => item.txRef === txRef);
+      if (!repaymentRecord) {
+        borrowerRedirect(false, "We could not find this repayment reference. Please contact support.");
+        return;
+      }
+      if (repaymentRecord.status === "SUCCESSFUL") {
+        borrowerRedirect(true, "Your repayment was confirmed successfully");
+        return;
+      }
+      let settledFromReturn = false;
+      let definitiveFailure = false;
+      if (providerTxId) {
+        try {
+          const verification = await verifyTransactionWithRetry(providerTxId, 3, 1000);
+          const fwData = verification.data ?? {};
+          const verifiedTxRef = String(fwData.tx_ref ?? txRef);
+          const verifiedCurrency = String(fwData.currency ?? "NGN").toUpperCase();
+          const verifiedAmountMinor = Math.round(Number(fwData.amount ?? 0) * 100);
+          if (verification.settled && verifiedTxRef === txRef && verifiedCurrency === "NGN" && verifiedAmountMinor === Math.round(Number(repaymentRecord.amountNaira ?? 0) * 100)) {
+            settledFromReturn = true;
+          } else if (verification.status === "failed") {
+            definitiveFailure = true;
+          }
+        } catch (_verr) {
+          // Verification unreachable — fall through to the reconcile sweep,
+          // which retries by reference every 5 minutes.
+        }
+      } else if (String(status ?? "").toLowerCase() === "successful") {
+        // No transaction_id in the redirect: optimistically verify by
+        // reference; if the provider cannot be reached the sweep will finish
+        // the job shortly.
+        try {
+          const verification = await verifyTransactionByReference(txRef);
+          const fwData = (verification?.data ?? {}) as Record<string, unknown>;
+          const providerStatus = String(fwData.status ?? verification?.status ?? "").toLowerCase();
+          const verifiedCurrency = String(fwData.currency ?? "NGN").toUpperCase();
+          const verifiedAmountMinor = Math.round(Number(fwData.amount ?? 0) * 100);
+          if ((providerStatus === "successful" || providerStatus === "success") && verifiedCurrency === "NGN" && verifiedAmountMinor === Math.round(Number(repaymentRecord.amountNaira ?? 0) * 100)) {
+            settledFromReturn = true;
+          } else if (["failed", "cancelled", "canceled", "reversed"].includes(providerStatus)) {
+            definitiveFailure = true;
+          }
+        } catch (_verr) {
+          // Same fallthrough — the reconcile sweep retries.
+        }
+      }
+      if (settledFromReturn) {
+        const settled = settleLoanRepayment({
+          txRef,
+          providerReference: providerTxId ?? providerRef ?? txRef,
+          providerTransactionId: providerTxId,
+          source: "RETURN_REDIRECT",
+        });
+        borrowerRedirect(settled.ok, settled.ok ? "Your repayment was confirmed successfully" : (settled.reason ?? "Unable to confirm repayment"));
+        return;
+      }
+      if (definitiveFailure) {
+        markRepaymentFailed(txRef, "Provider reported payment failed at checkout return");
+        borrowerRedirect(false, "The payment was not completed. Please try again from the loan page.");
+        return;
+      }
+      borrowerRedirect(false, "Waiting for payment confirmation — your dashboard will update shortly.");
+      return;
+    } catch (_repayErr) {
+      borrowerRedirect(false, "Something went wrong while confirming your repayment. Please check your dashboard shortly.");
+      return;
+    }
+  }
+
   const safeRedirect = (ok: boolean, message: string) => {
     const base = `${env.API_ORIGIN}/investor`;
     const params = new URLSearchParams();
@@ -3633,6 +3643,40 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), async
     createdAt: startsAt.toISOString(),
   });
   if (!(await persistMutation(res))) return;
+  // Notifications: confirm the investment to the investor (email + bell) and
+  // put it on every staff member's feed. Failures are non-fatal — the
+  // investment itself is already recorded.
+  pushActivityNotification({
+    userId: investment.investorId,
+    title: "Investment started",
+    body: `₦${Number(investment.amountNaira).toLocaleString("en-NG")} is now locked in for ${investment.tenureDays} days at ${investment.annualRatePercent}% p.a. Expected earnings ₦${Number(investment.expectedEarningsNaira ?? 0).toLocaleString("en-NG")} — matures ${maturesAt.toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })}.`,
+    category: "INVESTMENT",
+    kind: "INVESTMENT_CREATED",
+    actionLabel: "Open investments",
+    actionUrl: "/investor",
+    relatedEntityType: "INVESTMENT",
+    relatedEntityId: investment.id,
+  });
+  void sendEmail({ to: user.email, name: user.fullName, ...investmentCreatedEmail({
+    investorName: user.fullName,
+    investmentId: investment.id,
+    amountNaira: Number(investment.amountNaira),
+    annualRatePercent: Number(investment.annualRatePercent),
+    tenureDays: Number(investment.tenureDays),
+    maturityDate: maturesAt.toLocaleDateString("en-NG", { day: "numeric", month: "long", year: "numeric" }),
+    expectedEarningsNaira: Number(investment.expectedEarningsNaira ?? 0),
+  }) }).catch(() => undefined);
+  notifyStaffActivity({
+    title: "New investment created",
+    body: `${user.fullName} invested ₦${Number(investment.amountNaira).toLocaleString("en-NG")} for ${investment.tenureDays} days at ${investment.annualRatePercent}% p.a. (expected earnings ₦${Number(investment.expectedEarningsNaira ?? 0).toLocaleString("en-NG")}).`,
+    category: "INVESTMENT",
+    kind: "INVESTMENT_CREATED_STAFF",
+    actionLabel: "Open investor",
+    actionUrl: `/admin#view=detail&id=${encodeURIComponent(user.id)}`,
+    relatedEntityType: "INVESTMENT",
+    relatedEntityId: investment.id,
+    actorUserId: user.id,
+  });
   res.status(201).json({ ok: true, investment });
 });
 
@@ -4879,6 +4923,12 @@ router.post("/borrower/applications/:id/submit", requireAuth, requireRole("BORRO
 });
 
 router.get("/borrower/loans", requireAuth, requireRole("BORROWER"), (req: AuthRequest, res) => {
+  // Self-healing for repayment confirmations: if BOTH the checkout redirect
+  // and the provider webhook were missed, a paid repayment would hang in
+  // "PENDING PROVIDER CONFIRMATION" forever. Re-verify stale ones against the
+  // provider (idempotent) and settle/FAIL them — fire-and-forget, the listing
+  // never blocks. Results appear on the caller's next refresh.
+  void reconcileStalePendingRepayments().catch((err) => console.error("[routes] repayment reconciliation sweep failed:", err));
   const userLoans = indexes.loansByBorrowerId.get(req.user!.id) ?? [];
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
   const offset = Math.max(0, Number(req.query.offset) || 0);
@@ -4905,6 +4955,7 @@ router.get("/borrower/loans", requireAuth, requireRole("BORROWER"), (req: AuthRe
 });
 
 router.get("/borrower/loans/:loanId", requireAuth, requireRole("BORROWER"), async (req: AuthRequest, res) => {
+  void reconcileStalePendingRepayments().catch((err) => console.error("[routes] repayment reconciliation sweep failed:", err));
   const loan = loans.find((item) => item.id === req.params.loanId && item.borrowerId === req.user!.id);
   if (!loan) {
     res.status(404).json({ ok: false, error: "Loan not found" });
@@ -7361,6 +7412,17 @@ async function executeLoanTransferAttempt(params: {
           actorUserId: req.user?.id,
         });
       }
+      notifyStaffActivity({
+        title: "Loan disbursement confirmed",
+        body: `₦${amountNaira.toLocaleString("en-NG")} was disbursed to ${borrower?.fullName ?? "a borrower"} (application ${application?.applicationId ?? loan.id}). The loan is now in repayment.`,
+        category: "LOAN",
+        kind: "LOAN_DISBURSED_STAFF",
+        actionLabel: "Open loan",
+        actionUrl: `/admin#view=detail&id=${encodeURIComponent(application?.applicationId ?? loan.id)}`,
+        relatedEntityType: "LOAN",
+        relatedEntityId: loan.id,
+        actorUserId: req.user?.id,
+      });
       schedulePersist();
       return { outcome: "SUCCESSFUL", message: `Disbursement successful. ₦${amountNaira.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} sent to ${account.accountName ?? "the borrower"} (${accountLabel}).` };
     }
@@ -7446,6 +7508,16 @@ async function reconcileStaleDisbursements(): Promise<void> {
         kind: "LOAN_DISBURSED",
         actionLabel: "View loan",
         actionUrl: `/borrower/loans/${encodeURIComponent(loan.id)}`,
+        relatedEntityType: "LOAN",
+        relatedEntityId: loan.id,
+      });
+      notifyStaffActivity({
+        title: "Loan disbursement confirmed",
+        body: `₦${Number(row.amountNaira ?? 0).toLocaleString("en-NG")} was disbursed to ${users.find((user) => user.id === loan.borrowerId)?.fullName ?? "a borrower"} (reconciled via Flutterwave). The loan is now in repayment.`,
+        category: "LOAN",
+        kind: "LOAN_DISBURSED_STAFF",
+        actionLabel: "Open loan",
+        actionUrl: `/admin#view=detail&id=${encodeURIComponent(application?.applicationId ?? loan.id)}`,
         relatedEntityType: "LOAN",
         relatedEntityId: loan.id,
       });
@@ -8303,6 +8375,19 @@ router.post("/admin/payouts/:payoutId/approve", requireAuth, requireRole("ADMIN"
     payout.retryCount = (payout.retryCount ?? 0) + 1;
     payout.lastAttemptAt = new Date().toISOString();
     payout.updatedAt = payout.lastAttemptAt;
+    // Investor bell: the held payout was just released — the money is moving.
+    pushActivityNotification({
+      userId: payout.userId,
+      title: payout.payoutType === "INVESTMENT_MATURITY" ? "Maturity payout approved — on its way" : "Payout approved — on its way",
+      body: `₦${Number(payout.amountNaira ?? 0).toLocaleString("en-NG")} has been approved and sent to your verified bank account. You'll receive a confirmation once the bank settles it.`,
+      category: "INVESTMENT",
+      kind: "INVESTMENT_PAYOUT_APPROVED",
+      actionLabel: "Open investments",
+      actionUrl: "/investor",
+      relatedEntityType: "PAYOUT",
+      relatedEntityId: payout.id,
+      actorUserId: (req as AuthRequest).user?.id,
+    });
     if (!(await persistMutation(res))) return;
     res.status(202).json({ ok: true, payout, transfer });
   } catch (error) {

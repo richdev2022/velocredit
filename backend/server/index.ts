@@ -15,7 +15,7 @@ import {
 } from "./providers.js";
 import { ensureDatabaseSchema } from "./migrate.js";
 import { runInvestmentMaturitySweep } from "./investments.js";
-import { runRepaymentReminderSweep } from "./reminders.js";
+import { runInvestmentMaturityReminderSweep, runRepaymentReminderSweep } from "./reminders.js";
 import { startReconciliationCron } from "./reconciliation.js";
 import { startCreditReconciliationCron } from "./creditReconciliation.js";
 import {
@@ -44,7 +44,9 @@ import {
 import { initializeStore, persistStore, seedInvestmentPlans, seedLoanProducts, seedDefaultEngagement, findOrCreateKycCase, kycCases, identityVerificationEvents } from "./store.js";
 import type { IdentityVerificationEvent } from "./store.js";
 import { markKycChecklistComplete } from "./auth.js";
-import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail, loanDisbursedEmail, loanRepaymentEmail, loanRepaymentAdminEmail } from "./email.js";
+import { sendEmail, investorWalletFundedEmail, investorEarningsCreditedEmail, loanDisbursedEmail } from "./email.js";
+import { settleLoanRepayment, markRepaymentFailed } from "./repayments.js";
+import { pushActivityNotification, notifyMoneyTeamActivity } from "./notify.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { runSeedGoogleSheets } from "./seedGoogleSheets.js";
 import { bootstrapEnvironmentAdministrator } from "./bootstrap.js";
@@ -148,11 +150,41 @@ app.post(
         });
         if (withdrawal) {
           const now = new Date().toISOString();
+          const wasAlreadySuccessful = withdrawal.status === "SUCCESSFUL";
           withdrawal.status = "SUCCESSFUL";
           withdrawal.providerReference = providerReference;
           withdrawal.processedAt = now;
           withdrawal.updatedAt = now;
           withdrawal.error = undefined;
+          if (!wasAlreadySuccessful) {
+            // Settlement bells: the investor learns the money landed; staff
+            // see the completed transfer in their feed (money movement).
+            const investor = users.find((u) => u.id === withdrawal.investorId);
+            if (investor) {
+              pushActivityNotification({
+                userId: investor.id,
+                title: "Withdrawal completed",
+                body: `Your withdrawal of ₦${Number(withdrawal.amountNaira ?? 0).toLocaleString("en-NG")} (ref ${withdrawal.id.slice(0, 8)}…) has settled in your bank account.`,
+                category: "WALLET",
+                kind: "WITHDRAWAL_SETTLED",
+                actionLabel: "Open wallet",
+                actionUrl: "/investor",
+                relatedEntityType: "WITHDRAWAL",
+                relatedEntityId: withdrawal.id,
+              });
+            }
+            notifyMoneyTeamActivity({
+              title: "Investor withdrawal settled",
+              body: `Withdrawal ${withdrawal.id.slice(0, 8)}… of ₦${Number(withdrawal.amountNaira ?? 0).toLocaleString("en-NG")} for ${investor?.fullName ?? "an investor"} settled with the provider.`,
+              category: "WALLET",
+              kind: "WITHDRAWAL_SETTLED_STAFF",
+              actionLabel: "Open investor wallet",
+              actionUrl: investor ? `/admin#view=detail&id=${encodeURIComponent(investor.id)}` : "/admin",
+              relatedEntityType: "WITHDRAWAL",
+              relatedEntityId: withdrawal.id,
+              actorUserId: withdrawal.investorId,
+            });
+          }
         }
         const walletTx = walletTransactions.find((t) => t.txRef === txRef && t.type === "DEPOSIT");
         const transactionId = String(data.id ?? "");
@@ -195,6 +227,30 @@ app.post(
                     sentAt: emailResult.sent ? new Date().toISOString() : undefined,
                   });
                 }).catch(() => undefined);
+                // Bell notifications for the wallet funding (webhook path —
+                // the redirect/verify paths push their own in routes.ts).
+                pushActivityNotification({
+                  userId: settled.user.id,
+                  title: "Wallet funded",
+                  body: `₦${Math.round(walletTx.amountMinor / 100).toLocaleString("en-NG")} was credited to your wallet (ref ${txRef}). Your available balance is now ₦${balanceNaira.toLocaleString("en-NG")}.`,
+                  category: "WALLET",
+                  kind: "WALLET_FUNDED",
+                  actionLabel: "Open wallet",
+                  actionUrl: "/investor",
+                  relatedEntityType: "WALLET_TRANSACTION",
+                  relatedEntityId: walletTx.id,
+                });
+                notifyMoneyTeamActivity({
+                  title: "Investor wallet funded",
+                  body: `${settled.user.fullName}'s wallet was credited ₦${Math.round(walletTx.amountMinor / 100).toLocaleString("en-NG")} (ref ${txRef}). New available balance: ₦${balanceNaira.toLocaleString("en-NG")}.`,
+                  category: "WALLET",
+                  kind: "WALLET_FUNDED_STAFF",
+                  actionLabel: "Open investor",
+                  actionUrl: `/admin#view=detail&id=${encodeURIComponent(settled.user.id)}`,
+                  relatedEntityType: "WALLET_TRANSACTION",
+                  relatedEntityId: walletTx.id,
+                  actorUserId: settled.user.id,
+                });
               }
             }
           } catch (error) {
@@ -202,112 +258,20 @@ app.post(
           }
         }
 
+        // Repayment settlement: single shared implementation with the
+        // checkout redirect + reconcile sweep (see server/repayments.ts) —
+        // idempotent, applies the loan balance and notifies the borrower
+        // (email + bell) and every admin/loan manager (email + bell).
         const repayment = repayments.find((p) => p.txRef === txRef);
         if (repayment && repayment.status !== "SUCCESSFUL") {
-          const repaymentAmountMinor = Math.round(Number(repayment.amountNaira ?? 0) * 100);
-          appendAdminLedger({
-            entryType: "LOAN_REPAYMENT_IN",
-            referenceId: repayment.id,
-            borrowerId: repayment.borrowerId,
-            loanId: repayment.loanId,
-            amountMinor: repaymentAmountMinor,
-            direction: "CREDIT",
-            description: `Admin ledger credit for loan repayment via flutterwave txRef=${txRef}`,
-            metadata: {
-              provider: "flutterwave",
-              providerReference,
-              providerTransactionId: String(data.id ?? providerReference),
-              txRef,
-            },
+          const settledRepayment = settleLoanRepayment({
+            txRef,
+            providerReference,
+            providerTransactionId: String(data.id ?? providerReference),
+            source: "WEBHOOK",
           });
-          repayment.status = "SUCCESSFUL";
-          repayment.providerReference = providerReference;
-          repayment.verifiedAt = new Date().toISOString();
-          repayment.updatedAt = repayment.verifiedAt;
-          const loan = loans.find((l) => l.id === repayment.loanId);
-          if (loan) {
-            const dueAt = loan.dueAt ? new Date(loan.dueAt) : null;
-            const onTime = dueAt ? new Date(repayment.verifiedAt) <= dueAt : true;
-            repayment.onTime = onTime;
-            const maxOutstandingPrincipal = Number(
-              loan.outstandingPrincipalNaira ?? loan.principalNaira ?? Number(loan.outstandingNaira ?? loan.totalRepaymentNaira ?? 0)
-            );
-            const principalPortion = Math.min(
-              maxOutstandingPrincipal,
-              Number(repayment.amountNaira)
-            );
-            const interestPortion = Math.max(
-              0,
-              Number(repayment.amountNaira) - principalPortion
-            );
-            repayment.principalNaira = Math.round(principalPortion * 100) / 100;
-            repayment.interestNaira = Math.round(interestPortion * 100) / 100;
-            loan.outstandingNaira =
-              Math.round(
-                Math.max(
-                  0,
-                  Number(loan.outstandingNaira ?? loan.totalRepaymentNaira ?? 0) -
-                    Number(repayment.amountNaira)
-                ) * 100
-              ) / 100;
-            loan.outstandingPrincipalNaira = Math.max(
-              0,
-              Math.round(
-                (maxOutstandingPrincipal - repayment.principalNaira) * 100
-              ) / 100
-            );
-            const oldInterest = Number(
-              loan.outstandingInterestNaira ??
-                Math.max(0, Number(loan.totalInterestNaira ?? 0) - (maxOutstandingPrincipal === Number(loan.principalNaira) ? 0 : Number(loan.principalNaira ?? 0) - maxOutstandingPrincipal))
-            );
-            loan.outstandingInterestNaira = Math.max(
-              0,
-              Math.round((oldInterest - repayment.interestNaira) * 100) / 100
-            );
-            if (Number(loan.outstandingNaira) <= 0.01) {
-              loan.status = "REPAID";
-              loan.paidAt = new Date().toISOString();
-              const application = loanApplications.find((item) => item.id === loan.applicationId || item.applicationId === loan.applicationId);
-              if (application) {
-                application.status = "REPAID";
-                application.updatedAt = loan.paidAt;
-              }
-              creditHistory.push({
-                id: crypto.randomUUID(),
-                userId: loan.borrowerId,
-                loanId: loan.id,
-                repaymentId: repayment.id,
-                eventType: "LOAN_REPAID",
-                detail: `Loan ${loan.id} fully repaid`,
-                occurredAt: new Date().toISOString(),
-                createdAt: new Date().toISOString(),
-              });
-            } else {
-              loan.status = onTime ? "ACTIVE" : "PAST_DUE";
-            }
-            creditHistory.push({
-              id: crypto.randomUUID(),
-              userId: repayment.borrowerId,
-              loanId: repayment.loanId,
-              repaymentId: repayment.id,
-              eventType: onTime ? "REPAYMENT_VERIFIED" : "REPAYMENT_LATE",
-              detail: `Repayment of ₦${Number(repayment.amountNaira).toLocaleString("en-NG")} recorded`,
-              occurredAt: new Date().toISOString(),
-              createdAt: new Date().toISOString(),
-            });
-            loan.updatedAt = new Date().toISOString();
-            const borrower = users.find((user) => user.id === loan.borrowerId);
-            const fullyRepaid = loan.status === "REPAID";
-            if (borrower) {
-              const borrowerEmail = loanRepaymentEmail({ name: borrower.fullName, loanId: loan.id, amountNaira: Number(repayment.amountNaira), outstandingNaira: Number(loan.outstandingNaira), fullyRepaid });
-              void sendEmail({ to: borrower.email, name: borrower.fullName, ...borrowerEmail }).catch(() => undefined);
-              notifications.push({ id: randomUUID(), userId: borrower.id, channel: "EMAIL", kind: fullyRepaid ? "LOAN_REPAID" : "LOAN_REPAYMENT_CONFIRMED", recipientMasked: borrower.email.replace(/^(.{3})[^@]*@(.*)$/, "$1***@$2"), status: "SENT", relatedEntityType: "REPAYMENT", relatedEntityId: repayment.id, retryCount: 0, createdAt: repayment.verifiedAt, sentAt: repayment.verifiedAt });
-            }
-            const adminRecipients = users.filter((user) => user.isActive !== false && (user.roles.includes("ADMIN") || (user.roles.includes("LOAN_MANAGER") && user.adminPermissions?.includes("loan_notifications"))));
-            for (const admin of adminRecipients) {
-              const adminEmail = loanRepaymentAdminEmail({ name: admin.fullName, borrowerName: borrower?.fullName ?? "Borrower", loanId: loan.id, amountNaira: Number(repayment.amountNaira), outstandingNaira: Number(loan.outstandingNaira), fullyRepaid });
-              void sendEmail({ to: admin.email, name: admin.fullName, ...adminEmail }).catch(() => undefined);
-            }
+          if (!settledRepayment.ok) {
+            console.warn(`[webhooks/flutterwave] repayment settlement skipped: ${settledRepayment.reason}`);
           }
         }
 
@@ -364,7 +328,29 @@ app.post(
             if (borrower) {
               const template = loanDisbursedEmail({ name: borrower.fullName, applicationId: application?.applicationId ?? disbursementLoan.applicationId, amountNaira: Number(disbursementLoan.principalNaira) });
               void sendEmail({ to: borrower.email, name: borrower.fullName, ...template }).catch(() => undefined);
+              pushActivityNotification({
+                userId: borrower.id,
+                title: "Your loan has been disbursed",
+                body: `₦${Number(disbursementLoan.principalNaira ?? 0).toLocaleString("en-NG")} has been sent to your registered bank account. It should land shortly — sign in to view your loan schedule and repayments.`,
+                category: "LOAN",
+                kind: "LOAN_DISBURSED",
+                actionLabel: "View loan",
+                actionUrl: `/borrower/loans/${encodeURIComponent(disbursementLoan.id)}`,
+                relatedEntityType: "LOAN",
+                relatedEntityId: disbursementLoan.id,
+              });
             }
+            notifyMoneyTeamActivity({
+              title: "Loan disbursement confirmed",
+              body: `₦${Number(disbursementLoan.principalNaira ?? 0).toLocaleString("en-NG")} was disbursed to ${borrower?.fullName ?? "a borrower"} (application ${application?.applicationId ?? disbursementLoan.applicationId ?? disbursementLoan.id}). The loan is now in repayment.`,
+              category: "LOAN",
+              kind: "LOAN_DISBURSED_STAFF",
+              actionLabel: "Open loan",
+              actionUrl: `/admin#view=detail&id=${encodeURIComponent(application?.applicationId ?? disbursementLoan.applicationId ?? disbursementLoan.id)}`,
+              relatedEntityType: "LOAN",
+              relatedEntityId: disbursementLoan.id,
+              actorUserId: disbursementLoan.borrowerId,
+            });
           }
         }
         const payout = payouts.find(
@@ -461,6 +447,30 @@ app.post(
                       sentAt: emailRes.sent ? new Date().toISOString() : undefined,
                     });
                   }).catch(() => undefined);
+                  // Maturity settlement bells (webhook path — the sweep pushes
+                  // its own when the payout is initiated).
+                  pushActivityNotification({
+                    userId: investorUser.id,
+                    title: "Investment payout settled",
+                    body: `₦${totalVal.toLocaleString("en-NG")} (principal ₦${principalVal.toLocaleString("en-NG")} + earnings ₦${earningsVal.toLocaleString("en-NG")}) has settled in your bank account for investment ${investment.id.slice(0, 8)}….`,
+                    category: "INVESTMENT",
+                    kind: "INVESTMENT_PAYOUT_SETTLED",
+                    actionLabel: "Open investments",
+                    actionUrl: "/investor",
+                    relatedEntityType: "INVESTMENT",
+                    relatedEntityId: investment.id,
+                  });
+                  notifyMoneyTeamActivity({
+                    title: "Investment payout settled",
+                    body: `₦${totalVal.toLocaleString("en-NG")} maturity payout for ${investorUser.fullName} (investment ${investment.id.slice(0, 8)}…) settled with the provider.`,
+                    category: "INVESTMENT",
+                    kind: "INVESTMENT_PAYOUT_SETTLED_STAFF",
+                    actionLabel: "Open investor",
+                    actionUrl: `/admin#view=detail&id=${encodeURIComponent(investorUser.id)}`,
+                    relatedEntityType: "INVESTMENT",
+                    relatedEntityId: investment.id,
+                    actorUserId: investorUser.id,
+                  });
                 }
             }
           }
@@ -476,9 +486,24 @@ app.post(
           }
         }
         const repayment = repayments.find((p) => p.txRef === txRef);
-        if (repayment) {
-          repayment.status = "FAILED";
-          repayment.updatedAt = new Date().toISOString();
+        if (repayment && repayment.status !== "SUCCESSFUL") {
+          markRepaymentFailed(txRef, `Provider webhook reported status=${status}`);
+          // Tell the borrower the payment did not go through so they retry —
+          // no money moved, the loan balance is unchanged.
+          const borrower = users.find((user) => user.id === repayment.borrowerId);
+          if (borrower) {
+            pushActivityNotification({
+              userId: borrower.id,
+              title: "Repayment could not be completed",
+              body: `Your repayment of ₦${Number(repayment.amountNaira ?? 0).toLocaleString("en-NG")} for loan ${repayment.loanId.slice(0, 8)}… was not completed (provider status: ${status}). No money has left your account — please retry from the loan page or contact support if you were debited.`,
+              category: "LOAN",
+              kind: "LOAN_REPAYMENT_FAILED",
+              actionLabel: "Retry repayment",
+              actionUrl: `/borrower/loans/${encodeURIComponent(repayment.loanId)}`,
+              relatedEntityType: "REPAYMENT",
+              relatedEntityId: repayment.id,
+            });
+          }
         }
       }
     }
@@ -894,11 +919,13 @@ async function start(): Promise<void> {
       console.log(`Database: ${databaseMessage}`);
       void runRepaymentReminderSweep();
       void runAndPersistInvestmentMaturitySweep();
+      void runInvestmentMaturityReminderSweep();
       startReconciliationCron();
       startCreditReconciliationCron();
       setInterval(() => {
         void runRepaymentReminderSweep();
         void runAndPersistInvestmentMaturitySweep();
+        void runInvestmentMaturityReminderSweep();
       }, 60 * 60 * 1000).unref();
     });
     server.on("error", (err) => {

@@ -214,6 +214,26 @@ export default function BorrowerDashboard() {
     { key: "profile", label: "Profile", icon: "user", hint: "Personal information" },
   ];
 
+  // Checkout return landing: Flutterwave redirects back here with
+  // ?repayment=success|failed&tx_ref=…&message=… after a loan repayment.
+  // Surface the outcome once and strip the query from the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("repayment");
+    if (!outcome) return;
+    const message = params.get("message") ?? "";
+    if (outcome === "success") {
+      setSuccessMsg(message || "Your repayment was confirmed successfully. Your loan balance has been updated.");
+    } else if (outcome === "failed") {
+      setError(message || "The repayment could not be confirmed. If you were debited, our team will verify and reconcile it — please try again shortly.");
+    }
+    params.delete("repayment");
+    params.delete("tx_ref");
+    params.delete("message");
+    const qs = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`);
+  }, []);
+
   useEffect(() => {
     if (!user) return;
     Promise.all([
