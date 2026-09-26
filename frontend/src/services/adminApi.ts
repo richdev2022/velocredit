@@ -555,6 +555,21 @@ export async function adminResetKycCategory(userId: string, category: KycResetCa
   return request(`/api/v1/admin/users/${encodeURIComponent(userId)}/kyc-reset`, { method: "POST", body: JSON.stringify({ category }) });
 }
 
+// Face-comparison evidence for the KYC review detail (government portrait +
+// captured selfie + verification events incl. confidence scores).
+export interface AdminKycFaceEvent { id: string; provider: string; verificationType: string; status: string; matchScore?: number; providerReference?: string; createdAt: string; }
+export interface AdminKycFaceImages {
+  ok: true;
+  identityPhoto?: string;
+  selfieImageData?: string;
+  identityAvailable: boolean;
+  selfieAvailable: boolean;
+  events: AdminKycFaceEvent[];
+}
+export async function adminGetKycFaceImages(caseId: string): Promise<AdminKycFaceImages> {
+  return request(`/api/v1/admin/kyc-cases/${encodeURIComponent(caseId)}/face-images`);
+}
+
 // ---------------------------------------------------------------------------
 // Maintenance mode / announcements / banners (platform engagement settings)
 // ---------------------------------------------------------------------------

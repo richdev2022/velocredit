@@ -392,6 +392,49 @@ export async function verifyMyLiveness(file: File, input?: { idType?: "BVN" | "N
   if (input?.dateOfBirth) form.append("dateOfBirth", input.dateOfBirth);
   return request("/api/v1/me/kyc/liveness/verify", { method: "POST", body: form });
 }
+
+// ---------------------------------------------------------------------------
+// Face comparison (replaces the widget liveness check)
+// ---------------------------------------------------------------------------
+
+export interface FaceComparisonResult {
+  ok: true;
+  verificationStatus: "SUCCESS" | "FAILED" | "PENDING_ADMIN_REVIEW";
+  faceMatch?: { matched: boolean; confidence?: number; message?: string; minimumConfidence?: number };
+  providerConfigured?: boolean;
+  error?: string;
+  checklist: KycChecklist;
+  selfieImageData?: string;
+  message?: string;
+  canRetry?: boolean;
+  canRequestManualReview?: boolean;
+  code?: string;
+}
+
+/** Uploads the camera-captured selfie; the backend compares it against the BVN/NIN government portrait. */
+export async function verifyFaceComparison(file: File): Promise<FaceComparisonResult> {
+  const form = new FormData();
+  form.append("image", file);
+  return request("/api/v1/me/kyc/face-comparison/verify", { method: "POST", body: form });
+}
+
+/** Submits the captured selfie for manual review after a failed/uncertain comparison. */
+export async function requestFaceManualReview(file: File | null, note?: string): Promise<FaceComparisonResult> {
+  const form = new FormData();
+  if (file) form.append("image", file);
+  if (note?.trim()) form.append("note", note.trim());
+  return request("/api/v1/me/kyc/face-comparison/manual-review", { method: "POST", body: form });
+}
+
+/** Creates the short-lived deep link the customer can open on their smartphone. */
+export async function createFaceHandoffSession(): Promise<{ ok: true; url: string; expiresAt: string }> {
+  return request("/api/v1/me/kyc/face-comparison/handoff", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** Exchanges the handoff token (scanned from the QR code) for a session token. */
+export async function claimFaceHandoffToken(token: string): Promise<{ ok: true; accessToken: string; user: SessionUser }> {
+  return request("/api/v1/me/kyc/face-comparison/handoff/claim", { method: "POST", body: JSON.stringify({ token }) });
+}
 export async function completePremblyWidgetVerification(input: { status: "SUCCESS" | "FAILED"; providerReference?: string; rawResponse?: Record<string, unknown>; selfieImageData?: string }): Promise<KycResponse> {
   return request("/api/v1/me/kyc/prembly-widget/complete", { method: "POST", body: JSON.stringify(input) });
 }

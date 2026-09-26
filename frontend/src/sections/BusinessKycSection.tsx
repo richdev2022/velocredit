@@ -14,7 +14,7 @@ import { useApplication } from "../context/ApplicationContext";
 import { kycSchema, type KycForm } from "../utils/validation";
 import type { UploadedDocument, DocumentSlot } from "../types/documents";
 import { verifyMyBvn, verifyMyNin, confirmKycOwnershipOtp, resendKycOwnershipOtp, updateMyKyc, type KycOtpChallenge } from "../services/apiClient";
-import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
+import FaceVerificationFlow from "../components/FaceVerificationFlow";
 import Icon from "../components/Icon";
 
 type OtpPickerPhase = "idle" | "sending" | "success" | "error";
@@ -31,7 +31,6 @@ export default function BusinessKycSection() {
   const { application, patchKyc, patchBusinessRep, patchDocuments, markSectionStatus, next } = useApplication();
   const [verification, setVerification] = useState<{ bvn?: string; nin?: string; liveness?: string }>({});
   const [verificationError, setVerificationError] = useState("");
-  const [livenessBusy, setLivenessBusy] = useState(false);
   const [otpMethodPickerFor, setOtpMethodPickerFor] = useState(null as "BVN" | "NIN" | null);
   const [otpPickerState, setOtpPickerState] = useState<OtpPickerState>({ phase: "idle" });
   const [activeOtpChallenge, setActiveOtpChallenge] = useState(null as null | {
@@ -348,30 +347,25 @@ export default function BusinessKycSection() {
                 Liveness check completed · cannot retrigger
               </div>
             ) : (
-              <PremblyKycWidgetButton
-                fullName={currentApplication.businessRep?.fullName}
-                email={currentApplication.businessRep?.email}
-                phone={currentApplication.businessRep?.phone}
-                idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
-                idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
-                verifiedDetails={currentApplication.kyc?.verifiedDetails ?? null}
-                onResult={(result) => {
-                  setVerification((current) => ({ ...current, liveness: result.success ? "Verified" : result.message }));
-                  if (result.success) {
-                    patchKyc({
-                      livenessVerified: true,
-                      livenessStatus: "SUCCESS",
-                      ...(result.selfieImageData ? { selfieImageData: result.selfieImageData } : {}),
-                    });
-                  } else {
-                    setVerificationError(result.message);
-                  }
+              <FaceVerificationFlow
+                triggerLabel="Take a selfie — verify my face"
+                onVerified={(selfieImageData) => {
+                  setVerification((current) => ({ ...current, liveness: "Verified" }));
+                  patchKyc({
+                    livenessVerified: true,
+                    livenessStatus: "SUCCESS",
+                    ...(selfieImageData ? { selfieImageData } : {}),
+                  });
+                }}
+                onManualReviewRequested={() => {
+                  setVerification((current) => ({ ...current, liveness: "Submitted for manual review — our team will contact you." }));
+                  patchKyc({ livenessStatus: "PENDING_REVIEW" });
                 }}
               />
             )}
             {!livenessLocked && verification.liveness === "Verified" && <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">✓ Liveness verified</span>}
           </div>
-          {verification.liveness && <p className={`mt-2 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
+          {verification.liveness && <p className={`mt-2 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{verification.liveness}</p>}
         </div>
 
         <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2">

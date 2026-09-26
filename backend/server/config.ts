@@ -39,6 +39,14 @@ const envSchema = z.object({
   PREMBLY_NIN_FACE_PATH: z.string().startsWith("/").default("/verification/nin_w_face"),
   PREMBLY_ID_SCAN_PATH: z.string().startsWith("/").default("/api/v1/fraud/id-scan/"),
   PREMBLY_FACE_LIVENESS_PATH: z.string().startsWith("/").default("/verification/biometrics/face/liveliness_check"),
+  // Face COMPARISON (replaces the widget liveness check): the captured selfie
+  // is compared against the BVN/NIN government portrait. Docs:
+  // https://docs.prembly.com/docs/face-comparism.md
+  PREMBLY_FACE_COMPARISON_PATH: z.string().startsWith("/").default("/verification/biometrics/face/comparison"),
+  // Minimum confidence (0-100) required from the face comparison for an
+  // automatic pass. Anything below it (or an explicit non-match) routes the
+  // customer to "try again" or "submit for manual review".
+  PREMBLY_FACE_MATCH_MIN_CONFIDENCE: z.coerce.number().int().min(0).max(100).default(60),
   PREMBLY_CREDIT_REPORT_PATH: z.string().startsWith("/").default("/verification/credit_bureau/consumer/advance"),
   PREMBLY_CREDIT_BUREAU_COMMERCIAL_PATH: z.string().startsWith("/").default("/verification/credit_bureau/commercial/advance"),
   PREMBLY_CREDIT_DATA_MODE: z.enum(["BASIC", "ADVANCE"]).default("ADVANCE"),

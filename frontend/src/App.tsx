@@ -18,6 +18,7 @@ const BorrowerDashboard = lazy(() => import("./pages/BorrowerDashboard"));
 const BorrowerLoanDetail = lazy(() => import("./pages/BorrowerLoanDetail"));
 const LoanRequirements = lazy(() => import("./pages/LoanRequirements"));
 const KycVerification = lazy(() => import("./pages/KycVerification"));
+const FaceVerifyHandoff = lazy(() => import("./pages/FaceVerifyHandoff"));
 
 function PageSkeleton({ label = "Loading Velo…" }: { label?: string }) {
   return (
@@ -113,6 +114,7 @@ export default function App() {
               />
               <Route path="/resume" element={<ResumeApplication />} />
               <Route path="/account" element={<AccountAccess />} />
+              <Route path="/face-verify" element={<FaceVerifyHandoff />} />
               <Route path="/admin/set-password" element={<LoanManagerSetup />} />
               <Route path="/admin/*" element={<Admin />} />
               <Route

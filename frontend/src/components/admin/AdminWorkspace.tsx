@@ -26,6 +26,8 @@ import {
   adminEditUser,
   adminResetKycCategory,
   adminRequestDisbursementAccountUpdate,
+  adminGetKycFaceImages,
+  type AdminKycFaceImages,
   type KycResetCategory,
   type LoanDisbursement,
 } from "../../services/adminApi";
@@ -479,9 +481,20 @@ function StatusBadge({ status }: { status?: string }) {
 }
 
 function Kyc() {
-  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(""); const [actionBusy, setActionBusy] = useState(""); const [selected, setSelected] = useState<any>(null); const [rejectionReason, setRejectionReason] = useState(""); const [rejecting, setRejecting] = useState(false); const [requirementReject, setRequirementReject] = useState<{ id: string; requirement: any } | null>(null);
+  const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState(""); const [busy, setBusy] = useState(""); const [actionBusy, setActionBusy] = useState(""); const [selected, setSelected] = useState<any>(null); const [rejectionReason, setRejectionReason] = useState(""); const [rejecting, setRejecting] = useState(false); const [requirementReject, setRequirementReject] = useState<{ id: string; requirement: any } | null>(null); const [faceImages, setFaceImages] = useState<AdminKycFaceImages | null>(null); const [faceImagesLoading, setFaceImagesLoading] = useState(false);
   const load = () => adminListKycCases(100).then((response) => setRows(response.cases)).catch((err) => setError(err instanceof Error ? err.message : "Unable to load KYC cases"));
   useEffect(() => { load(); }, []);
+  // Load the face-comparison evidence (portrait vs selfie) for the selected case.
+  useEffect(() => {
+    if (!selected?.id) { setFaceImages(null); return; }
+    let cancelled = false;
+    setFaceImagesLoading(true);
+    adminGetKycFaceImages(selected.id)
+      .then((response) => { if (!cancelled) setFaceImages(response); })
+      .catch(() => { if (!cancelled) setFaceImages(null); })
+      .finally(() => { if (!cancelled) setFaceImagesLoading(false); });
+    return () => { cancelled = true; };
+  }, [selected?.id]);
   async function decide(id: string, decision: "VERIFIED" | "REJECTED") { if (decision === "REJECTED") { if (!rejectionReason.trim()) { setError("Enter a rejection reason before rejecting this KYC."); return; } setRejecting(false); } setBusy(id); try { await adminDecideKyc(id, { decision, rejectedReason: decision === "REJECTED" ? rejectionReason.trim() : undefined }); setRejectionReason(""); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Unable to update KYC"); } finally { setBusy(""); } }
   async function decideRequirement(id: string, requirement: "bvn" | "nin" | "liveness" | "proofOfAddress" | "passport" | "signature", approved: boolean, note?: string) {
     if (!approved && !note) { setRejectionReason(""); setRequirementReject({ id, requirement }); return; }
@@ -575,6 +588,49 @@ function Kyc() {
                     return <div key={key} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-4 py-3 ${complete ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/50 dark:bg-emerald-900/15" : "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50"}`}><span className="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span><div className="flex items-center gap-2"><span className={`text-xs font-semibold ${complete ? "text-emerald-700 dark:text-emerald-300" : "text-slate-400"}`}>{complete ? "Approved" : "Pending"}</span><button type="button" className="rounded-lg border border-emerald-200 px-2 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800 dark:hover:bg-emerald-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, true)}>Approve</button><button type="button" className="rounded-lg border border-red-200 px-2 py-1 text-[10px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:hover:bg-red-900/20" disabled={actionBusy === busyKey} onClick={() => void decideRequirement(selected.id, key as any, false)}>Reject</button></div></div>;
                   })}
                 </div>
+              </div>
+              <div>
+                <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Face comparison</h2>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">The customer's captured selfie (from their phone or computer camera) next to the government portrait returned for their BVN/NIN. Approve or reject the Liveness requirement above after comparing.</p>
+                {faceImagesLoading ? (
+                  <div className="mt-3 rounded-xl border border-dashed border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/30 p-6 text-center text-[11px] text-slate-500 dark:text-slate-400">Loading face images…</div>
+                ) : (
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/60">
+                      <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 text-[10px] font-bold uppercase tracking-wider">Government portrait (BVN/NIN)</div>
+                      <div className="p-3">
+                        {faceImages?.identityPhoto ? (
+                          <img src={faceImages.identityPhoto} alt="Government identity portrait" className="aspect-square w-full rounded-lg border border-slate-200 object-cover dark:border-slate-700" />
+                        ) : (
+                          <div className="flex aspect-square w-full items-center justify-center rounded-lg border border-dashed border-slate-300 text-center text-[11px] text-slate-400 dark:border-slate-600 dark:text-slate-500">No portrait on record — the customer must re-verify their BVN/NIN</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/60">
+                      <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 text-[10px] font-bold uppercase tracking-wider">Customer selfie (camera capture)</div>
+                      <div className="p-3">
+                        {faceImages?.selfieImageData ? (
+                          <img src={faceImages.selfieImageData} alt="Customer captured selfie" className="aspect-square w-full rounded-lg border border-slate-200 object-cover dark:border-slate-700" />
+                        ) : (
+                          <div className="flex aspect-square w-full items-center justify-center rounded-lg border border-dashed border-slate-300 text-center text-[11px] text-slate-400 dark:border-slate-600 dark:text-slate-500">No selfie captured yet</div>
+                        )}
+                      </div>
+                    </div>
+                    {faceImages?.events && faceImages.events.length > 0 && (
+                      <div className="sm:col-span-2">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Verification attempts</div>
+                        <div className="mt-2 space-y-1.5">
+                          {faceImages.events.slice(0, 6).map((event) => (
+                            <div key={event.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] dark:border-slate-700 dark:bg-slate-800/50">
+                              <span className="font-semibold text-slate-700 dark:text-slate-200">{event.provider === "manual" ? "Manual review request" : "Prembly face comparison"} · {event.status.replace(/_/g, " ")}</span>
+                              <span className="text-slate-500 dark:text-slate-400">{typeof event.matchScore === "number" ? `confidence ${Math.round(event.matchScore)}% · ` : ""}{event.createdAt ? new Date(event.createdAt).toLocaleString() : "—"}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div>
                 <h2 className="text-sm font-semibold text-velo-900 dark:text-white">Uploaded documents</h2>

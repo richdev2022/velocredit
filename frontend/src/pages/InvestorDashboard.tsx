@@ -1,7 +1,7 @@
 import { useEffect, useDeferredValue, useMemo, useRef, useState, memo } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "../components/Layout";
-import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
+import FaceVerificationFlow from "../components/FaceVerificationFlow";
 import ReceiptPrint from "../components/ReceiptDownload";
 import OtpLoginSettings from "../components/OtpLoginSettings";
 import InvestorWithdrawalForm from "../components/InvestorWithdrawalForm";
@@ -16,7 +16,6 @@ import {
   uploadKycDocument,
   verifyMyBvn,
   verifyMyNin,
-  verifyMyLiveness,
   updateMyKyc,
   verifyWalletFunding,
   confirmKycOwnershipOtp,
@@ -155,11 +154,9 @@ export default function InvestorDashboard() {
       busy?: boolean;
     });
   const countdownRef = useRef(null as number | null);
-  const livenessPollRef = useRef<number | null>(null);
   useEffect(() => {
     return () => {
       if (countdownRef.current != null) window.clearInterval(countdownRef.current);
-      if (livenessPollRef.current != null) window.clearInterval(livenessPollRef.current);
     };
   }, []);
 
@@ -450,80 +447,26 @@ export default function InvestorDashboard() {
     }
   }
 
-  async function uploadSelfieFallback(file: File) {
-    setKycBusy("LIVENESS_SELFIE");
-    setKycError("");
+  /** Refresh the KYC panel after the face check passes on THIS or the customer's PHONE. */
+  async function onFaceVerified() {
     try {
-      const idNumber = bvn || nin || "";
-      const idType = bvn && /^\d{11}$/.test(bvn) ? "BVN" : nin && /^\d{11}$/.test(nin) ? "NIN" : undefined;
-      if (!idType || !/^\d{11}$/.test(idNumber || "")) {
-        throw new Error("Verify your BVN or NIN first before uploading a selfie.");
-      }
-      const response = await verifyMyLiveness(file, { idType, idNumber });
-      setKyc((current: any) => current ? ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"], selfieImageData: (response as any).selfieImageData || current?.selfieImageData, livenessStatus: (response as any).verificationStatus || current?.livenessStatus }) : current);
+      const updated = await getMyKyc();
+      setKyc(updated as unknown as KycData);
       await refreshUser();
-      const msg = (response as any).message || "Selfie uploaded successfully. An admin will review your liveness check shortly.";
-      setMessage(msg);
-      showToast(msg, "info");
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "Liveness selfie upload failed.";
-      setKycError(errMsg);
-      showToast(errMsg, "error");
-    } finally {
-      setKycBusy("");
-    }
+    } catch { /* refresh-only — the flow already confirmed success */ }
+    setMessage("Face verification complete.");
+    showToast("Your selfie matched your identity record.", "success");
   }
 
-  /*
-  async function verifyLivenessFile(file: File) {
-    setKycBusy("LIVENESS_FILE");
-    setKycError("");
+  /** Refresh after the customer submits the failed comparison for manual review. */
+  async function onFaceManualReview() {
     try {
-      const idNumber = bvn || nin || "";
-      const idType = bvn && /^\d{11}$/.test(bvn) ? "BVN" : nin && /^\d{11}$/.test(nin) ? "NIN" : undefined;
-      const response = await verifyMyLiveness(file, { idType, idNumber });
-      setKyc((current) => current ? ({ ...current, status: response.status, checklist: response.checklist as unknown as KycData["checklist"] }) : current);
+      const updated = await getMyKyc();
+      setKyc(updated as unknown as KycData);
       await refreshUser();
-      setMessage("Liveness check completed.");
-    } catch (err) {
-      setKycError(err instanceof Error ? err.message : "Liveness check failed. Try again or use the camera widget.");
-    } finally {
-      setKycBusy("");
-    }
-  }
-  */
-
-  async function onPremblyLivenessResult(result: any) {
-    if (result.success) {
-      setMessage("Liveness scan submitted. Syncing with the provider — your KYC status will update within 60 seconds.");
-      showToast("Liveness scan completed. Status is syncing with the provider and will update shortly.", "success");
-      if (typeof result?.selfieImageData === "string" && result.selfieImageData.length > 20) {
-        setKyc((current: any) => current ? ({ ...current, selfieImageData: result.selfieImageData }) : current);
-      }
-      let attempts = 0;
-      const maxAttempts = 12;
-      if (livenessPollRef.current != null) window.clearInterval(livenessPollRef.current);
-      const poll = window.setInterval(async () => {
-        attempts += 1;
-        try {
-          const updated = await getMyKyc();
-          const checklist = (updated as any)?.checklist ?? {};
-          setKyc(updated as unknown as KycData);
-          await refreshUser();
-          if (checklist.liveness || checklist.selfieUploaded || attempts >= maxAttempts) {
-            window.clearInterval(poll);
-            livenessPollRef.current = null;
-            const msg = checklist.liveness ? "Liveness verified. Thank you." : "Liveness processing complete. If status hasn't updated yet, refresh in a minute.";
-            setMessage(msg);
-            if (checklist.liveness) showToast(msg, "success");
-          }
-        } catch (_e) { /* ignore */ }
-      }, 5000);
-      livenessPollRef.current = poll;
-    } else {
-      setKycError(result.message);
-      showToast(result.message || "Liveness verification was not completed.", "error");
-    }
+    } catch { /* refresh-only */ }
+    setMessage("Your selfie was submitted for manual review — our team will email you the outcome.");
+    showToast("Submitted for manual review.", "info");
   }
 
   async function openAction(nextAction: "plans") {
@@ -907,7 +850,7 @@ export default function InvestorDashboard() {
               busy={busy}
               uploadProofOfAddress={uploadProofOfAddress}
               uploadSignature={uploadSignature}
-              onPremblyLivenessResult={onPremblyLivenessResult}
+              onFaceVerified={onFaceVerified}
               kycError={kycError}
               message={message}
               activeOtpChallenge={activeOtpChallenge}
@@ -919,7 +862,7 @@ export default function InvestorDashboard() {
               verifyIdentityWithChannel={verifyIdentityWithChannel}
               otpPickerState={otpPickerState}
               setOtpPickerState={setOtpPickerState}
-              uploadSelfieFallback={uploadSelfieFallback}
+              onFaceManualReview={onFaceManualReview}
             />
           )}
 
@@ -1586,7 +1529,7 @@ function FileIcon() {
 }
 
 function InvestorKyc(props: any) {
-  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, uploadSignature, onPremblyLivenessResult, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState, uploadSelfieFallback } = props;
+  const { user, kyc, checklist, bvn, setBvn, nin, setNin, verifyIdentity, kycBusy, canSubmitAddressReview, submitAddressReview, busy, uploadProofOfAddress, uploadSignature, onFaceVerified, kycError, message, activeOtpChallenge, setActiveOtpChallenge, submitActiveKycOtp, resendActiveKycOtp, otpMethodPickerFor, setOtpMethodPickerFor, verifyIdentityWithChannel, otpPickerState, setOtpPickerState, onFaceManualReview } = props;
   const [error, setError] = useState("");
   useEffect(() => { setError(kycError); }, [kycError]);
 
@@ -1908,25 +1851,12 @@ function InvestorKyc(props: any) {
                     Liveness check completed · cannot retrigger
                   </div>
                 ) : (
-                  <>
-                    <PremblyKycWidgetButton fullName={user?.fullName} email={user?.email} phone={user?.phone} idType={checklist.bvn ? "BVN" : "NIN"} idNumber={bvn || nin || ""} verifiedDetails={kyc?.verifiedDetails ?? null} onResult={onPremblyLivenessResult} />
-                    <label className={`relative inline-flex min-h-[44px] items-center justify-center gap-2 px-5 py-3 text-sm font-semibold rounded-xl border transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${kycBusy === "LIVENESS_SELFIE" ? "border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed dark:border-slate-700 dark:bg-slate-900/20" : "border-slate-300 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 dark:border-slate-600 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/60"}`}>
-                      <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed" type="file" accept="image/jpeg,image/png,image/webp" disabled={kycBusy === "LIVENESS_SELFIE" || !(bvn && /^\d{11}$/.test(bvn) || nin && /^\d{11}$/.test(nin))} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadSelfieFallback(file); }} />
-                      {kycBusy === "LIVENESS_SELFIE" ? (
-                        <>
-                          <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-6.219-8.56" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-                          Uploading…
-                        </>
-                      ) : (
-                        <>
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                          Upload Selfie (Fallback)
-                        </>
-                      )}
-                    </label>
-                  </>
+                  <FaceVerificationFlow
+                    triggerLabel="Take a selfie — verify my face"
+                    triggerClassName="btn-primary inline-flex min-h-[44px] items-center justify-center gap-2 px-5 py-3 text-sm font-bold"
+                    onVerified={onFaceVerified}
+                    onManualReviewRequested={onFaceManualReview}
+                  />
                 )}
                 {!livenessLocked && (checklist.selfieUploaded || checklist.liveness || kyc?.livenessManualUploaded) && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400"><Icon name="check" size={13} />{checklist.liveness ? "Liveness verified" : "Selfie uploaded · pending admin review"}</span>}
               </div>

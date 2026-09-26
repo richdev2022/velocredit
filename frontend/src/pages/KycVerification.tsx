@@ -28,12 +28,12 @@ import {
   updateMyKyc,
   uploadKycDocument,
   verifyMyBvn,
-  verifyMyLiveness,
   verifyMyNin,
   type KycDocumentView,
   type KycOtpChallenge,
   type KycResponse,
 } from "../services/apiClient";
+import FaceVerificationFlow from "../components/FaceVerificationFlow";
 import type { UploadedDocument } from "../types/documents";
 
 type VerificationMap = Record<string, string>;
@@ -297,35 +297,6 @@ export default function KycVerification() {
       setNotice("A new verification code has been sent.");
     } catch (err) {
       setActiveOtp((current) => current ? { ...current, error: err instanceof Error ? err.message : "Unable to resend code" } : current);
-    }
-  }
-
-  async function handleLiveness(rawFile: File) {
-    setBusyId("liveness");
-    setError("");
-    try {
-      const idType = checklist.bvn ? "BVN" : checklist.nin ? "NIN" : undefined;
-      if (!idType) {
-        setError("Verify your BVN or NIN before starting face verification.");
-        return;
-      }
-      const file = await compressImageForUpload(rawFile);
-      const response = await verifyMyLiveness(file, {
-        idType,
-        idNumber: idType === "BVN" ? bvnInput || prefill?.bvn : ninInput || prefill?.nin,
-        dateOfBirth: prefill?.personalInfo?.dateOfBirth,
-      });
-      if (response.verificationStatus === "SUCCESS") {
-        setVerification((current) => ({ ...current, liveness: "Verified" }));
-        setNotice("Liveness check completed.");
-        await refreshKyc();
-      } else {
-        setError(response.error || "Liveness verification failed. Try again in good lighting.");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to complete liveness verification");
-    } finally {
-      setBusyId("");
     }
   }
 
@@ -613,39 +584,34 @@ export default function KycVerification() {
               )}
             </section>
 
-            {/* Liveness */}
+            {/* Face comparison (liveness) */}
             <section className="velo-card p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h2 className="section-heading">2 · Liveness check</h2>
-                  <p className="section-subheading">A quick selfie video or photo confirms it is really you. Good lighting helps.</p>
+                  <h2 className="section-heading">2 · Face verification</h2>
+                  <p className="section-subheading">Take a quick selfie — we compare it with the portrait on your BVN/NIN record to confirm it is really you.</p>
                 </div>
                 <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase ${checklist.liveness ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : STATUS_BADGE.idle}`}>
                   {checklist.liveness ? "Completed" : String(categoryResults.LIVENESS?.status ?? "Pending").replace(/_/g, " ")}
                 </span>
               </div>
               {!checklist.liveness && (
-                <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/60 p-6 text-center transition hover:border-velo-400 hover:bg-velo-50/40 dark:border-slate-600 dark:bg-slate-800/40">
-                  {busyId === "liveness" ? (
-                    <span className="text-sm font-semibold text-velo-700 dark:text-velo-300">Checking your selfie…</span>
-                  ) : (
-                    <>
-                      <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Tap to capture or upload your selfie</span>
-                      <span className="mt-1 text-xs text-slate-500 dark:text-slate-400">JPG or PNG · your BVN or NIN must be verified first</span>
-                    </>
-                  )}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="user"
-                    className="hidden"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) void handleLiveness(file);
-                      event.currentTarget.value = "";
+                <div className="mt-4">
+                  <FaceVerificationFlow
+                    triggerLabel="Take a selfie — verify my face"
+                    triggerClassName="btn-primary inline-flex min-h-[46px] w-full items-center justify-center gap-2 px-5 py-3 text-sm font-bold"
+                    onVerified={async () => {
+                      setVerification((current) => ({ ...current, liveness: "Verified" }));
+                      setNotice("Face verification completed.");
+                      await refreshKyc();
+                    }}
+                    onManualReviewRequested={async () => {
+                      setVerification((current) => ({ ...current, liveness: "Submitted for manual review" }));
+                      setNotice("Your selfie has been submitted for manual review — our team will email you the outcome.");
+                      await refreshKyc();
                     }}
                   />
-                </label>
+                </div>
               )}
             </section>
 
