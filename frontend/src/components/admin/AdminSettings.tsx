@@ -48,6 +48,7 @@ import {
 import AdminWithdrawalHistory from "./AdminWithdrawalHistory";
 import CsvExportButton from "../CsvExportButton";
 import ProductCatalogCard from "./ProductCatalogCard";
+import InvestmentPlansManager from "./InvestmentPlansManager";
 import Icon from "../Icon";
 import { Pill, Toggle, SettingRow, PanelCard } from "./settingsUI";
 
@@ -604,6 +605,12 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
           {/* ============ INVESTOR MANAGEMENT ============ */}
           {showInvestorTools && (
             <div className={`min-w-0 space-y-5 ${showLedger ? "lg:col-span-2" : "lg:col-span-3"}`}>
+              {/* ============ INVESTMENT PLANS CATALOG ============ */}
+              {/* Self-contained manager (like ProductCatalogCard): create /
+                  configure / deactivate / delete every plan — the catalog the
+                  investor dashboard renders is EXACTLY this. */}
+              <InvestmentPlansManager />
+
               <PanelCard
                 title="Investor management"
                 description="Global withdrawal fees, default investment earning rate, and per-investor overrides."
