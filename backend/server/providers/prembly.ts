@@ -297,6 +297,58 @@ export async function verifyIdentityWithFace(input: IdentityWithFaceInput): Prom
   }
 }
 
+/* =========================================================================
+   Face COMPARISON (POST /verification/biometrics/face/comparison)
+   Replaces the legacy widget-driven liveness check: the customer's captured
+   selfie is compared against the BVN/NIN government portrait.
+   Request : { image_one, image_two } — each a face image URL or base64.
+   Response: { status: true, response_code: "00", message: "Fatch Match",
+               confidence: 100 }
+   Docs    : https://docs.prembly.com/docs/face-comparism.md
+   ========================================================================= */
+export interface FaceComparisonInput { imageOne: string; imageTwo: string; }
+export interface FaceComparisonResult {
+  matched: boolean;
+  status: VerificationStatus;
+  confidence?: number;
+  message?: string;
+  providerReference?: string;
+  rawResponse?: Record<string, unknown>;
+  errorMessage?: string;
+}
+
+export async function compareFaces(input: FaceComparisonInput): Promise<FaceComparisonResult> {
+  try {
+    const response = await premblyPost(
+      env.PREMBLY_FACE_COMPARISON_PATH,
+      { image_one: input.imageOne, image_two: input.imageTwo },
+      30_000,
+    );
+    const rawStatus = (response as { status?: unknown }).status;
+    const responseCode = String((response as { response_code?: unknown }).response_code ?? "");
+    const matched = rawStatus === true || String(rawStatus ?? "").trim().toLowerCase() === "true" || responseCode === "00";
+    const confidenceRaw = (response as { confidence?: unknown }).confidence ?? (response as { data?: Record<string, unknown> }).data?.confidence;
+    const confidence = typeof confidenceRaw === "number" ? confidenceRaw : typeof confidenceRaw === "string" && confidenceRaw.trim() !== "" && Number.isFinite(Number(confidenceRaw)) ? Number(confidenceRaw) : undefined;
+    const message = String((response as { message?: unknown }).message ?? (response as { data?: Record<string, unknown> }).data?.message ?? "").trim() || undefined;
+    const providerReference = String((response as { transaction_id?: unknown }).transaction_id ?? (response as { reference_id?: unknown }).reference_id ?? "") || undefined;
+    return {
+      matched,
+      status: matched ? "SUCCESS" : "FAILED",
+      confidence,
+      message: message ?? (matched ? "Face match" : "Face match did not pass"),
+      providerReference,
+      rawResponse: response,
+    };
+  } catch (error) {
+    return {
+      matched: false,
+      status: "FAILED",
+      message: "Face comparison unavailable",
+      errorMessage: error instanceof Error ? error.message : "Face comparison unavailable",
+    };
+  }
+}
+
 export async function verifyLiveness(image: string, _mimeType?: string): Promise<VerificationResult> {
   try {
     const response = await premblyPost(env.PREMBLY_FACE_LIVENESS_PATH, { image });

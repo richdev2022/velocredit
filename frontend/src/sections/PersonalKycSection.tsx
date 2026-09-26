@@ -16,14 +16,13 @@ import type { UploadedDocument, DocumentSlot } from "../types/documents";
 import {
   verifyMyBvn,
   verifyMyNin,
-  verifyMyLiveness,
   confirmKycOwnershipOtp,
   resendKycOwnershipOtp,
   getMyKyc,
   updateMyKyc,
   type KycOtpChallenge,
 } from "../services/apiClient";
-import PremblyKycWidgetButton from "../components/PremblyKycWidgetButton";
+import FaceVerificationFlow from "../components/FaceVerificationFlow";
 
 const ID_TYPES = [
   { value: "National ID Card",       label: "National ID Card" },
@@ -58,7 +57,6 @@ export default function PersonalKycSection() {
   const { application, patchKyc, patchPersonalInfo, patchDocuments, markSectionStatus, next } = useApplication();
   const [verification, setVerification] = useState<{ bvn?: string; nin?: string; liveness?: string }>({});
   const [verificationError, setVerificationError] = useState("");
-  const [livenessBusy, setLivenessBusy] = useState(false);
   const [otpMethodPickerFor, setOtpMethodPickerFor] = useState<null | "BVN" | "NIN">(null);
   const [otpPickerState, setOtpPickerState] = useState<{ phase: "idle" | "sending" | "success" | "error"; channel?: "SMS" | "WHATSAPP"; message?: string }>({ phase: "idle" });
   const [activeOtpChallenge, setActiveOtpChallenge] = useState<null | {
@@ -347,20 +345,6 @@ export default function PersonalKycSection() {
     }
   }
 
-  async function verifyLiveness(file: File) {
-    setLivenessBusy(true); setVerificationError("");
-    try {
-      const idType = currentApplication.kyc?.bvnVerified ? "BVN" : currentApplication.kyc?.ninVerified ? "NIN" : undefined;
-      if (!idType) { setVerificationError("Verify your BVN or NIN before starting face verification."); return; }
-      const response = await verifyMyLiveness(file, { idType, idNumber: idType === "BVN" ? currentApplication.kyc?.bvn : currentApplication.kyc?.nin, dateOfBirth: currentApplication.personalInfo?.dateOfBirth });
-      const success = response.verificationStatus === "SUCCESS";
-      const selfieData = success ? (response as any).selfieImageData : undefined;
-      patchKyc({ livenessVerified: success, livenessStatus: response.verificationStatus, ...(selfieData ? { selfieImageData: selfieData } : {}) });
-      setVerification((current) => ({ ...current, liveness: success ? "Verified" : response.error || "Verification failed" }));
-    } catch (error) { setVerificationError(error instanceof Error ? error.message : "Unable to complete liveness verification"); }
-    finally { setLivenessBusy(false); }
-  }
-
   const hasIdDoc = Boolean(application.documents?.identificationDocument);
   const hasProof = Boolean(application.documents?.proofOfAddress);
   const hasSignature = Boolean(application.documents?.signature);
@@ -599,22 +583,20 @@ export default function PersonalKycSection() {
                 Liveness check completed · cannot retrigger
               </div>
             ) : (
-              <PremblyKycWidgetButton
-                fullName={identityInfo.fullName}
-                email={identityInfo.email}
-                phone={identityInfo.phone}
-                idType={currentApplication.kyc?.bvnVerified ? "BVN" : "NIN"}
-                idNumber={currentApplication.kyc?.bvnVerified ? currentApplication.kyc?.bvn ?? "" : currentApplication.kyc?.nin ?? ""}
-                dateOfBirth={identityInfo.dateOfBirth}
-                verifiedDetails={currentApplication.kyc?.verifiedDetails ?? null}
-                onResult={(result) => {
-                  setVerification((current) => ({ ...current, liveness: result.message }));
-                  if (result.success) patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS", ...(result.selfieImageData ? { selfieImageData: result.selfieImageData } : {}) });
+              <FaceVerificationFlow
+                triggerLabel="Take a selfie — verify my face"
+                onVerified={(selfieImageData) => {
+                  setVerification((current) => ({ ...current, liveness: "Verified" }));
+                  patchKyc({ livenessVerified: true, livenessStatus: "SUCCESS", ...(selfieImageData ? { selfieImageData } : {}) });
+                }}
+                onManualReviewRequested={() => {
+                  setVerification((current) => ({ ...current, liveness: "Submitted for manual review — our team will contact you." }));
+                  patchKyc({ livenessStatus: "PENDING_REVIEW" });
                 }}
               />
             )}
           </div>
-          {verification.liveness && !livenessLocked && <p className={`mt-3 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{livenessBusy ? "Checking…" : verification.liveness}</p>}
+          {verification.liveness && !livenessLocked && <p className={`mt-3 text-xs font-semibold ${verification.liveness === "Verified" ? "text-emerald-600" : "text-red-600"}`}>{verification.liveness}</p>}
         </div>
 
         <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2">

@@ -18,6 +18,8 @@ import {
   markKycChecklistComplete,
   recordConsent,
   resetKycCategory,
+  issueFaceHandoffToken,
+  resolveFaceHandoffToken,
   type KycResetCategory,
 } from "./auth.js";
 import { calculateInvestmentAccrual } from "./investments.js";
@@ -122,8 +124,8 @@ import {
   FlutterwaveError,
   normalizeBankCodeForFlutterwave,
 } from "./providers/flutterwave.js";
-import { verifyBvn, verifyNin, verifyIdentityWithFace } from "./providers/prembly.js";
-import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail } from "./email.js";
+import { verifyBvn, verifyNin, verifyIdentityWithFace, compareFaces } from "./providers/prembly.js";
+import { sendEmail, investorWithdrawalEmail, investorWalletFundedEmail, welcomeEmail, loginAttemptEmail, kycStatusEmail, kycSubmittedEmail, kycActionBlockedEmail, kycManualReviewEmail, maintenanceModeEmail, loanApplicationSubmittedEmail, loanDecisionEmail, loanAwaitingDisbursementEmail, loanDisbursedEmail, disbursementAccountUpdateRequestedEmail, backOfficeAccountCreatedEmail } from "./email.js";
 import type { KycCategory, KycCategoryResult, PlatformAnnouncement, PlatformBanner, Document as StoreDocument } from "./store.js";
 
 const router = Router();
@@ -2101,6 +2103,10 @@ router.post("/me/kyc/bvn/verify", requireAuth, async (req: AuthRequest, res) => 
     // raw blocks are always retained — whichever verification ran last must
     // not destroy the other identifier's NIBSS/NIMC raw response.
     kyc.providerRaw = { ...(kyc.providerRaw ?? {}), ...(result.rawResponse ?? {}) };
+    // Persist the government portrait (NIBSS base64Image) so the face
+    // comparison endpoint always has image_two available.
+    const bvnPortrait = (result.normalizedFields as { identityPhoto?: unknown } | undefined)?.identityPhoto;
+    if (typeof bvnPortrait === "string" && bvnPortrait.length > 50 && !kyc.identityPhoto) kyc.identityPhoto = bvnPortrait;
     // Cross-harvest: the NIBSS BVN Advance response can carry the customer's
     // linked NIN — capture it so the raw store holds both identifiers.
     const linkedNin =
@@ -2220,6 +2226,220 @@ router.post("/me/kyc/liveness/verify", requireAuth, livenessUpload.single("image
   markKycChecklistComplete(req.user!.id);
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, verificationStatus: "PENDING_ADMIN_REVIEW", providerConfigured: !result.errorMessage?.includes("not configured"), error: result.errorMessage, checklist: kyc.checklist, selfieImageData, message: "Selfie uploaded. An admin will review your liveness check shortly." });
+});
+
+// ---------------------------------------------------------------------------
+// FACE COMPARISON — replaces the widget-driven liveness check.
+//
+//   1. The customer captures a selfie with the device camera (no uploads).
+//   2. The selfie is uploaded here and compared against the BVN/NIN
+//      government portrait via Prembly
+//      POST /verification/biometrics/face/comparison ({ image_one, image_two }).
+//      Both images are passed as base64 — Prembly's docs accept "face image
+//      URL (base64)" and our identity portraits/Drive files are not publicly
+//      fetchable, so base64 is the only reliable transport.
+//   3. On a match at or above PREMBLY_FACE_MATCH_MIN_CONFIDENCE the liveness
+//      checklist item is auto-approved. Otherwise the customer can retry or
+//      submit the case for manual review (admins get an email alert).
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the government portrait for the KYC case: the persisted
+ * identityPhoto column first, then the raw BVN/NIN provider blocks (the
+ * NIBSS/NIMC `base64Image`). Returns base64 (no data: prefix) or an http(s)
+ * URL — exactly what Prembly's face comparison accepts.
+ */
+function resolveIdentityPortrait(kyc: ReturnType<typeof findOrCreateKycCase>): string | undefined {
+  const pick = (value: unknown): string | undefined => {
+    if (typeof value !== "string" || value.length < 50) return undefined;
+    if (value.startsWith("data:")) {
+      const base64 = value.slice(value.indexOf(",") + 1);
+      return base64.length > 50 ? base64 : undefined;
+    }
+    return value;
+  };
+  if (kyc.identityPhoto) {
+    const direct = pick(kyc.identityPhoto);
+    if (direct) return direct;
+  }
+  const raw = kyc.providerRaw as Record<string, unknown> | undefined;
+  if (raw && typeof raw === "object") {
+    for (const idKey of ["bvn", "nin"]) {
+      const block = raw[idKey];
+      if (!block || typeof block !== "object") continue;
+      const data = (block as { data?: unknown }).data ?? block;
+      if (!data || typeof data !== "object") continue;
+      for (const key of ["base64Image", "base64_image", "photo", "photograph", "image", "face_image", "selfie", "identityPhoto"]) {
+        const found = pick((data as Record<string, unknown>)[key]);
+        if (found) return found;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** True when the KYC case has at least one verified identity number. */
+function resolvedIdentityId(kyc: ReturnType<typeof findOrCreateKycCase>): { type: "BVN" | "NIN"; number: string } | undefined {
+  if (kyc.checklist.bvn && typeof kyc.bvn === "string" && /^\d{11}$/.test(kyc.bvn)) return { type: "BVN", number: kyc.bvn };
+  if (kyc.checklist.nin && typeof kyc.nin === "string" && /^\d{11}$/.test(kyc.nin)) return { type: "NIN", number: kyc.nin };
+  if (typeof kyc.bvn === "string" && /^\d{11}$/.test(kyc.bvn)) return { type: "BVN", number: kyc.bvn };
+  if (typeof kyc.nin === "string" && /^\d{11}$/.test(kyc.nin)) return { type: "NIN", number: kyc.nin };
+  return undefined;
+}
+
+router.post("/me/kyc/face-comparison/verify", requireAuth, livenessUpload.single("image"), async (req: AuthRequest, res) => {
+  if (!req.file) { res.status(400).json({ ok: false, error: "A captured selfie image is required" }); return; }
+  const kyc = findOrCreateKycCase(req.user!.id);
+  const identity = resolvedIdentityId(kyc);
+  if (!identity) {
+    res.status(400).json({ ok: false, error: "Verify your BVN or NIN before starting face verification.", code: "IDENTITY_REQUIRED" });
+    return;
+  }
+  const portrait = resolveIdentityPortrait(kyc);
+  if (!portrait) {
+    res.status(409).json({ ok: false, error: "The government portrait for your BVN/NIN is unavailable. Please re-verify your BVN or NIN, then try the selfie again.", code: "PORTRAIT_UNAVAILABLE" });
+    return;
+  }
+  const selfieBase64 = req.file.buffer.toString("base64");
+  const selfieImageData = `data:${req.file.mimetype};base64,${selfieBase64}`;
+  const comparison = await compareFaces({ imageOne: selfieBase64, imageTwo: portrait });
+  const minConfidence = env.PREMBLY_FACE_MATCH_MIN_CONFIDENCE;
+  const confidenceOk = typeof comparison.confidence === "number" ? comparison.confidence >= minConfidence : comparison.matched;
+  const passed = comparison.matched && confidenceOk;
+  kyc.selfieImageData = selfieImageData;
+  if (passed) {
+    kyc.checklist.liveness = true;
+    kyc.livenessStatus = "SUCCESS";
+    kyc.livenessVerifiedAt = kyc.livenessVerifiedAt ?? new Date().toISOString();
+    setKycCategoryResult(kyc, "LIVENESS", "VERIFIED");
+  } else {
+    kyc.livenessStatus = "FAILED";
+    setKycCategoryResult(kyc, "LIVENESS", "REJECTED", comparison.errorMessage ?? comparison.message ?? "Face comparison did not pass — try again or request a manual review");
+  }
+  identityVerificationEvents.push({
+    id: randomUUID(),
+    kycCaseId: kyc.id,
+    provider: "prembly",
+    verificationType: "LIVENESS",
+    providerReference: comparison.providerReference,
+    status: passed ? "SUCCESS" : "FAILED",
+    matchScore: comparison.confidence,
+    rawResponse: comparison.rawResponse,
+    createdAt: new Date().toISOString(),
+  });
+  if (kyc.status === "NOT_STARTED") kyc.status = "IN_PROGRESS";
+  kyc.updatedAt = new Date().toISOString();
+  markKycChecklistComplete(req.user!.id);
+  const persistResult = await persistMutation(res);
+  if (persistResult === false) return;
+  res.json({
+    ok: true,
+    verificationStatus: passed ? "SUCCESS" : "FAILED",
+    faceMatch: {
+      matched: comparison.matched,
+      confidence: comparison.confidence,
+      message: comparison.message,
+      minimumConfidence: minConfidence,
+    },
+    providerConfigured: !comparison.errorMessage?.includes("not configured"),
+    error: comparison.errorMessage,
+    checklist: kyc.checklist,
+    selfieImageData,
+    message: passed
+      ? "Your selfie matches your identity record — face verification complete."
+      : "We could not match your selfie to your identity record. Try again with better lighting, or submit it for manual review.",
+    canRetry: !passed,
+    canRequestManualReview: !passed,
+  });
+});
+
+// Customer explicitly asks for manual review after a failed/unavailable face
+// comparison. Flags the KYC case for the review queue and emails the admins.
+router.post("/me/kyc/face-comparison/manual-review", requireAuth, livenessUpload.single("image"), async (req: AuthRequest, res) => {
+  const kyc = findOrCreateKycCase(req.user!.id);
+  const user = users.find((u) => u.id === req.user!.id);
+  if (!user) { res.status(404).json({ ok: false, error: "User not found" }); return; }
+  const identity = resolvedIdentityId(kyc);
+  if (!identity) {
+    res.status(400).json({ ok: false, error: "Verify your BVN or NIN before requesting a manual review." });
+    return;
+  }
+  const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 500) : "";
+  if (req.file) kyc.selfieImageData = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
+  if (!kyc.selfieImageData) {
+    res.status(400).json({ ok: false, error: "Capture a selfie first — the review team needs the photo to compare against your identity record." });
+    return;
+  }
+  const lastComparison = [...identityVerificationEvents].reverse().find((event) => event.kycCaseId === kyc.id && event.verificationType === "LIVENESS");
+  kyc.livenessStatus = "PENDING_REVIEW";
+  kyc.livenessManualUploaded = true;
+  setKycCategoryResult(kyc, "LIVENESS", "PENDING_REVIEW", note || "Face comparison did not pass — customer requested manual review");
+  identityVerificationEvents.push({
+    id: randomUUID(),
+    kycCaseId: kyc.id,
+    provider: "manual",
+    verificationType: "LIVENESS",
+    status: "MANUAL_REVIEW",
+    rawResponse: lastComparison ? { lastAttempt: { status: lastComparison.status, matchScore: lastComparison.matchScore, at: lastComparison.createdAt } } : {},
+    createdAt: new Date().toISOString(),
+  });
+  // A deliberate manual-review submission lands in the admin KYC review queue.
+  if (["NOT_STARTED", "IN_PROGRESS", "ACTION_REQUIRED"].includes(kyc.status)) {
+    kyc.status = "PENDING_VERIFICATION";
+    kyc.submittedAt = kyc.submittedAt ?? new Date().toISOString();
+  }
+  kyc.updatedAt = new Date().toISOString();
+  user.kycStatus = kyc.status;
+  markKycChecklistComplete(user.id);
+  const persistResult = await persistMutation(res);
+  if (persistResult === false) return;
+  // Admin email alert — delivery failure must never block the submission.
+  const admins = users.filter((candidate) => candidate.isActive !== false && (candidate.roles.includes("ADMIN") || candidate.roles.includes("LOAN_MANAGER")));
+  const recipients = [...admins.map((candidate) => ({ email: candidate.email, name: candidate.fullName })), ...(env.ADMIN_EMAIL ? [{ email: env.ADMIN_EMAIL, name: "Velo Administrator" }] : [])];
+  const uniqueRecipients = recipients.filter((recipient, index, all) => all.findIndex((item) => item.email.toLowerCase() === recipient.email.toLowerCase()) === index);
+  const faceMatchContext = lastComparison
+    ? `${String(lastComparison.status)}${typeof lastComparison.matchScore === "number" ? ` · confidence ${lastComparison.matchScore}%` : ""} · ${lastComparison.createdAt}`
+    : "No automated comparison result recorded";
+  await Promise.all(uniqueRecipients.map(async (recipient) => {
+    try {
+      const template = kycManualReviewEmail({ recipientName: recipient.name, customerName: user.fullName, customerEmail: user.email, note: note || undefined, faceMatchContext });
+      await sendEmail({ to: recipient.email, name: recipient.name, subject: template.subject, html: template.html });
+    } catch { /* notification failure must not block the submission */ }
+  }));
+  res.json({
+    ok: true,
+    verificationStatus: "PENDING_ADMIN_REVIEW",
+    checklist: kyc.checklist,
+    message: "Your selfie has been submitted for manual review. Our team will compare it with your identity record and email you the outcome.",
+  });
+});
+
+// Desktop -> smartphone handoff: issue a short-lived deep link the customer
+// can open on their phone (QR code or copy) to run the same capture flow.
+router.post("/me/kyc/face-comparison/handoff", requireAuth, (req: AuthRequest, res) => {
+  const { token, expiresAt } = issueFaceHandoffToken(req.user!.id);
+  const rawOrigin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+  const origin = /^https?:\/\//i.test(rawOrigin) ? rawOrigin.replace(/\/$/, "") : `${env.API_ORIGIN}`.replace(/\/$/, "");
+  const url = `${origin}/face-verify?ht=${encodeURIComponent(token)}`;
+  res.json({ ok: true, url, expiresAt });
+});
+
+// Smartphone claims the handoff link: exchanges the one-time token for a
+// normal session token for the SAME user (no password prompt on the phone).
+router.post("/me/kyc/face-comparison/handoff/claim", async (req, res) => {
+  const parsed = z.object({ token: z.string().min(20).max(2000) }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: "A valid handoff token is required" }); return; }
+  const resolved = resolveFaceHandoffToken(parsed.data.token);
+  if (!resolved) {
+    res.status(401).json({ ok: false, error: "This link has expired or is invalid. Open your dashboard again and start a new face verification." });
+    return;
+  }
+  const user = users.find((candidate) => candidate.id === resolved.userId);
+  if (!user || user.isActive === false) {
+    res.status(401).json({ ok: false, error: "Account unavailable. Please sign in normally to continue." });
+    return;
+  }
+  res.json({ ok: true, accessToken: issueToken(user), user: { id: user.id, email: user.email, fullName: user.fullName, roles: user.roles, kycStatus: user.kycStatus } });
 });
 
 router.post("/me/kyc/prembly-widget/complete", requireAuth, async (req: AuthRequest, res) => {
@@ -2350,6 +2570,10 @@ router.post("/me/kyc/nin/verify", requireAuth, async (req: AuthRequest, res) => 
     // raw blocks are always retained — whichever verification ran last must
     // not destroy the other identifier's NIBSS/NIMC raw response.
     kyc.providerRaw = { ...(kyc.providerRaw ?? {}), ...(result.rawResponse ?? {}) };
+    // Persist the government portrait (NIMC base64Image) so the face
+    // comparison endpoint always has image_two available.
+    const ninPortrait = (result.normalizedFields as { identityPhoto?: unknown } | undefined)?.identityPhoto;
+    if (typeof ninPortrait === "string" && ninPortrait.length > 50 && !kyc.identityPhoto) kyc.identityPhoto = ninPortrait;
     // Cross-harvest: the NIMC NIN Advance response can carry the customer's
     // linked BVN — capture it so the raw store holds both identifiers. BVN is
     // mandatory for the credit bureau pipeline, so every source of it counts.
@@ -5091,6 +5315,24 @@ async function updateStaffAccessById(id: string, access: { staffRoleId?: string 
 // Delete a staff member everywhere: Postgres first (user_roles + admin_profiles
 // + users), then the in-memory copy. Cross-instance safe — the reported 404
 // happened because this used to be memory-only.
+//
+// Actor links in audit tables (admin_actions, audit_logs, kyc_cases.reviewed_by,
+// documents.reviewed_by, reconciliation_items.resolved_by,
+// system_settings.updated_by, account_change_requests.reviewed_by) are cleared
+// at runtime too — migration 011 relaxes those FKs to ON DELETE SET NULL, and
+// these UPDATEs keep deletes working even before the migration has run.
+// Financial tables keep their strict FKs on purpose: an account holding money
+// movement is rejected with a clear "deactivate instead" message.
+const STAFF_ACTOR_LINK_TABLES: Array<{ table: string; column: string }> = [
+  { table: "admin_actions", column: "admin_user_id" },
+  { table: "audit_logs", column: "user_id" },
+  { table: "kyc_cases", column: "reviewed_by" },
+  { table: "documents", column: "reviewed_by" },
+  { table: "reconciliation_items", column: "resolved_by" },
+  { table: "system_settings", column: "updated_by" },
+  { table: "account_change_requests", column: "reviewed_by" },
+];
+
 async function deleteStaffById(id: string, actingAdminId?: string): Promise<StaffMutationResult> {
   const memoryUser = users.find((user) => user.id === id && isStaffUser(user));
   if (actingAdminId && actingAdminId === id) {
@@ -5103,11 +5345,18 @@ async function deleteStaffById(id: string, actingAdminId?: string): Promise<Staf
   }
   if (sql) {
     try {
+      for (const { table, column } of STAFF_ACTOR_LINK_TABLES) {
+        await sql.query(`UPDATE ${table} SET ${column} = NULL WHERE ${column} = $1`, [id]);
+      }
       await sql.query("DELETE FROM user_roles WHERE user_id = $1", [id]);
       await sql.query("DELETE FROM admin_profiles WHERE user_id = $1", [id]);
       const deleted = await sql.query("DELETE FROM users WHERE id = $1 RETURNING id", [id]) as Array<{ id: string }>;
       if (deleted.length === 0 && !memoryUser) return { ok: false, status: 404, error: "Staff member not found" };
     } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : "";
+      if (code === "23503") {
+        return { ok: false, status: 409, error: "This account is linked to financial records that must be preserved. Deactivate the account instead of deleting it." };
+      }
       console.error("[staff] delete failed:", error);
       return { ok: false, status: 503, error: "Unable to delete the staff member — the database rejected the change" };
     }
@@ -5480,7 +5729,14 @@ router.get("/admin/audit-logs", requireAuth, requireRole("ADMIN"), (req, res) =>
 
 router.get("/admin/kyc-cases", requireAuth, requireRole("ADMIN"), (_req, res) => {
   const cases = kycCases.map((k) => ({
+    // Heavy inline images (government portrait, selfie, raw provider blocks)
+    // are excluded from the LIST payload — the review detail fetches them
+    // on demand via GET /admin/kyc-cases/:id/face-images.
     ...k,
+    selfieImageData: undefined,
+    identityPhoto: undefined,
+    identityPhotoUrl: undefined,
+    providerRaw: undefined,
     bvn: k.bvn ? `***-***-${k.bvn.slice(-4)}` : undefined,
     nin: k.nin ? `***-***-${k.nin.slice(-4)}` : undefined,
     user: users.find((u) => u.id === k.userId) ? { id: k.userId, fullName: users.find((u) => u.id === k.userId)!.fullName, email: users.find((u) => u.id === k.userId)!.email, phone: users.find((u) => u.id === k.userId)!.phone } : undefined,
@@ -5492,6 +5748,33 @@ router.get("/admin/kyc-cases", requireAuth, requireRole("ADMIN"), (_req, res) =>
     ok: true,
     cases: page.items,
     meta: page.meta,
+  });
+});
+
+// Face-comparison evidence for the KYC review detail view: the government
+// portrait, the customer's captured selfie, and every verification event
+// (with confidence scores) recorded for the case.
+router.get("/admin/kyc-cases/:id/face-images", requireAuth, requireRole("ADMIN"), (req, res) => {
+  const kyc = kycCases.find((item) => item.id === req.params.id);
+  if (!kyc) { res.status(404).json({ ok: false, error: "KYC case not found" }); return; }
+  const portraitRaw = kyc.identityPhoto ?? kyc.identityPhotoUrl;
+  const identityPhoto = portraitRaw
+    ? portraitRaw.startsWith("data:") || /^https?:\/\//i.test(portraitRaw)
+      ? portraitRaw
+      : `data:image/jpeg;base64,${portraitRaw}`
+    : undefined;
+  const selfieImageData = kyc.selfieImageData;
+  const events = identityVerificationEvents
+    .filter((event) => event.kycCaseId === kyc.id)
+    .map(({ rawResponse: _rawResponse, ...event }) => event)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  res.json({
+    ok: true,
+    identityPhoto,
+    selfieImageData,
+    identityAvailable: Boolean(identityPhoto),
+    selfieAvailable: Boolean(selfieImageData),
+    events,
   });
 });
 

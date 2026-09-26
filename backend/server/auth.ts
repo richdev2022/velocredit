@@ -59,6 +59,32 @@ export function issueRefreshToken(user: User): { id: string; token: string; toke
   return { id: randomUUID(), token, tokenHash, expiresAt };
 }
 
+/* -------------------------------------------------------------------------
+ * Face-verification HANDOFF tokens (desktop -> smartphone deep link).
+ *
+ * The desktop KYC flow can show a QR code so the customer continues the
+ * selfie capture on their phone. The link carries a short-lived, stateless
+ * JWT (scope FACE_HANDOFF) — stateless so ANY serverless instance can claim
+ * it, no shared memory or extra table needed. Claiming exchanges it for a
+ * normal session token for the SAME user.
+ * ---------------------------------------------------------------------- */
+export function issueFaceHandoffToken(userId: string, ttlSeconds = 600): { token: string; expiresAt: string } {
+  const token = jwt.sign({ sub: userId, scope: "FACE_HANDOFF" }, secret, { expiresIn: ttlSeconds } as SignOptions);
+  return { token, expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString() };
+}
+
+export function resolveFaceHandoffToken(token: string): { userId: string } | null {
+  try {
+    const payload = jwt.verify(token, secret) as { sub?: string; scope?: string };
+    if (!payload.sub || payload.scope !== "FACE_HANDOFF") return null;
+    const user = users.find((candidate) => candidate.id === payload.sub);
+    if (!user || user.isActive === false) return null;
+    return { userId: payload.sub };
+  } catch {
+    return null;
+  }
+}
+
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction): void {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
   if (!token) {

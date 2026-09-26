@@ -36,6 +36,18 @@ export function kycSubmittedEmail(input: { name: string; source?: "LOAN_APPLICAT
   return { subject: "Your Velo identity verification was submitted", html: `<div><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#2196f318;color:#1d4ed8;font-size:12px;font-weight:700">KYC UNDER REVIEW</div><h1 style="font-size:25px;margin:18px 0 10px">Verification submitted</h1><p style="font-size:15px;line-height:1.7;color:#526173">Hello ${escapeHtml(input.name)}, your identity verification has been submitted${viaLoan ? " using the details from your loan application" : ""} and is now being reviewed by our team.</p><div style="margin:24px 0;padding:18px;border:1px solid #dce8f3;border-radius:14px;background:#f7fafc"><p style="margin:0;color:#526173;font-size:14px;line-height:1.7">What happens next:<br/>1. Our team reviews your verification details (usually within 24–48 hours).<br/>2. You get an email the moment your KYC is approved.<br/>3. Approved verification unlocks loans, investing and payouts.</p></div><p style="font-size:14px;line-height:1.7;color:#526173">No further action is needed from you right now.</p></div>` };
 }
 
+/**
+ * Admin alert — the customer's automated face comparison (selfie vs BVN/NIN
+ * portrait) failed or could not run, and the customer asked for a manual
+ * review. Points the reviewer at the KYC review workspace.
+ */
+export function kycManualReviewEmail(input: { recipientName: string; customerName: string; customerEmail: string; note?: string; faceMatchContext?: string }): { subject: string; html: string } {
+  return {
+    subject: `KYC review needed — face verification issue (${input.customerName})`,
+    html: `<div><div style="display:inline-block;padding:7px 11px;border-radius:999px;background:#f59e0b18;color:#b45309;font-size:12px;font-weight:700">KYC MANUAL REVIEW REQUESTED</div><h1 style="font-size:25px;margin:18px 0 10px">Face verification needs manual review</h1><p style="font-size:15px;line-height:1.7;color:#526173">Hello ${escapeHtml(input.recipientName)}, the automated face comparison could not verify <strong>${escapeHtml(input.customerName)}</strong> and the customer has submitted their case for manual review.</p><div style="margin:24px 0;padding:18px;border:1px solid #dce8f3;border-radius:14px;background:#f7fafc"><p style="margin:0 0 7px;color:#526173;font-size:13px">Customer</p><strong>${escapeHtml(input.customerName)}</strong><span style="color:#526173"> · ${escapeHtml(input.customerEmail)}</span>${input.faceMatchContext ? `<p style="margin:14px 0 7px;color:#526173;font-size:13px">Latest face comparison result</p><strong style="font-size:14px;line-height:1.6">${escapeHtml(input.faceMatchContext)}</strong>` : ""}${input.note ? `<p style="margin:14px 0 7px;color:#526173;font-size:13px">Customer note</p><p style="margin:0;color:#526173;font-size:14px;line-height:1.6">${escapeHtml(input.note)}</p>` : ""}</div><p style="font-size:14px;line-height:1.7;color:#526173">Open the <strong>KYC review</strong> workspace, locate this customer's case and compare the captured selfie against the government portrait. You can approve the liveness requirement manually or reject it with a reason.</p></div>`,
+  };
+}
+
 export function kycActionBlockedEmail(input: { name: string; action: "LOAN_DISBURSEMENT" | "INVESTMENT" | "INVESTOR_PAYOUT" | "WITHDRAWAL" | "EARLY_LIQUIDITY" }): { subject: string; html: string } {
   const actionLabels: Record<string, string> = {
     LOAN_DISBURSEMENT: "receive your loan disbursement",
