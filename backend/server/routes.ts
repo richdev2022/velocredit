@@ -96,6 +96,11 @@ import {
   effectiveAdminPermissions,
   type StaffRole,
   type ActivityNotification,
+  seedDefaultInvestmentPlansExplicit,
+  planCommittedNaira,
+  planRemainingCapacityNaira,
+  planAcceptingInvestments,
+  isCapitalHoldingInvestment,
 } from "./store.js";
 import { runExportSheetsBackup } from "./exportSheetsBackup.js";
 import { pushActivityNotification, notifyStaffActivity, activeStaffMembers } from "./notify.js";
@@ -3250,7 +3255,15 @@ router.put("/investor/payout-account", requireAuth, requireRole("INVESTOR"), asy
 });
 
 router.get("/investor/investment-plans", requireAuth, requireRole("INVESTOR"), (_req, res) => {
-  res.json({ ok: true, plans: investmentPlans.filter((p) => p.isActive) });
+  const nowIso = new Date().toISOString();
+  res.json({
+    ok: true,
+    plans: investmentPlans.filter((p) => p.isActive).map((p) => ({
+      ...p,
+      acceptingInvestments: planAcceptingInvestments(p, nowIso),
+      remainingCapacityNaira: planRemainingCapacityNaira(p),
+    })),
+  });
 });
 
 router.post("/investor/wallet/funding", requireAuth, requireRole("INVESTOR"), async (req: AuthRequest, res) => {
@@ -3598,6 +3611,28 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), async
       res.status(400).json({
         ok: false,
         error: `Amount must be between ₦${plan.minAmountNaira.toLocaleString("en-NG")} and ₦${plan.maxAmountNaira.toLocaleString("en-NG")}.`,
+      });
+      return;
+    }
+    // Admin-configured availability window + capacity cap are enforced here —
+    // the plan catalog is the single source of truth for what is investable.
+    const nowIso = new Date().toISOString();
+    if (!planAcceptingInvestments(plan, nowIso)) {
+      const closed = Boolean(plan.effectiveTo && plan.effectiveTo <= nowIso);
+      const remaining = planRemainingCapacityNaira(plan);
+      const reason = closed && !plan.allowNewInvestmentsAfterClose
+        ? "This plan is closed to new investments."
+        : remaining !== undefined && remaining <= 0
+          ? "This plan is fully subscribed — its capacity has been reached."
+          : "This plan is not accepting investments right now.";
+      res.status(409).json({ ok: false, error: reason });
+      return;
+    }
+    const remainingCapacity = planRemainingCapacityNaira(plan);
+    if (remainingCapacity !== undefined && parsed.data.amountNaira > remainingCapacity) {
+      res.status(409).json({
+        ok: false,
+        error: `Only ₦${remainingCapacity.toLocaleString("en-NG")} remains on this plan — please invest that amount or less.`,
       });
       return;
     }
@@ -7840,8 +7875,38 @@ router.post("/admin/loans/:loanId/request-account-update", requireAuth, requireR
   });
 });
 
+/**
+ * Cross-field validation shared by POST and PATCH: the amount range must be
+ * sane and a FLAT-earnings plan must carry a positive fixed naira amount.
+ * Returns a field-error map (zod .flatten() shape) or null when valid.
+ */
+function validateInvestmentPlanFields(input: {
+  minAmountNaira?: number;
+  maxAmountNaira?: number;
+  earningsBasis?: "PERCENTAGE" | "FLAT";
+  earningsFlatNaira?: number;
+}): Record<string, string[]> | null {
+  const errors: Record<string, string[]> = {};
+  if (input.minAmountNaira !== undefined && input.maxAmountNaira !== undefined && input.maxAmountNaira < input.minAmountNaira) {
+    errors.maxAmountNaira = ["Maximum amount must be greater than or equal to the minimum amount."];
+  }
+  if (input.earningsBasis === "FLAT" && (!input.earningsFlatNaira || input.earningsFlatNaira <= 0)) {
+    errors.earningsFlatNaira = ["A flat-earnings plan needs a fixed naira amount greater than zero."];
+  }
+  return Object.keys(errors).length ? errors : null;
+}
+
 router.get("/admin/investment-plans", requireAuth, requireRole("ADMIN"), (_req, res) => {
-  res.json({ ok: true, plans: investmentPlans });
+  const nowIso = new Date().toISOString();
+  res.json({
+    ok: true,
+    plans: investmentPlans.map((p) => ({
+      ...p,
+      committedNaira: planCommittedNaira(p.id),
+      remainingCapacityNaira: planRemainingCapacityNaira(p),
+      acceptingInvestments: planAcceptingInvestments(p, nowIso),
+    })),
+  });
 });
 
 router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), async (req, res) => {
@@ -7864,6 +7929,8 @@ router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), async 
     gatewayFeeFlatNaira: z.number().nonnegative().optional(),
     forfeitInterestOnEarlyExit: z.boolean().default(false),
     capacityNaira: z.number().positive().optional(),
+    allowNewInvestmentsAfterClose: z.boolean().optional(),
+    effectiveTo: z.string().datetime().optional().nullable(),
     isActive: z.boolean().default(true),
   });
   const parsed = schema.safeParse(req.body);
@@ -7871,7 +7938,17 @@ router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), async 
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
+  const fieldErrors = validateInvestmentPlanFields(parsed.data);
+  if (fieldErrors) {
+    res.status(400).json({ ok: false, error: fieldErrors });
+    return;
+  }
+  if (investmentPlans.some((p) => p.name.trim().toLowerCase() === parsed.data.name.trim().toLowerCase())) {
+    res.status(409).json({ ok: false, error: "A plan with this name already exists." });
+    return;
+  }
   const now = new Date().toISOString();
+  const { effectiveTo, ...rest } = parsed.data;
   const plan: (typeof investmentPlans)[number] = {
     id: randomUUID(),
     currency: "NGN",
@@ -7879,11 +7956,26 @@ router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), async 
     version: 1,
     effectiveFrom: now,
     createdAt: now,
-    ...parsed.data,
+    ...rest,
+    // normalize "no end date" to the canonical absent (undefined) form
+    ...(effectiveTo ? { effectiveTo } : {}),
   };
   investmentPlans.push(plan);
+  recordAdminAudit(req, "INVESTMENT_PLAN_CREATED", "INVESTMENT_PLAN", plan.id, { name: plan.name, tenureDays: plan.tenureDays, earningsBasis: plan.earningsBasis ?? "PERCENTAGE" });
   if (!(await persistMutation(res))) return;
   res.status(201).json({ ok: true, plan });
+});
+
+// Admin-triggered re-seed of the owner-approved default plans (Velo Flex 30 /
+// Growth 90 / Max 180 / Prime 365). Only fills gaps — plans whose name already
+// exists (including admin-renamed or re-configured ones) are never touched.
+router.post("/admin/investment-plans/seed", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const { created, skipped } = seedDefaultInvestmentPlansExplicit();
+  if (created.length) {
+    recordAdminAudit(req, "INVESTMENT_PLANS_SEEDED", "INVESTMENT_PLAN", undefined, { created: created.map((p) => p.name), skipped });
+    if (!(await persistMutation(res))) return;
+  }
+  res.json({ ok: true, created, skipped });
 });
 
 router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
@@ -7894,10 +7986,12 @@ router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), a
   }
   const schema = z.object({
     name: z.string().min(2).optional(),
-    description: z.string().optional(),
+    description: z.string().nullable().optional(),
     minAmountNaira: z.number().positive().optional(),
     maxAmountNaira: z.number().positive().optional(),
+    tenureDays: z.number().int().positive().optional(),
     annualRatePercent: z.number().nonnegative().optional(),
+    rateType: z.enum(["ANNUALIZED", "FLAT", "TENURE_SPECIFIC"]).optional(),
     earningsBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
     earningsFlatNaira: z.number().nonnegative().optional(),
     earlyLiquidityAllowed: z.boolean().optional(),
@@ -7907,6 +8001,10 @@ router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), a
     gatewayFeePercent: z.number().nonnegative().optional(),
     gatewayFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
     gatewayFeeFlatNaira: z.number().nonnegative().optional(),
+    forfeitInterestOnEarlyExit: z.boolean().optional(),
+    capacityNaira: z.number().positive().nullable().optional(),
+    allowNewInvestmentsAfterClose: z.boolean().optional(),
+    effectiveTo: z.string().datetime().nullable().optional(),
     isActive: z.boolean().optional(),
   });
   const parsed = schema.safeParse(req.body);
@@ -7914,11 +8012,55 @@ router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), a
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
+  const fieldErrors = validateInvestmentPlanFields({
+    minAmountNaira: parsed.data.minAmountNaira ?? plan.minAmountNaira,
+    maxAmountNaira: parsed.data.maxAmountNaira ?? plan.maxAmountNaira,
+    earningsBasis: parsed.data.earningsBasis ?? plan.earningsBasis,
+    earningsFlatNaira: parsed.data.earningsFlatNaira ?? plan.earningsFlatNaira,
+  });
+  if (fieldErrors) {
+    res.status(400).json({ ok: false, error: fieldErrors });
+    return;
+  }
+  if (parsed.data.name !== undefined && investmentPlans.some((p) => p.id !== plan.id && p.name.trim().toLowerCase() === parsed.data.name!.trim().toLowerCase())) {
+    res.status(409).json({ ok: false, error: "A plan with this name already exists." });
+    return;
+  }
   plan.version += 1;
   plan.updatedAt = new Date().toISOString();
-  Object.assign(plan, parsed.data);
+  // Normalize nullable clears: null means "remove this field" — assign
+  // undefined (JSON.stringify drops it) instead of persisting literal nulls.
+  const patch: Record<string, unknown> = { ...parsed.data };
+  for (const key of ["description", "capacityNaira", "effectiveTo"]) {
+    if (patch[key] === null) patch[key] = undefined;
+  }
+  Object.assign(plan, patch);
+  recordAdminAudit(req, "INVESTMENT_PLAN_UPDATED", "INVESTMENT_PLAN", plan.id, { name: plan.name, version: plan.version, fields: Object.keys(parsed.data) });
   if (!(await persistMutation(res))) return;
   res.json({ ok: true, plan });
+});
+
+// Plans with money in them cannot be deleted — the admin is told to deactivate
+// instead so historic investments keep their plan reference intact.
+router.delete("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  const planIndex = investmentPlans.findIndex((p) => p.id === req.params.id);
+  if (planIndex < 0) {
+    res.status(404).json({ ok: false, error: "Investment plan not found" });
+    return;
+  }
+  const plan = investmentPlans[planIndex];
+  const referencing = investments.filter((i) => i.planId === plan.id && isCapitalHoldingInvestment(i.status));
+  if (referencing.length) {
+    res.status(409).json({
+      ok: false,
+      error: `This plan has ${referencing.length} investment${referencing.length === 1 ? "" : "s"} attached. Deactivate it instead of deleting so investor history stays intact.`,
+    });
+    return;
+  }
+  investmentPlans.splice(planIndex, 1);
+  recordAdminAudit(req, "INVESTMENT_PLAN_DELETED", "INVESTMENT_PLAN", plan.id, { name: plan.name });
+  if (!(await persistMutation(res))) return;
+  res.json({ ok: true });
 });
 
 router.get("/admin/reconciliation", requireAuth, requireRole("ADMIN"), (_req, res) => {

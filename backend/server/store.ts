@@ -1687,18 +1687,92 @@ export function generateOtpCode(): string {
   return randomInt(100000, 1_000_000).toString();
 }
 
-export function seedInvestmentPlans(): void {
-  if (investmentPlans.length > 0) return;
-  const now = new Date().toISOString();
-  const seedPlans: Omit<InvestmentPlan, "id" | "createdAt" | "updatedAt">[] = [
+/**
+ * The DEFAULT investment plans (owner-approved baseline). They live in ONE
+ * place so the boot-time auto-seed and the admin "Load default plans"
+ * endpoint stay in lockstep. Admin owns the catalog — these are only ever
+ * INSERTED, never forced back (per-name skip keeps admin edits intact).
+ */
+export function defaultInvestmentPlanSeed(now: string): Omit<InvestmentPlan, "id" | "createdAt" | "updatedAt">[] {
+  return [
     { name: "Velo Flex 30", description: "Short-term 30-day plan with competitive returns", currency: "NGN", minAmountNaira: 10000, maxAmountNaira: 5000000, tenureDays: 30, annualRatePercent: 10, rateType: "ANNUALIZED", earlyLiquidityAllowed: false, earlyLiquidityFeePercent: 0, gatewayFeePercent: 0, forfeitInterestOnEarlyExit: false, isActive: true, allowNewInvestmentsAfterClose: false, version: 1, effectiveFrom: now },
     { name: "Velo Growth 90", description: "Quarterly growth plan with steady returns", currency: "NGN", minAmountNaira: 50000, maxAmountNaira: 10000000, tenureDays: 90, annualRatePercent: 12.5, rateType: "ANNUALIZED", earlyLiquidityAllowed: true, earlyLiquidityFeePercent: 2, gatewayFeePercent: 0.5, forfeitInterestOnEarlyExit: false, isActive: true, allowNewInvestmentsAfterClose: false, version: 1, effectiveFrom: now },
     { name: "Velo Max 180", description: "6-month plan with premium returns", currency: "NGN", minAmountNaira: 100000, maxAmountNaira: 20000000, tenureDays: 180, annualRatePercent: 15, rateType: "ANNUALIZED", earlyLiquidityAllowed: true, earlyLiquidityFeePercent: 3, gatewayFeePercent: 0.5, forfeitInterestOnEarlyExit: true, isActive: true, allowNewInvestmentsAfterClose: false, version: 1, effectiveFrom: now },
     { name: "Velo Prime 365", description: "Annual prime plan for maximum yield", currency: "NGN", minAmountNaira: 500000, maxAmountNaira: 50000000, tenureDays: 365, annualRatePercent: 18, rateType: "ANNUALIZED", earlyLiquidityAllowed: true, earlyLiquidityFeePercent: 5, gatewayFeePercent: 0.5, forfeitInterestOnEarlyExit: true, isActive: true, allowNewInvestmentsAfterClose: false, version: 1, effectiveFrom: now },
   ];
-  for (const plan of seedPlans) {
+}
+
+export function seedInvestmentPlans(): void {
+  if (investmentPlans.length > 0) return;
+  const now = new Date().toISOString();
+  for (const plan of defaultInvestmentPlanSeed(now)) {
     investmentPlans.push({ id: randomUUID(), createdAt: now, ...plan });
   }
+}
+
+/**
+ * Admin-triggered re-seed: inserts every default plan whose NAME is not
+ * already in the catalog. Existing plans (including renamed defaults) are
+ * never touched — the admin owns the catalog, this only fills gaps.
+ */
+export function seedDefaultInvestmentPlansExplicit(): { created: InvestmentPlan[]; skipped: string[] } {
+  const now = new Date().toISOString();
+  const existingNames = new Set(investmentPlans.map((p) => p.name.trim().toLowerCase()));
+  const created: InvestmentPlan[] = [];
+  const skipped: string[] = [];
+  for (const plan of defaultInvestmentPlanSeed(now)) {
+    if (existingNames.has(plan.name.trim().toLowerCase())) {
+      skipped.push(plan.name);
+      continue;
+    }
+    const row: InvestmentPlan = { id: randomUUID(), createdAt: now, ...plan };
+    investmentPlans.push(row);
+    created.push(row);
+  }
+  return { created, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// Plan availability + capacity helpers (single source of truth shared by the
+// admin catalog, the investor plan listing and the invest endpoint so all
+// three agree on whether a plan accepts money right now).
+// ---------------------------------------------------------------------------
+
+/** Statuses that no longer hold capital (liquidated, cancelled or rejected). */
+const CAPITAL_RELEASED_STATUSES: readonly InvestmentStatus[] = ["CANCELLED", "REJECTED", "PAID_OUT"];
+
+export function isCapitalHoldingInvestment(status: InvestmentStatus): boolean {
+  return !CAPITAL_RELEASED_STATUSES.includes(status);
+}
+
+/** Total naira currently committed to a plan by capital-holding investments. */
+export function planCommittedNaira(planId: string): number {
+  return investments
+    .filter((i) => i.planId === planId && isCapitalHoldingInvestment(i.status))
+    .reduce((sum, i) => sum + Number(i.amountNaira ?? 0), 0);
+}
+
+/** Remaining investable naira under the plan's capacity cap (undefined = unlimited). */
+export function planRemainingCapacityNaira(plan: Pick<InvestmentPlan, "capacityNaira" | "id">): number | undefined {
+  if (!plan.capacityNaira || plan.capacityNaira <= 0) return undefined;
+  return Math.max(0, plan.capacityNaira - planCommittedNaira(plan.id ?? ""));
+}
+
+/**
+ * Whether a plan accepts NEW investments right now: it must be active, not
+ * past its effectiveTo window (unless the plan explicitly allows investments
+ * after close) and — when a capacity is configured — have remaining room.
+ */
+export function planAcceptingInvestments(
+  plan: Pick<InvestmentPlan, "isActive" | "effectiveTo" | "allowNewInvestmentsAfterClose" | "capacityNaira" | "id">,
+  nowIso: string = new Date().toISOString(),
+): boolean {
+  if (!plan.isActive) return false;
+  const closed = Boolean(plan.effectiveTo && plan.effectiveTo <= nowIso);
+  if (closed && !plan.allowNewInvestmentsAfterClose) return false;
+  const remaining = planRemainingCapacityNaira(plan);
+  if (remaining !== undefined && remaining <= 0) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------

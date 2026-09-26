@@ -65,7 +65,13 @@ type KycData = {
   identityPhoto?: string;
   documents?: Array<{ id?: string; documentType?: string; fileName?: string; mimeType?: string; sizeBytes?: number; status?: string; createdAt?: string; uploadedAt?: string; provider?: string; providerFileId?: string; previewUrl?: string; downloadUrl?: string }>;
 };
-type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number; earningsBasis?: "PERCENTAGE" | "FLAT"; earningsFlatNaira?: number };
+type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number; earningsBasis?: "PERCENTAGE" | "FLAT"; earningsFlatNaira?: number; acceptingInvestments?: boolean; remainingCapacityNaira?: number; capacityNaira?: number; earlyLiquidityAllowed?: boolean; };
+
+/** Why a plan is not currently investable (admin-configured availability). */
+function planAvailabilityLabel(plan: Plan): string {
+  if (plan.remainingCapacityNaira !== undefined && plan.remainingCapacityNaira <= 0) return "Fully subscribed";
+  return "Closed";
+}
 
 /** Human label for a plan's earning terms — percent plans show "% p.a.", flat plans show the fixed naira amount. */
 function planEarningsLabel(plan: Plan): string {
@@ -1365,15 +1371,26 @@ function InvestorOverview(props: any) {
             </div>
             {action === "plans" && (
               <div className="mt-4 space-y-2">
-                {plans.length ? plans.map((plan: Plan) => (
-                  <div key={plan.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-700 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-velo-900 dark:text-white">{plan.name} · {plan.tenureDays} days</div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Min ₦{Number(plan.minAmountNaira).toLocaleString()} · {planEarningsLabel(plan)}</div>
+                {plans.length ? plans.map((plan: Plan) => {
+                  const accepting = plan.acceptingInvestments !== false;
+                  return (
+                    <div key={plan.id} className={`flex items-center justify-between rounded-xl border p-3 text-sm bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50 ${accepting ? "border-slate-200 dark:border-slate-700" : "border-slate-200 opacity-60 dark:border-slate-800"}`}>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 font-semibold text-velo-900 dark:text-white">
+                          {plan.name} · {plan.tenureDays} days
+                          {!accepting && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">{planAvailabilityLabel(plan)}</span>}
+                          {plan.earlyLiquidityAllowed && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">Early exit allowed</span>}
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Min ₦{Number(plan.minAmountNaira).toLocaleString()} · {planEarningsLabel(plan)}{plan.remainingCapacityNaira !== undefined && plan.remainingCapacityNaira > 0 && <> · ₦{plan.remainingCapacityNaira.toLocaleString()} left</>}</div>
+                      </div>
+                      {accepting ? (
+                        <button type="button" className="btn-primary !py-1.5 !px-3 text-xs" onClick={() => openInvestModal(plan)}>Invest</button>
+                      ) : (
+                        <span className="shrink-0 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-400 dark:bg-slate-800">Unavailable</span>
+                      )}
                     </div>
-                    <button type="button" className="btn-primary !py-1.5 !px-3 text-xs" onClick={() => openInvestModal(plan)}>Invest</button>
-                  </div>
-                )) : <Empty text="Loading investment plans…" />}
+                  );
+                }) : <Empty text="Loading investment plans…" />}
               </div>
             )}
           </section>

@@ -270,8 +270,17 @@ Reconciliation runs on dashboard/wallet reads, at boot, and after every maturity
 
 1. `POST /investor/wallet/funding` creates a pending deposit + Flutterwave checkout link.
 2. Credit happens after provider verification — signature-checked webhook (`/webhooks/flutterwave`) or explicit client verify (`/investor/wallet/funding/verify`, 3-retry verification, amount+currency+owner matching). Duplicate events are idempotent.
-3. `POST /investor/investments` locks the principal (held balance), computes maturity + expected earnings from the plan (rate types: `ANNUALIZED`, `FLAT`, `TENURE_SPECIFIC`; earnings basis `PERCENTAGE` or `FLAT` fixed naira; optional early-liquidity fee, gateway fee, forfeit-interest flags, capacity cap).
+3. `POST /investor/investments` locks the principal (held balance), computes maturity + expected earnings from the plan (rate types: `ANNUALIZED`, `FLAT`, `TENURE_SPECIFIC`; earnings basis `PERCENTAGE` or `FLAT` fixed naira; optional early-liquidity fee, gateway fee, forfeit-interest flags, capacity cap). The plan's admin configuration is fully enforced server-side: inactive, closed (`effectiveTo` passed without `allowNewInvestmentsAfterClose`) or fully-subscribed (remaining capacity exhausted) plans reject new investments, and amounts above the remaining capacity are refused.
 4. Maturity sweeps release principal (`INVESTMENT_RELEASE`) and pay earnings (`INVESTMENT_RETURN`) as separate ledger semantics — earnings never touch holds.
+
+#### Investment plans are 100% admin-owned (nothing hardcoded)
+
+The plan catalog lives in the database and is managed entirely from **Admin ▸ Investor tools ▸ Investment plans**:
+
+- **Create / configure every parameter**: name, description, min/max investment, tenure days, earnings (**Percent % p.a.** or **Flat ₦ for the whole tenure**), early liquidity (allowed toggle + percent/flat exit fee + forfeit-interest flag), gateway fee (percent/flat), capacity cap (total ₦ the plan accepts across all investors), availability window (`effectiveTo` + allow-investments-after-close) and the active flag.
+- **Live catalog**: `GET /investor/investment-plans` serves the admin-configured plans enriched with `acceptingInvestments` and `remainingCapacityNaira`; the investor dashboard renders exactly that — closed or fully-subscribed plans show an "Unavailable" badge with the Invest CTA disabled.
+- **Seed defaults**: the classic Velo plans (Flex 30 / Growth 90 / Max 180 / Prime 365) auto-seed on first boot and can be re-restored anytime via **Load default plans** (`POST /admin/investment-plans/seed`) — the seed only fills gaps by name and never overwrites admin edits.
+- **Safe deletes**: `DELETE /admin/investment-plans/:id` refuses with 409 while capital-holding investments reference the plan (deactivate instead); all create/update/delete/seed actions are audit-logged.
 
 ### Withdrawals & payouts
 

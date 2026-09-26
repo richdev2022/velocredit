@@ -503,7 +503,7 @@ export async function updateInvestorPayoutAccount(input: PayoutAccountUpdateInpu
   return request("/api/v1/investor/payout-account", { method: "PUT", body: JSON.stringify(input) });
 }
 
-export interface InvestmentPlan { id: string; version: number; name: string; description?: string; currency: "NGN"; minAmountNaira: number; maxAmountNaira: number; tenureDays: number; annualRatePercent: number; rateType: "ANNUALIZED" | "FLAT" | "TENURE_SPECIFIC"; earningsBasis?: FeeBasis; earningsFlatNaira?: number; earlyLiquidityAllowed: boolean; earlyLiquidityFeePercent: number; earlyLiquidityFeeBasis?: FeeBasis; earlyLiquidityFeeFlatNaira?: number; gatewayFeePercent: number; gatewayFeeBasis?: FeeBasis; gatewayFeeFlatNaira?: number; forfeitInterestOnEarlyExit: boolean; capacityNaira?: number; isActive: boolean; allowNewInvestmentsAfterClose: boolean; effectiveFrom: string; effectiveTo?: string; createdAt: string; updatedAt?: string; }
+export interface InvestmentPlan { id: string; version: number; name: string; description?: string; currency: "NGN"; minAmountNaira: number; maxAmountNaira: number; tenureDays: number; annualRatePercent: number; rateType: "ANNUALIZED" | "FLAT" | "TENURE_SPECIFIC"; earningsBasis?: FeeBasis; earningsFlatNaira?: number; earlyLiquidityAllowed: boolean; earlyLiquidityFeePercent: number; earlyLiquidityFeeBasis?: FeeBasis; earlyLiquidityFeeFlatNaira?: number; gatewayFeePercent: number; gatewayFeeBasis?: FeeBasis; gatewayFeeFlatNaira?: number; forfeitInterestOnEarlyExit: boolean; capacityNaira?: number; isActive: boolean; allowNewInvestmentsAfterClose: boolean; effectiveFrom: string; effectiveTo?: string; createdAt: string; updatedAt?: string; committedNaira?: number; remainingCapacityNaira?: number; acceptingInvestments?: boolean; }
 export async function getInvestmentPlans(): Promise<{ ok: true; plans: InvestmentPlan[] }> { return request("/api/v1/investor/investment-plans"); }
 
 export interface WalletFundingResponse { ok: true; txRef: string; amountNaira: number; checkout?: { status?: string; data?: { link?: string }; message?: string; error?: string }; message: string; }
@@ -786,13 +786,22 @@ export async function adminListInvestmentPlans(): Promise<AdminInvestmentPlansRe
   return request("/api/v1/admin/investment-plans");
 }
 
-export interface AdminCreatePlanInput { name: string; description?: string; minAmountNaira: number; maxAmountNaira: number; annualRatePercent: number; tenureDays: number; rateType?: "ANNUALIZED" | "FLAT" | "TENURE_SPECIFIC"; earningsBasis?: FeeBasis; earningsFlatNaira?: number; earlyLiquidityAllowed: boolean; earlyLiquidityFeePercent: number; earlyLiquidityFeeBasis?: FeeBasis; earlyLiquidityFeeFlatNaira?: number; gatewayFeePercent: number; gatewayFeeBasis?: FeeBasis; gatewayFeeFlatNaira?: number; forfeitInterestOnEarlyExit: boolean; capacityNaira?: number; isActive?: boolean; }
+export interface AdminCreatePlanInput { name: string; description?: string | null; minAmountNaira: number; maxAmountNaira: number; annualRatePercent: number; tenureDays: number; rateType?: "ANNUALIZED" | "FLAT" | "TENURE_SPECIFIC"; earningsBasis?: FeeBasis; earningsFlatNaira?: number; earlyLiquidityAllowed: boolean; earlyLiquidityFeePercent: number; earlyLiquidityFeeBasis?: FeeBasis; earlyLiquidityFeeFlatNaira?: number; gatewayFeePercent: number; gatewayFeeBasis?: FeeBasis; gatewayFeeFlatNaira?: number; forfeitInterestOnEarlyExit: boolean; capacityNaira?: number | null; allowNewInvestmentsAfterClose?: boolean; effectiveTo?: string | null; isActive?: boolean; }
 export async function adminCreateInvestmentPlan(input: AdminCreatePlanInput): Promise<{ ok: true; plan: InvestmentPlan; }> {
   return request("/api/v1/admin/investment-plans", { method: "POST", body: JSON.stringify(input) });
 }
 
 export async function adminPatchInvestmentPlan(id: string, input: Partial<AdminCreatePlanInput> & { isActive?: boolean }): Promise<{ ok: true; plan: InvestmentPlan; }> {
   return request(`/api/v1/admin/investment-plans/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export async function adminDeleteInvestmentPlan(id: string): Promise<{ ok: true }> {
+  return request(`/api/v1/admin/investment-plans/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export interface AdminSeedPlansResponse { ok: true; created: InvestmentPlan[]; skipped: string[]; }
+export async function adminSeedInvestmentPlans(): Promise<AdminSeedPlansResponse> {
+  return request("/api/v1/admin/investment-plans/seed", { method: "POST", body: JSON.stringify({}) });
 }
 
 export interface AdminLoanProductsResponse { ok: true; products: LoanProduct[]; activeCount?: number; }
