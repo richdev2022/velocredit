@@ -89,8 +89,8 @@ export default function FaceVerifyHandoff() {
       )}
 
       {phase === "ready" && (
-        <div className="mt-6 pb-10">
-          <p className="mb-4 px-4 text-center text-xs text-slate-500 dark:text-slate-400">
+        <div className="mt-6 px-4 pb-10">
+          <p className="mb-4 text-center text-xs text-slate-500 dark:text-slate-400">
             {userName ? `Hi ${userName.split(" ")[0]} — ` : ""}take your selfie here, then return to your computer to finish.
           </p>
           <FaceVerificationFlow standalone onVerified={() => setPhase("already-done")} />

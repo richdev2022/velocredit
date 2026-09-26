@@ -33,6 +33,18 @@ import {
 
 type Step = "closed" | "instructions" | "phone" | "camera" | "preview" | "verifying" | "success" | "failed" | "manual-review" | "manual-review-done";
 
+/** The 8 capture tips shown in the instructions modal (numbered grid). */
+const CAPTURE_TIPS = [
+  { title: "Find bright, even light", detail: "Face the light source — never sit with a window behind you." },
+  { title: "Uncover your face", detail: "Remove glasses, hats and coverings; hairline to chin must be visible." },
+  { title: "Use a plain background", detail: "Sit in front of a plain background and be the only person in frame." },
+  { title: "Camera at eye level", detail: "Hold it steady, about 30–50 cm away from your face." },
+  { title: "Fill the oval guide", detail: "Fit your entire face inside the oval shown on screen." },
+  { title: "Look straight ahead", detail: "Both eyes open, neutral expression, looking at the camera." },
+  { title: "Keep perfectly still", detail: "No smiling, tilting or turning your head while we capture." },
+  { title: "No filters or edits", detail: "The photo must be the real, unedited you." },
+] as const;
+
 interface Props {
   /** Called after the face check passes (or was already approved elsewhere). */
   onVerified?: (selfieImageData?: string) => void;
@@ -307,52 +319,57 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
 
   if (step === "closed") return trigger;
 
+  // NOTE: the page trigger is intentionally NOT rendered inside the open
+  // overlay — a flex sibling next to the card squeezed the whole modal on
+  // small screens (the "Take a selfie — verify my face" button used to sit
+  // beside the dialog, breaking the layout).
   const overlayClass = standalone
-    ? "fixed inset-0 z-50 overflow-y-auto bg-slate-100 dark:bg-slate-950"
-    : "fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/60 p-3 sm:p-6";
+    ? "relative z-10 w-full" // the /face-verify page owns the background, scroll and padding
+    : "fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-slate-950/60 p-3 sm:p-6";
 
   const cardClass = standalone
-    ? "mx-auto my-6 w-full max-w-lg rounded-2xl bg-white shadow-2xl dark:bg-slate-900"
+    ? "mx-auto w-full max-w-lg rounded-2xl bg-white shadow-2xl dark:bg-slate-900"
     : "my-auto w-full max-w-lg rounded-2xl bg-white shadow-2xl dark:bg-slate-900";
 
   return (
     <div className={overlayClass}>
-      {!standalone && trigger}
       <div className={cardClass}>
         {/* ------------------------- INSTRUCTIONS ------------------------- */}
         {step === "instructions" && (
-          <div className="p-5 sm:p-6">
+          <div className="p-5 sm:p-7">
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <span className="inline-flex items-center rounded-full bg-velo-50 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-velo-700 dark:bg-velo-900/40 dark:text-velo-300">Face verification</span>
-                <h2 className="mt-2 text-lg font-bold text-velo-900 dark:text-white">Before you take your selfie</h2>
-                <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">Your selfie is compared with the portrait on your BVN/NIN record, so a clean capture matters. Follow every step below to pass on the first try.</p>
+              <div className="flex items-center gap-3">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-velo-50 text-velo-600 dark:bg-velo-900/40 dark:text-velo-300">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                    <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2v11z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    <circle cx="12" cy="13" r="4" stroke="currentColor" strokeWidth="1.8" />
+                  </svg>
+                </span>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold leading-snug text-velo-900 dark:text-white">Before you take your selfie</h2>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500 dark:text-slate-400">Compared with your BVN/NIN portrait</p>
+                </div>
               </div>
-              {!standalone && <button type="button" className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800" onClick={closeFlow} aria-label="Close">
+              {!standalone && <button type="button" className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800" onClick={closeFlow} aria-label="Close">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
               </button>}
             </div>
 
-            <div className="mt-4 space-y-4">
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-700 dark:bg-slate-800/40">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Set-up</p>
-                <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">1.</span> Find bright, even light and <strong>face the light source</strong> — never sit with a window behind you.</li>
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">2.</span> <strong>Remove glasses, hats and face coverings</strong> — your full face from hairline to chin must be visible.</li>
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">3.</span> Sit in front of a <strong>plain background</strong> and make sure you are the only person in the frame.</li>
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">4.</span> Hold the camera <strong>at eye level, about 30–50 cm away</strong>.</li>
-                </ul>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-700 dark:bg-slate-800/40">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">During the capture</p>
-                <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">5.</span> Fit your <strong>entire face inside the oval guide</strong> — hairline, eyes, nose and chin.</li>
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">6.</span> Look <strong>straight at the camera</strong> with both eyes open and a neutral expression.</li>
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">7.</span> <strong>Keep still</strong> — do not smile, tilt, or turn your head while we capture.</li>
-                  <li className="flex gap-2"><span className="text-velo-600 font-bold">8.</span> No filters or beauty mode — the photo must be the real you.</li>
-                </ul>
-              </div>
-            </div>
+            <p className="mt-4 rounded-xl border border-velo-100 bg-velo-50/70 px-3.5 py-2.5 text-xs leading-relaxed text-slate-600 dark:border-velo-900/50 dark:bg-velo-900/20 dark:text-slate-300">
+              Follow these <strong>8 quick steps</strong> so the camera check passes on the first try — a clean capture matters.
+            </p>
+
+            <ol className="mt-3.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {CAPTURE_TIPS.map((tip, index) => (
+                <li key={tip.title} className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-700 dark:bg-slate-800/40">
+                  <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-velo-600/10 text-[10px] font-extrabold text-velo-700 dark:bg-velo-300/10 dark:text-velo-300">{index + 1}</span>
+                  <span className="min-w-0">
+                    <span className="block text-xs font-bold leading-snug text-slate-700 dark:text-slate-200">{tip.title}</span>
+                    <span className="mt-0.5 block text-[11px] leading-snug text-slate-500 dark:text-slate-400">{tip.detail}</span>
+                  </span>
+                </li>
+              ))}
+            </ol>
 
             {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 dark:bg-red-900/20 dark:text-red-300">{error}</p>}
 
@@ -379,28 +396,39 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
 
         {/* ------------------------- PHONE / QR --------------------------- */}
         {step === "phone" && (
-          <div className="p-5 sm:p-6">
+          <div className="p-5 sm:p-7">
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <span className="inline-flex items-center rounded-full bg-velo-50 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-velo-700 dark:bg-velo-900/40 dark:text-velo-300">Continue on your phone</span>
-                <h2 className="mt-2 text-lg font-bold text-velo-900 dark:text-white">Scan and continue on your smartphone</h2>
+              <div className="flex items-center gap-3">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-velo-50 text-velo-600 dark:bg-velo-900/40 dark:text-velo-300">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="7" y="2" width="10" height="20" rx="2" stroke="currentColor" strokeWidth="1.8" /><path d="M11 18h2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+                </span>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold leading-snug text-velo-900 dark:text-white">Scan to verify on your phone</h2>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500 dark:text-slate-400">Take the selfie there — this page stays in sync</p>
+                </div>
               </div>
-              {!standalone && <button type="button" className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800" onClick={closeFlow} aria-label="Close">
+              {!standalone && <button type="button" className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800" onClick={closeFlow} aria-label="Close">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
               </button>}
             </div>
 
-            <div className="mt-4 flex flex-col items-center gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:flex-row dark:border-slate-700 dark:bg-slate-800/40">
-              <div className="rounded-xl border border-slate-200 bg-white p-2 dark:border-slate-600">
-                <QRCode value={handoffUrl} size={168} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">1. Open the <strong>camera app</strong> on your phone and point it at the QR code.<br />2. Tap the link that appears to open your face verification.<br />3. Take the selfie on your phone — we keep this page in sync.</p>
-                <div className="mt-3 flex items-center gap-2">
-                  <input readOnly value={handoffUrl} className="velo-input min-w-0 flex-1 !py-1.5 font-mono text-[10px]" onFocus={(event) => event.currentTarget.select()} />
-                  <button type="button" className="btn-secondary shrink-0 !px-2.5 !py-1.5 text-[11px]" onClick={async () => { try { await navigator.clipboard.writeText(handoffUrl); setCopied(true); } catch { /* clipboard unavailable */ } }}>{copied ? "Copied" : "Copy"}</button>
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-800/40">
+              <div className="flex flex-col items-center">
+                <div className="rounded-2xl border border-slate-200 bg-white p-2.5 shadow-sm dark:border-slate-600">
+                  <QRCode value={handoffUrl} size={196} />
                 </div>
-                <p className="mt-2 text-[10px] text-slate-400">The link works for 10 minutes and only for your own verification.</p>
+                <p className="mt-2.5 text-center text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                  Open the <strong>camera app</strong> on your phone and point it at the code — then tap the link that appears.
+                </p>
+              </div>
+
+              <div className="mt-3.5 border-t border-slate-200 pt-3.5 dark:border-slate-700">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Or copy this link into your phone browser</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <input readOnly value={handoffUrl} className="velo-input min-w-0 flex-1 !py-2 font-mono text-[11px]" onFocus={(event) => event.currentTarget.select()} />
+                  <button type="button" className="btn-secondary shrink-0 !px-3 !py-2 text-xs" onClick={async () => { try { await navigator.clipboard.writeText(handoffUrl); setCopied(true); } catch { /* clipboard unavailable */ } }}>{copied ? "Copied" : "Copy"}</button>
+                </div>
+                <p className="mt-1.5 text-[10px] text-slate-400">The link works for 10 minutes and only for your own verification.</p>
               </div>
             </div>
 
@@ -464,7 +492,7 @@ export default function FaceVerificationFlow({ onVerified, onManualReviewRequest
               )}
             </div>
 
-            <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+            <div className="mt-3 grid grid-cols-1 gap-2 text-center text-[10px] font-semibold text-slate-500 sm:grid-cols-3 dark:text-slate-400">
               <div className="rounded-lg bg-slate-50 px-2 py-1.5 dark:bg-slate-800/60">Face the light</div>
               <div className="rounded-lg bg-slate-50 px-2 py-1.5 dark:bg-slate-800/60">Eyes open · look straight</div>
               <div className="rounded-lg bg-slate-50 px-2 py-1.5 dark:bg-slate-800/60">Hold still — no smiling</div>
