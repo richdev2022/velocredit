@@ -201,6 +201,19 @@ export default function LoanRequestSection() {
   const bannerProcessingFee = bannerProduct ? bannerProduct.processingFeePercent : program.fees.processingFee.value;
   const bannerLateFee = bannerProduct ? bannerProduct.lateFeePercent : program.fees.lateFee.value;
   const bannerLateFeeType = bannerProduct?.lateFeeType;
+  // PERCENTAGE (default) shows "%", FLAT shows the fixed naira amount.
+  const bannerInterestFlat = bannerProduct?.interestBasis === "FLAT";
+  const bannerInterestLabel = bannerInterestFlat
+    ? `₦${Number(bannerProduct?.interestFlatNaira ?? 0).toLocaleString()} fixed`
+    : `${bannerRate}%`;
+  const bannerProcessingFlat = bannerProduct?.processingFeeBasis === "FLAT";
+  const bannerProcessingLabel = bannerProcessingFlat
+    ? `₦${Number(bannerProduct?.processingFeeFlatNaira ?? 0).toLocaleString()} fixed`
+    : `${bannerProcessingFee}%`;
+  const bannerLateFlat = bannerProduct?.lateFeeBasis === "FLAT";
+  const bannerLateLabel = bannerLateFlat
+    ? `₦${Number(bannerProduct?.lateFeeFlatNaira ?? 0).toLocaleString()} fixed`
+    : `${bannerLateFee}%`;
   const bannerGraceDays = bannerProduct?.gracePeriodDays;
 
   return (
@@ -239,19 +252,19 @@ export default function LoanRequestSection() {
                 <div>
                   <span className="text-slate-500 dark:text-slate-400">Interest: </span>
                   <span className="font-semibold text-slate-800 dark:text-slate-100">
-                    {bannerRate}% {INTEREST_TYPE_LABELS[bannerRateType] ?? "per month"}
+                    {bannerInterestLabel}{!bannerInterestFlat && ` ${INTEREST_TYPE_LABELS[bannerRateType] ?? "per month"}`}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-500 dark:text-slate-400">Processing fee: </span>
                   <span className="font-semibold text-slate-800 dark:text-slate-100">
-                    {bannerProcessingFee}%
+                    {bannerProcessingLabel}
                   </span>
                 </div>
                 <div>
                   <span className="text-slate-500 dark:text-slate-400">Late fee: </span>
                   <span className="font-semibold text-slate-800 dark:text-slate-100">
-                    {bannerLateFee}%{bannerLateFeeType ? ` (${LATE_FEE_TYPE_LABELS[bannerLateFeeType] ?? bannerLateFeeType})` : ""}
+                    {bannerLateLabel}{!bannerLateFlat && bannerLateFeeType ? ` (${LATE_FEE_TYPE_LABELS[bannerLateFeeType] ?? bannerLateFeeType})` : ""}
                   </span>
                 </div>
                 {typeof bannerGraceDays === "number" && (

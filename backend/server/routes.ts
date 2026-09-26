@@ -66,7 +66,8 @@ import {
   getPlatformSettings,
   updatePlatformSettings,
   setInvestorEarningRateOverride,
-  getEffectiveInvestorRate,
+  resolveInvestorEarnings,
+  getInvestorEarningOverride,
   investorWithdrawals,
   appendAdminLedger,
   settleWalletDeposit,
@@ -3583,8 +3584,10 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), async
     return;
   }
   const plan = parsed.data.planId ? investmentPlans.find((p) => p.id === parsed.data.planId) : undefined;
-  const planRate = plan?.annualRatePercent ?? parsed.data.annualRatePercent;
-  const annualRate = getEffectiveInvestorRate(req.user!.id, planRate);
+  // Earnings terms resolution: investor override > plan basis (PERCENTAGE rate
+  // or FLAT naira) > the request's rate > the platform default. FLAT earnings
+  // pay one fixed naira amount for the whole tenure regardless of principal.
+  const earnings = resolveInvestorEarnings(req.user!.id, plan ?? (parsed.data.annualRatePercent !== undefined ? { annualRatePercent: Number(parsed.data.annualRatePercent) } : undefined));
   const tenure = plan?.tenureDays ?? parsed.data.tenureDays;
   if (plan) {
     if (!plan.isActive) {
@@ -3606,7 +3609,23 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), async
   }
   const startsAt = new Date();
   const maturesAt = new Date(startsAt.getTime() + tenure * 86400000);
-  const expectedEarnings = calculateInvestmentAccrual({ amountNaira: parsed.data.amountNaira, annualRatePercent: annualRate, tenureDays: tenure, startsAt: startsAt.toISOString(), maturesAt: maturesAt.toISOString() }).expectedEarningsNaira;
+  // PERCENTAGE earnings use the legacy daily-accrual math. FLAT earnings store
+  // the annualized-EQUIVALENT percent on the row so every existing consumer
+  // (daily accrual curve, reminders, maturity sweep, emails) keeps working
+  // unchanged — the linear accrual of the equivalent percent matches the flat
+  // amount exactly (equivalent% = flat / amount / days × 365 × 100).
+  const amountNaira = Number(parsed.data.amountNaira);
+  let expectedEarnings: number;
+  let storedAnnualRatePercent: number;
+  if (earnings.type === "FLAT") {
+    expectedEarnings = Math.round(earnings.value * 100) / 100;
+    storedAnnualRatePercent = amountNaira > 0 && tenure > 0
+      ? Math.round((expectedEarnings / amountNaira / tenure * 365 * 100) * 100) / 100
+      : 0;
+  } else {
+    storedAnnualRatePercent = earnings.value;
+    expectedEarnings = calculateInvestmentAccrual({ amountNaira, annualRatePercent: earnings.value, tenureDays: tenure, startsAt: startsAt.toISOString(), maturesAt: maturesAt.toISOString() }).expectedEarningsNaira;
+  }
   const investment = {
     id: randomUUID(),
     investorId: req.user!.id,
@@ -3616,7 +3635,7 @@ router.post("/investor/investments", requireAuth, requireRole("INVESTOR"), async
     amountNaira: parsed.data.amountNaira,
     expectedEarningsNaira: expectedEarnings,
     tenureDays: tenure,
-    annualRatePercent: annualRate,
+    annualRatePercent: storedAnnualRatePercent,
     startsAt: startsAt.toISOString(),
     maturesAt: maturesAt.toISOString(),
     status: "ACTIVE" as const,
@@ -3715,12 +3734,20 @@ router.post("/investor/investments/:id/liquidity", requireAuth, requireRole("INV
       return;
     }
   }
+  // Early-exit fees honour the plan's PERCENTAGE/FLAT basis: PERCENTAGE
+  // (default/legacy) = amount × percent / 100, FLAT = fixed naira amounts.
+  const liquidityFeeIsFlat = String(plan?.earlyLiquidityFeeBasis ?? "PERCENTAGE").toUpperCase() === "FLAT";
+  const gatewayFeeIsFlat = String(plan?.gatewayFeeBasis ?? "PERCENTAGE").toUpperCase() === "FLAT";
   const liquidityFeePercent = plan?.earlyLiquidityFeePercent ?? 0;
   const gatewayFeePercent = plan?.gatewayFeePercent ?? 0;
   const forfeitInterest = plan?.forfeitInterestOnEarlyExit ?? false;
   const eligibleEarnings = forfeitInterest ? 0 : Number(investment.expectedEarningsNaira ?? 0);
-  const liquidityFee = (Number(investment.amountNaira) * liquidityFeePercent) / 100;
-  const gatewayFee = (Number(investment.amountNaira) * gatewayFeePercent) / 100;
+  const liquidityFee = liquidityFeeIsFlat
+    ? Math.max(0, Number(plan?.earlyLiquidityFeeFlatNaira ?? 0))
+    : (Number(investment.amountNaira) * liquidityFeePercent) / 100;
+  const gatewayFee = gatewayFeeIsFlat
+    ? Math.max(0, Number(plan?.gatewayFeeFlatNaira ?? 0))
+    : (Number(investment.amountNaira) * gatewayFeePercent) / 100;
   const totalFees = liquidityFee + gatewayFee;
   const net = Number(investment.amountNaira) + eligibleEarnings - totalFees;
   const now = new Date().toISOString();
@@ -3756,7 +3783,7 @@ router.post("/investor/investments/:id/liquidity", requireAuth, requireRole("INV
       referenceId: investment.id,
       amountMinor: feesMinor,
       direction: "DEBIT",
-      description: `Early liquidity fees (${liquidityFeePercent}% + ${gatewayFeePercent}%)`,
+      description: `Early liquidity fees (${liquidityFeeIsFlat ? `₦${liquidityFee.toLocaleString("en-NG")}` : `${liquidityFeePercent}%`} + ${gatewayFeeIsFlat ? `₦${gatewayFee.toLocaleString("en-NG")}` : `${gatewayFeePercent}%`})`,
     });
   }
   const payout: (typeof payouts)[number] = {
@@ -6462,9 +6489,17 @@ export function captureProductSnapshot(product: LoanProductRow | null): LoanProd
     tenorInterestRates: product.tenorInterestRates ? product.tenorInterestRates.map((r) => ({ ...r })) : undefined,
     interestRatePercent: Number(product.interestRatePercent),
     interestType: product.interestType,
+    interestBasis: product.interestBasis,
+    interestFlatNaira: product.interestFlatNaira,
     processingFeePercent: Number(product.processingFeePercent),
+    processingFeeBasis: product.processingFeeBasis,
+    processingFeeFlatNaira: product.processingFeeFlatNaira,
     serviceFeePercent: Number(product.serviceFeePercent ?? 0),
+    serviceFeeBasis: product.serviceFeeBasis,
+    serviceFeeFlatNaira: product.serviceFeeFlatNaira,
     lateFeePercent: Number(product.lateFeePercent),
+    lateFeeBasis: product.lateFeeBasis,
+    lateFeeFlatNaira: product.lateFeeFlatNaira,
     lateFeeType: product.lateFeeType,
     gracePeriodDays: product.gracePeriodDays,
     collateralEnabled: product.collateralEnabled ?? true,
@@ -6500,9 +6535,17 @@ function applicationProductPayload(application: {
     productProgramType: (sourceRecord.programType ?? snapshot?.programType ?? null) as string | null | undefined,
     productInterestRatePercent: Number(sourceRecord.interestRatePercent ?? snapshot?.interestRatePercent ?? 0),
     productInterestType: sourceRecord.interestType ?? snapshot?.interestType ?? "SIMPLE_FLAT",
+    productInterestBasis: sourceRecord.interestBasis ?? snapshot?.interestBasis ?? "PERCENTAGE",
+    productInterestFlatNaira: Number(sourceRecord.interestFlatNaira ?? snapshot?.interestFlatNaira ?? 0),
     productProcessingFeePercent: Number(sourceRecord.processingFeePercent ?? snapshot?.processingFeePercent ?? 0),
+    productProcessingFeeBasis: sourceRecord.processingFeeBasis ?? snapshot?.processingFeeBasis ?? "PERCENTAGE",
+    productProcessingFeeFlatNaira: Number(sourceRecord.processingFeeFlatNaira ?? snapshot?.processingFeeFlatNaira ?? 0),
     productServiceFeePercent: Number(sourceRecord.serviceFeePercent ?? snapshot?.serviceFeePercent ?? 0),
+    productServiceFeeBasis: sourceRecord.serviceFeeBasis ?? snapshot?.serviceFeeBasis ?? "PERCENTAGE",
+    productServiceFeeFlatNaira: Number(sourceRecord.serviceFeeFlatNaira ?? snapshot?.serviceFeeFlatNaira ?? 0),
     productLateFeePercent: Number(sourceRecord.lateFeePercent ?? snapshot?.lateFeePercent ?? 0),
+    productLateFeeBasis: sourceRecord.lateFeeBasis ?? snapshot?.lateFeeBasis ?? "PERCENTAGE",
+    productLateFeeFlatNaira: Number(sourceRecord.lateFeeFlatNaira ?? snapshot?.lateFeeFlatNaira ?? 0),
     productGracePeriodDays: sourceRecord.gracePeriodDays ?? snapshot?.gracePeriodDays,
     productMinAmountNaira: Number(sourceRecord.minAmountNaira ?? snapshot?.minAmountNaira ?? 0),
     productMaxAmountNaira: Number(sourceRecord.maxAmountNaira ?? snapshot?.maxAmountNaira ?? 0),
@@ -6559,24 +6602,38 @@ function ensureApprovedLoanRecord(application: (typeof loanApplications)[number]
   } else {
     // Per-tenor monthly rate (easimoney style) wins: interest for tenor T =
     // principal × monthlyRate% × (T/30). Without an entry the base-rate math
-    // applies (unchanged legacy behaviour).
-    const tenorMonthlyRate = resolveTenorMonthlyRate(product ?? null, snapshot ?? null, tenure);
-    if (tenorMonthlyRate !== undefined) {
-      interest = principal * (tenorMonthlyRate / 100) * (tenure / 30);
+    // applies (unchanged legacy behaviour). A FLAT interest basis outranks the
+    // percent matrix — the product charges one fixed naira amount for the term.
+    const interestBasis = String(product?.interestBasis ?? snapshot?.interestBasis ?? "PERCENTAGE").toUpperCase();
+    if (interestBasis === "FLAT") {
+      interest = Math.max(0, Number(product?.interestFlatNaira ?? snapshot?.interestFlatNaira ?? 0));
     } else {
-      const rate = Number(product?.interestRatePercent ?? snapshot?.interestRatePercent ?? 18) / 100;
-      const interestType = String(product?.interestType ?? snapshot?.interestType ?? "SIMPLE_FLAT").toUpperCase();
-      // Mirror the frontend calculateTermInterest semantics EXACTLY so the
-      // server-built offer matches what the borrower saw in the wizard:
-      //   ANNUALIZED                    -> rate is per YEAR, prorated tenure/365
-      //   SIMPLE_FLAT / REDUCING_BALANCE -> rate is per 30-day month, tenure/30
-      // (The old unconditional /365 math underpriced monthly products ~12x.)
-      interest = interestType === "ANNUALIZED"
-        ? principal * rate * (tenure / 365)
-        : principal * rate * (tenure / 30);
+      const tenorMonthlyRate = resolveTenorMonthlyRate(product ?? null, snapshot ?? null, tenure);
+      if (tenorMonthlyRate !== undefined) {
+        interest = principal * (tenorMonthlyRate / 100) * (tenure / 30);
+      } else {
+        const rate = Number(product?.interestRatePercent ?? snapshot?.interestRatePercent ?? 18) / 100;
+        const interestType = String(product?.interestType ?? snapshot?.interestType ?? "SIMPLE_FLAT").toUpperCase();
+        // Mirror the frontend calculateTermInterest semantics EXACTLY so the
+        // server-built offer matches what the borrower saw in the wizard:
+        //   ANNUALIZED                    -> rate is per YEAR, prorated tenure/365
+        //   SIMPLE_FLAT / REDUCING_BALANCE -> rate is per 30-day month, tenure/30
+        // (The old unconditional /365 math underpriced monthly products ~12x.)
+        interest = interestType === "ANNUALIZED"
+          ? principal * rate * (tenure / 365)
+          : principal * rate * (tenure / 30);
+      }
     }
-    processing = principal * (Number(product?.processingFeePercent ?? snapshot?.processingFeePercent ?? 2) / 100)
-      + principal * (Number(product?.serviceFeePercent ?? snapshot?.serviceFeePercent ?? 0) / 100);
+    // Processing + service fees honour the product's PERCENTAGE/FLAT basis:
+    // PERCENTAGE (default/legacy) = principal × percent / 100, FLAT = fixed naira.
+    const processingBasis = String(product?.processingFeeBasis ?? snapshot?.processingFeeBasis ?? "PERCENTAGE").toUpperCase();
+    const serviceBasis = String(product?.serviceFeeBasis ?? snapshot?.serviceFeeBasis ?? "PERCENTAGE").toUpperCase();
+    processing = (processingBasis === "FLAT"
+      ? Number(product?.processingFeeFlatNaira ?? snapshot?.processingFeeFlatNaira ?? 0)
+      : principal * (Number(product?.processingFeePercent ?? snapshot?.processingFeePercent ?? 2) / 100))
+      + (serviceBasis === "FLAT"
+        ? Number(product?.serviceFeeFlatNaira ?? snapshot?.serviceFeeFlatNaira ?? 0)
+        : principal * (Number(product?.serviceFeePercent ?? snapshot?.serviceFeePercent ?? 0) / 100));
   }
   const totalRepayment = principal + interest + processing;
   const dueAt = new Date(Date.now() + tenure * 86400000).toISOString();
@@ -7796,9 +7853,15 @@ router.post("/admin/investment-plans", requireAuth, requireRole("ADMIN"), async 
     tenureDays: z.number().int().positive(),
     annualRatePercent: z.number().nonnegative(),
     rateType: z.enum(["ANNUALIZED", "FLAT", "TENURE_SPECIFIC"]).default("ANNUALIZED"),
+    earningsBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    earningsFlatNaira: z.number().nonnegative().optional(),
     earlyLiquidityAllowed: z.boolean().default(false),
     earlyLiquidityFeePercent: z.number().nonnegative().default(0),
+    earlyLiquidityFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    earlyLiquidityFeeFlatNaira: z.number().nonnegative().optional(),
     gatewayFeePercent: z.number().nonnegative().default(0),
+    gatewayFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    gatewayFeeFlatNaira: z.number().nonnegative().optional(),
     forfeitInterestOnEarlyExit: z.boolean().default(false),
     capacityNaira: z.number().positive().optional(),
     isActive: z.boolean().default(true),
@@ -7835,8 +7898,15 @@ router.patch("/admin/investment-plans/:id", requireAuth, requireRole("ADMIN"), a
     minAmountNaira: z.number().positive().optional(),
     maxAmountNaira: z.number().positive().optional(),
     annualRatePercent: z.number().nonnegative().optional(),
+    earningsBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    earningsFlatNaira: z.number().nonnegative().optional(),
     earlyLiquidityAllowed: z.boolean().optional(),
     earlyLiquidityFeePercent: z.number().nonnegative().optional(),
+    earlyLiquidityFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    earlyLiquidityFeeFlatNaira: z.number().nonnegative().optional(),
+    gatewayFeePercent: z.number().nonnegative().optional(),
+    gatewayFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    gatewayFeeFlatNaira: z.number().nonnegative().optional(),
     isActive: z.boolean().optional(),
   });
   const parsed = schema.safeParse(req.body);
@@ -8113,9 +8183,17 @@ router.post("/admin/loan-products", requireAuth, requireRole("ADMIN"), async (re
     })).max(24).optional(),
     interestRatePercent: z.number().nonnegative(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).default("SIMPLE_FLAT"),
+    interestBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    interestFlatNaira: z.number().nonnegative().optional(),
     processingFeePercent: z.number().nonnegative().default(2),
+    processingFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    processingFeeFlatNaira: z.number().nonnegative().optional(),
     serviceFeePercent: z.number().nonnegative().default(0),
+    serviceFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    serviceFeeFlatNaira: z.number().nonnegative().optional(),
     lateFeePercent: z.number().nonnegative().default(1),
+    lateFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    lateFeeFlatNaira: z.number().nonnegative().optional(),
     lateFeeType: z.enum(["ONE_TIME", "COMPOUNDING_DAILY", "COMPOUNDING_MONTHLY"]).default("COMPOUNDING_DAILY"),
     gracePeriodDays: z.number().int().nonnegative().default(3),
     collateralEnabled: z.boolean().default(true),
@@ -8202,9 +8280,17 @@ router.patch("/admin/loan-products/:id", requireAuth, requireRole("ADMIN"), asyn
     })).max(24).nullable().optional(),
     interestRatePercent: z.number().nonnegative().optional(),
     interestType: z.enum(["SIMPLE_FLAT", "REDUCING_BALANCE", "ANNUALIZED"]).optional(),
+    interestBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    interestFlatNaira: z.number().nonnegative().optional(),
     processingFeePercent: z.number().nonnegative().optional(),
+    processingFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    processingFeeFlatNaira: z.number().nonnegative().optional(),
     serviceFeePercent: z.number().nonnegative().optional(),
+    serviceFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    serviceFeeFlatNaira: z.number().nonnegative().optional(),
     lateFeePercent: z.number().nonnegative().optional(),
+    lateFeeBasis: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    lateFeeFlatNaira: z.number().nonnegative().optional(),
     lateFeeType: z.enum(["ONE_TIME", "COMPOUNDING_DAILY", "COMPOUNDING_MONTHLY"]).optional(),
     gracePeriodDays: z.number().int().nonnegative().optional(),
     collateralEnabled: z.boolean().optional(),
@@ -9100,21 +9186,33 @@ router.delete("/admin/banners/:id", requireAuth, requireRole("ADMIN"), async (re
 });
 
 router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole("ADMIN"), async (req: AuthRequest, res) => {
+  // Accepts either the legacy { annualRatePercent } shape (PERCENTAGE) or the
+  // structured { type: "PERCENTAGE" | "FLAT", value } shape. FLAT pays a fixed
+  // naira amount over the tenure instead of a rate on the principal.
   const schema = z.object({
-    annualRatePercent: z.number().min(0).max(100),
+    annualRatePercent: z.number().min(0).max(100).optional(),
+    type: z.enum(["PERCENTAGE", "FLAT"]).optional(),
+    value: z.number().min(0).optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ ok: false, error: parsed.error.flatten() });
     return;
   }
+  if (parsed.data.value === undefined && parsed.data.annualRatePercent === undefined) {
+    res.status(400).json({ ok: false, error: { formErrors: ["Provide value (with optional type) or annualRatePercent."], fieldErrors: {} } });
+    return;
+  }
+  const override = parsed.data.value !== undefined
+    ? { type: parsed.data.type ?? "PERCENTAGE", value: parsed.data.value }
+    : { type: "PERCENTAGE" as const, value: parsed.data.annualRatePercent as number };
   const investorId = String(req.params.investorId);
   const investor = users.find((u) => u.id === investorId && u.roles.includes("INVESTOR"));
   if (!investor) {
     res.status(404).json({ ok: false, error: "Investor not found" });
     return;
   }
-  const settings = setInvestorEarningRateOverride(investorId, parsed.data.annualRatePercent);
+  const settings = setInvestorEarningRateOverride(investorId, override);
   if (!(await persistMutation(res))) return;
   res.json({
     ok: true,
@@ -9122,7 +9220,8 @@ router.put("/admin/investors/:investorId/earning-rate", requireAuth, requireRole
       id: investorId,
       fullName: investor.fullName,
       email: investor.email,
-      earningRatePercent: parsed.data.annualRatePercent,
+      earningRatePercent: override.type === "PERCENTAGE" ? override.value : undefined,
+      earningTerms: override,
     },
     settings,
   });

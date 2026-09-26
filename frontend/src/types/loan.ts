@@ -40,10 +40,19 @@ export interface AppliedLoanProductInfo {
   tenorInterestRates?: Array<{ tenorDays: number; monthlyRatePercent: number; status?: TenorStatus }>;
   interestRatePercent: number;
   interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
+  /** Interest basis — PERCENTAGE (default) uses interestRatePercent, FLAT charges interestFlatNaira for the whole term. */
+  interestBasis?: "PERCENTAGE" | "FLAT";
+  interestFlatNaira?: number;
   processingFeePercent: number;
-  /** One-off administration fee on the loan amount (percent). */
+  processingFeeBasis?: "PERCENTAGE" | "FLAT";
+  processingFeeFlatNaira?: number;
+  /** One-off administration fee on the loan amount. */
   serviceFeePercent: number;
+  serviceFeeBasis?: "PERCENTAGE" | "FLAT";
+  serviceFeeFlatNaira?: number;
   lateFeePercent: number;
+  lateFeeBasis?: "PERCENTAGE" | "FLAT";
+  lateFeeFlatNaira?: number;
   lateFeeType?: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
   gracePeriodDays?: number;
   /** Collateral rules configured on the product itself. */

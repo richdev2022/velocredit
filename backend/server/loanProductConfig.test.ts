@@ -564,4 +564,88 @@ describe("Loan product full configuration — catalog is the single source of tr
       loanProducts.splice(0, loanProducts.length, ...before);
     }
   });
+
+  it("16. POST/PATCH carry the PERCENTAGE/FLAT basis + flat naira values for interest and fees", async () => {
+    const created = await request(app)
+      .post("/api/v1/admin/loan-products")
+      .send({
+        name: `${TEST_PREFIX} Flat Fees`,
+        programType: "PERSONAL",
+        minAmountNaira: 100_000,
+        maxAmountNaira: 5_000_000,
+        defaultTenureDays: 30,
+        tenureDays: [30, 60],
+        interestRatePercent: 18.9,
+        interestType: "SIMPLE_FLAT",
+        interestBasis: "FLAT",
+        interestFlatNaira: 25_000,
+        processingFeePercent: 2,
+        processingFeeBasis: "FLAT",
+        processingFeeFlatNaira: 5_000,
+        serviceFeePercent: 0,
+        serviceFeeBasis: "PERCENTAGE",
+        lateFeePercent: 1,
+        lateFeeBasis: "FLAT",
+        lateFeeFlatNaira: 10_000,
+      });
+    expect(created.status).toBe(201);
+    const product = created.body.product;
+    createdProductIds.push(product.id);
+    expect(product.interestBasis).toBe("FLAT");
+    expect(product.interestFlatNaira).toBe(25_000);
+    expect(product.processingFeeBasis).toBe("FLAT");
+    expect(product.processingFeeFlatNaira).toBe(5_000);
+    expect(product.serviceFeeBasis).toBe("PERCENTAGE");
+    expect(product.lateFeeBasis).toBe("FLAT");
+    expect(product.lateFeeFlatNaira).toBe(10_000);
+
+    // The snapshot carries the basis so agreed loans survive product edits.
+    const snapshot = routesMod.captureProductSnapshot(product);
+    expect(snapshot?.interestBasis).toBe("FLAT");
+    expect(snapshot?.interestFlatNaira).toBe(25_000);
+    expect(snapshot?.processingFeeBasis).toBe("FLAT");
+    expect(snapshot?.lateFeeFlatNaira).toBe(10_000);
+
+    // PATCH can flip a fee back to percentage-only semantics.
+    const patched = await request(app)
+      .patch(`/api/v1/admin/loan-products/${product.id}`)
+      .send({ processingFeeBasis: "PERCENTAGE", processingFeePercent: 1.5 });
+    expect(patched.status).toBe(200);
+    expect(patched.body.product.processingFeeBasis).toBe("PERCENTAGE");
+    expect(patched.body.product.processingFeeFlatNaira).toBe(5_000); // kept for an easy flip back
+  });
+
+  it("17. resolveInvestorEarnings honours FLAT plans and structured/legacy overrides", () => {
+    const settings = storeMod.getPlatformSettings();
+    const beforeOverrides = { ...settings.investorEarningRateOverrides };
+    try {
+      // Percent plan (legacy behaviour unchanged).
+      const percentPlan = { annualRatePercent: 12, earningsBasis: undefined, earningsFlatNaira: undefined } as any;
+      expect(storeMod.resolveInvestorEarnings("inv-a", percentPlan)).toEqual({ type: "PERCENTAGE", value: 12 });
+
+      // FLAT plan pays the fixed naira amount.
+      const flatPlan = { annualRatePercent: 12, earningsBasis: "FLAT", earningsFlatNaira: 50_000 } as any;
+      expect(storeMod.resolveInvestorEarnings("inv-a", flatPlan)).toEqual({ type: "FLAT", value: 50_000 });
+      // A flat plan WITHOUT a naira value falls back to its percent rate.
+      expect(storeMod.resolveInvestorEarnings("inv-a", { annualRatePercent: 9, earningsBasis: "FLAT", earningsFlatNaira: 0 } as any)).toEqual({ type: "PERCENTAGE", value: 9 });
+
+      // Structured overrides win over the plan, both bases.
+      settings.investorEarningRateOverrides["inv-a"] = { type: "PERCENTAGE", value: 20 };
+      expect(storeMod.resolveInvestorEarnings("inv-a", flatPlan)).toEqual({ type: "PERCENTAGE", value: 20 });
+      settings.investorEarningRateOverrides["inv-a"] = { type: "FLAT", value: 75_000 };
+      expect(storeMod.resolveInvestorEarnings("inv-a", flatPlan)).toEqual({ type: "FLAT", value: 75_000 });
+      // Legacy bare-number overrides are still percents.
+      settings.investorEarningRateOverrides["inv-a"] = 15;
+      expect(storeMod.resolveInvestorEarnings("inv-a", flatPlan)).toEqual({ type: "PERCENTAGE", value: 15 });
+
+      // Legacy percent reader: a structured percent override replaces the plan rate.
+      settings.investorEarningRateOverrides["inv-a"] = { type: "PERCENTAGE", value: 20 };
+      expect(storeMod.getEffectiveInvestorRate("inv-a", 12)).toBe(20);
+      // A flat override carries no percent meaning for the legacy reader.
+      settings.investorEarningRateOverrides["inv-a"] = { type: "FLAT", value: 75_000 };
+      expect(storeMod.getEffectiveInvestorRate("inv-a", 12)).toBe(12);
+    } finally {
+      settings.investorEarningRateOverrides = beforeOverrides;
+    }
+  });
 });

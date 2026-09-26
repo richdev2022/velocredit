@@ -146,7 +146,9 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
   const [adminLedgerBalance, setAdminLedgerBalance] = useState<number | null>(null);
 
   const [earningInvestorId, setEarningInvestorId] = useState("");
+  const [earningBasis, setEarningBasis] = useState<"PERCENTAGE" | "FLAT">("PERCENTAGE");
   const [earningRatePercent, setEarningRatePercent] = useState(15);
+  const [earningFlatNaira, setEarningFlatNaira] = useState(50000);
   const [earningRateSaving, setEarningRateSaving] = useState(false);
   const [earningRateMsg, setEarningRateMsg] = useState("");
 
@@ -256,8 +258,10 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
     setEarningRateSaving(true);
     setEarningRateMsg("");
     try {
-      await adminSetInvestorEarningRate(earningInvestorId, Number(earningRatePercent));
-      setEarningRateMsg("Investor earning rate saved successfully.");
+      await adminSetInvestorEarningRate(earningInvestorId, { type: earningBasis, value: earningBasis === "FLAT" ? Number(earningFlatNaira) : Number(earningRatePercent) });
+      setEarningRateMsg(earningBasis === "FLAT"
+        ? "Investor earning terms saved — fixed ₦ amount per tenure."
+        : "Investor earning rate saved successfully.");
       setTimeout(() => setEarningRateMsg(""), 4000);
     } catch (e: any) {
       setEarningRateMsg("Error: " + (e.message || "Failed"));
@@ -696,8 +700,8 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                 </PanelCard>
 
                 <PanelCard
-                  title="Custom earning rate"
-                  description="Override the default annual earning rate for one investor."
+                  title="Custom earning terms"
+                  description="Override the plan rate for one investor — a percent of the principal or a fixed naira amount for the tenure."
                   icon={<Icon name="chart" size={18} />}
                   tone="sky"
                 >
@@ -708,20 +712,63 @@ export default function AdminSettings(props?: { displaySection?: "all" | "ledger
                         <option key={inv.id} value={inv.id}>{inv.fullName} — {inv.email}</option>
                       ))}
                     </select>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.25"
-                        min="0"
-                        max="100"
-                        className="velo-input pr-8 text-sm font-semibold"
-                        value={earningRatePercent}
-                        onChange={(e) => setEarningRatePercent(Number(e.target.value))}
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
+                    <div className="grid gap-0.5 rounded-xl bg-slate-100 p-1 dark:bg-slate-800" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+                      <button
+                        type="button"
+                        onClick={() => setEarningBasis("PERCENTAGE")}
+                        className={`rounded-lg px-2 py-1.5 text-xs font-semibold transition-all duration-150 ${
+                          earningBasis === "PERCENTAGE"
+                            ? "bg-white text-velo-700 shadow-sm dark:bg-slate-900 dark:text-velo-300"
+                            : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                        }`}
+                      >
+                        Percent % p.a.
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEarningBasis("FLAT")}
+                        className={`rounded-lg px-2 py-1.5 text-xs font-semibold transition-all duration-150 ${
+                          earningBasis === "FLAT"
+                            ? "bg-white text-velo-700 shadow-sm dark:bg-slate-900 dark:text-velo-300"
+                            : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                        }`}
+                      >
+                        Flat ₦ per tenure
+                      </button>
                     </div>
+                    {earningBasis === "PERCENTAGE" ? (
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.25"
+                          min="0"
+                          max="100"
+                          className="velo-input pr-8 text-sm font-semibold"
+                          value={earningRatePercent}
+                          onChange={(e) => setEarningRatePercent(Number(e.target.value))}
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">%</span>
+                      </div>
+                    ) : (
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400">₦</span>
+                        <input
+                          type="number"
+                          step="500"
+                          min="0"
+                          className="velo-input pl-8 text-sm font-semibold"
+                          value={earningFlatNaira}
+                          onChange={(e) => setEarningFlatNaira(Number(e.target.value))}
+                        />
+                      </div>
+                    )}
+                    <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                      {earningBasis === "PERCENTAGE"
+                        ? "The investor earns this annual rate on whatever amount they invest."
+                        : "The investor earns this fixed amount per investment tenure, regardless of the amount invested."}
+                    </p>
                     <button onClick={handleSaveEarningRate} disabled={earningRateSaving} className="btn-primary w-full !py-2.5 !font-bold text-sm">
-                      {earningRateSaving ? "Saving…" : <><Icon name="check" size={14} />Save earning rate</>}
+                      {earningRateSaving ? "Saving…" : <><Icon name="check" size={14} />Save earning terms</>}
                     </button>
                     {earningRateMsg && <InlineMessage message={earningRateMsg} />}
                   </div>

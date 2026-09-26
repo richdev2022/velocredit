@@ -32,6 +32,7 @@ import { Pill, Toggle, NairaField, PanelCard } from "./settingsUI";
 
 type InterestType = LoanProduct["interestType"];
 type LateFeeType = LoanProduct["lateFeeType"];
+type FeeBasisChoice = "PERCENTAGE" | "FLAT";
 type ProgramType = NonNullable<LoanProduct["programType"]>;
 type TenorStatus = NonNullable<LoanProduct["tenorInterestRates"]>[number]["status"];
 
@@ -79,13 +80,22 @@ interface ProductDraft {
   defaultTenureDays: number;
   interestRatePercent: string;
   interestType: InterestType;
+  /** Interest basis — PERCENTAGE (default) uses the rate, FLAT charges one fixed naira amount for the whole term. */
+  interestBasis: FeeBasisChoice;
+  interestFlatNaira: string;
   /** Per-tenor MONTHLY interest rates: tenor days -> "" (unset, base rate) or rate string. */
   tenorRates: Record<number, string>;
   /** Per-tenor availability: tenor days -> AVAILABLE / LOCKED / HOT. */
   tenorStatuses: Record<number, TenorStatus>;
   processingFeePercent: string;
+  processingFeeBasis: FeeBasisChoice;
+  processingFeeFlatNaira: string;
   serviceFeePercent: string;
+  serviceFeeBasis: FeeBasisChoice;
+  serviceFeeFlatNaira: string;
   lateFeePercent: string;
+  lateFeeBasis: FeeBasisChoice;
+  lateFeeFlatNaira: string;
   lateFeeType: LateFeeType;
   gracePeriodDays: number;
   collateralEnabled: boolean;
@@ -119,11 +129,19 @@ function draftFromProduct(product: LoanProduct): ProductDraft {
     defaultTenureDays: defaultTenure,
     interestRatePercent: String(product.interestRatePercent ?? 0),
     interestType: product.interestType ?? "SIMPLE_FLAT",
+    interestBasis: product.interestBasis === "FLAT" ? "FLAT" : "PERCENTAGE",
+    interestFlatNaira: String(product.interestFlatNaira ?? 0),
     tenorRates,
     tenorStatuses,
     processingFeePercent: String(product.processingFeePercent ?? 0),
+    processingFeeBasis: product.processingFeeBasis === "FLAT" ? "FLAT" : "PERCENTAGE",
+    processingFeeFlatNaira: String(product.processingFeeFlatNaira ?? 0),
     serviceFeePercent: String(product.serviceFeePercent ?? 0),
+    serviceFeeBasis: product.serviceFeeBasis === "FLAT" ? "FLAT" : "PERCENTAGE",
+    serviceFeeFlatNaira: String(product.serviceFeeFlatNaira ?? 0),
     lateFeePercent: String(product.lateFeePercent ?? 0),
+    lateFeeBasis: product.lateFeeBasis === "FLAT" ? "FLAT" : "PERCENTAGE",
+    lateFeeFlatNaira: String(product.lateFeeFlatNaira ?? 0),
     lateFeeType: product.lateFeeType ?? "COMPOUNDING_DAILY",
     gracePeriodDays: Number(product.gracePeriodDays ?? 0) || 0,
     collateralEnabled: product.collateralEnabled ?? true,
@@ -144,12 +162,20 @@ function emptyDraft(): ProductDraft {
     defaultTenureDays: 30,
     interestRatePercent: "18.9",
     interestType: "SIMPLE_FLAT",
+    interestBasis: "PERCENTAGE",
+    interestFlatNaira: "0",
     // Owner-seeded default pricing table ("Load default" preset).
     tenorRates: { ...DEFAULT_PRESET.tenorRates },
     tenorStatuses: { ...DEFAULT_PRESET.tenorStatuses },
     processingFeePercent: "2",
+    processingFeeBasis: "PERCENTAGE",
+    processingFeeFlatNaira: "0",
     serviceFeePercent: "0",
+    serviceFeeBasis: "PERCENTAGE",
+    serviceFeeFlatNaira: "0",
     lateFeePercent: "1",
+    lateFeeBasis: "PERCENTAGE",
+    lateFeeFlatNaira: "0",
     lateFeeType: "COMPOUNDING_DAILY",
     gracePeriodDays: 3,
     collateralEnabled: true,
@@ -180,31 +206,43 @@ function validateDraft(draft: ProductDraft): Record<string, string> {
   } else if (draft.tenures.length > 0 && (draft.tenorStatuses[Number(draft.defaultTenureDays)] ?? "AVAILABLE") === "LOCKED") {
     errors.defaultTenureDays = "Default tenure is LOCKED — borrowers can never select it. Pick an available tenor or unlock this one.";
   }
-  const percentFields: Array<[string, string]> = [
-    ["interestRatePercent", "Interest rate"],
-    ["processingFeePercent", "Processing fee"],
-    ["serviceFeePercent", "Service fee"],
-    ["lateFeePercent", "Late fee"],
-  ];
+  const percentFields: Array<[string, string]> = [];
+  if (draft.interestBasis === "PERCENTAGE") percentFields.push(["interestRatePercent", "Interest rate"]);
+  if (draft.processingFeeBasis === "PERCENTAGE") percentFields.push(["processingFeePercent", "Processing fee"]);
+  if (draft.serviceFeeBasis === "PERCENTAGE") percentFields.push(["serviceFeePercent", "Service fee"]);
+  if (draft.lateFeeBasis === "PERCENTAGE") percentFields.push(["lateFeePercent", "Late fee"]);
   for (const [key, label] of percentFields) {
     const value = Number(draft[key as "interestRatePercent"]);
     if (!Number.isFinite(value) || value < 0) errors[key] = `${label} cannot be negative.`;
     else if (value > 100) errors[key] = `${label} cannot exceed 100%.`;
   }
-  // Per-tenor monthly rates: every filled entry must be a valid percent.
-  for (const [days, raw] of Object.entries(draft.tenorRates)) {
-    if (raw === undefined || raw.trim() === "") continue;
-    const value = Number(raw);
-    if (!Number.isFinite(value) || value < 0) errors.tenorRates = `Monthly rate for ${days} days must be a valid number.`;
-    else if (value > 100) errors.tenorRates = `Monthly rate for ${days} days cannot exceed 100%.`;
+  const flatFields: Array<[string, string]> = [];
+  if (draft.interestBasis === "FLAT") flatFields.push(["interestFlatNaira", "Interest (flat)"]);
+  if (draft.processingFeeBasis === "FLAT") flatFields.push(["processingFeeFlatNaira", "Processing fee (flat)"]);
+  if (draft.serviceFeeBasis === "FLAT") flatFields.push(["serviceFeeFlatNaira", "Service fee (flat)"]);
+  if (draft.lateFeeBasis === "FLAT") flatFields.push(["lateFeeFlatNaira", "Late fee (flat)"]);
+  for (const [key, label] of flatFields) {
+    const value = Number(draft[key as "interestFlatNaira"]);
+    if (!Number.isFinite(value) || value < 0) errors[key] = `${label} cannot be negative.`;
   }
-  // A LOCKED tenor MUST carry its own rate: with no entry the tenor would
-  // silently fall back to AVAILABLE + base-rate pricing for borrowers.
-  for (const [days, status] of Object.entries(draft.tenorStatuses)) {
-    if (status !== "LOCKED") continue;
-    const raw = draft.tenorRates[Number(days)];
-    if (raw === undefined || String(raw).trim() === "") {
-      errors.tenorRates = `Set a monthly rate for the locked ${days}-day tenor — it is hidden while locked but prices the tenor once unlocked.`;
+  // Per-tenor monthly rates only price PERCENTAGE interest — flat interest
+  // ignores the matrix entirely, so its validations are skipped then.
+  if (draft.interestBasis !== "FLAT") {
+    // Per-tenor monthly rates: every filled entry must be a valid percent.
+    for (const [days, raw] of Object.entries(draft.tenorRates)) {
+      if (raw === undefined || raw.trim() === "") continue;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 0) errors.tenorRates = `Monthly rate for ${days} days must be a valid number.`;
+      else if (value > 100) errors.tenorRates = `Monthly rate for ${days} days cannot exceed 100%.`;
+    }
+    // A LOCKED tenor MUST carry its own rate: with no entry the tenor would
+    // silently fall back to AVAILABLE + base-rate pricing for borrowers.
+    for (const [days, status] of Object.entries(draft.tenorStatuses)) {
+      if (status !== "LOCKED") continue;
+      const raw = draft.tenorRates[Number(days)];
+      if (raw === undefined || String(raw).trim() === "") {
+        errors.tenorRates = `Set a monthly rate for the locked ${days}-day tenor — it is hidden while locked but prices the tenor once unlocked.`;
+      }
     }
   }
   if (!Number.isFinite(Number(draft.gracePeriodDays)) || Number(draft.gracePeriodDays) < 0) errors.gracePeriodDays = "Grace period cannot be negative.";
@@ -228,12 +266,20 @@ function buildPayload(draft: ProductDraft) {
     defaultAmountNaira: Number(draft.defaultAmountNaira) > 0 ? Number(draft.defaultAmountNaira) : undefined,
     defaultTenureDays: Number(draft.defaultTenureDays),
     tenureDays: [...draft.tenures].sort((a, b) => a - b),
-    tenorInterestRates,
+    tenorInterestRates: draft.interestBasis === "FLAT" ? [] : tenorInterestRates,
     interestRatePercent: Number(draft.interestRatePercent),
     interestType: draft.interestType,
+    interestBasis: draft.interestBasis,
+    interestFlatNaira: Number(draft.interestFlatNaira) || 0,
     processingFeePercent: Number(draft.processingFeePercent),
+    processingFeeBasis: draft.processingFeeBasis,
+    processingFeeFlatNaira: Number(draft.processingFeeFlatNaira) || 0,
     serviceFeePercent: Number(draft.serviceFeePercent),
+    serviceFeeBasis: draft.serviceFeeBasis,
+    serviceFeeFlatNaira: Number(draft.serviceFeeFlatNaira) || 0,
     lateFeePercent: Number(draft.lateFeePercent),
+    lateFeeBasis: draft.lateFeeBasis,
+    lateFeeFlatNaira: Number(draft.lateFeeFlatNaira) || 0,
     lateFeeType: draft.lateFeeType,
     gracePeriodDays: Number(draft.gracePeriodDays),
     collateralEnabled: draft.collateralEnabled,
@@ -242,12 +288,48 @@ function buildPayload(draft: ProductDraft) {
   };
 }
 
-/** Decimal-safe percent input (typing "0.", "0.5", "12.75" never snaps back). */
-function PercentField({ label, value, onChange, helpText }: { label: string; value: string; onChange: (next: string) => void; helpText?: string }) {
+/** Decimal-safe amount input that switches between % and fixed ₦ naira. */
+function FeeAmountField({ label, value, basis, onChange, onBasisChange, helpText, percentHint }: {
+  label: string;
+  value: string;
+  basis: FeeBasisChoice;
+  onChange: (next: string) => void;
+  onBasisChange: (next: FeeBasisChoice) => void;
+  helpText?: string;
+  percentHint?: string;
+}) {
+  const isPercent = basis === "PERCENTAGE";
   return (
     <label className="block">
       <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">{label}</span>
-      <div className="relative">
+      <div className="grid gap-0.5 rounded-xl bg-slate-100 p-1 dark:bg-slate-800" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
+        <button
+          type="button"
+          onClick={() => onBasisChange("PERCENTAGE")}
+          className={`rounded-lg px-2 py-1 text-[11px] font-semibold transition-all duration-150 ${
+            isPercent
+              ? "bg-white text-velo-700 shadow-sm dark:bg-slate-900 dark:text-velo-300"
+              : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+          }`}
+        >
+          Percent %
+        </button>
+        <button
+          type="button"
+          onClick={() => onBasisChange("FLAT")}
+          className={`rounded-lg px-2 py-1 text-[11px] font-semibold transition-all duration-150 ${
+            !isPercent
+              ? "bg-white text-velo-700 shadow-sm dark:bg-slate-900 dark:text-velo-300"
+              : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+          }`}
+        >
+          Flat ₦
+        </button>
+      </div>
+      <div className="relative mt-1.5">
+        {isPercent ? null : (
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">₦</span>
+        )}
         <input
           type="text"
           inputMode="decimal"
@@ -265,11 +347,15 @@ function PercentField({ label, value, onChange, helpText }: { label: string; val
             onChange(Number.isFinite(n) && value !== "" ? String(Math.round(n * 100) / 100) : "0");
           }}
           placeholder="0"
-          className="velo-input !pr-8 text-sm font-semibold"
+          className={`velo-input text-sm font-semibold ${isPercent ? "!pr-8" : "!pl-8"}`}
         />
-        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">%</span>
+        {isPercent && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">%</span>}
       </div>
-      {helpText && <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">{helpText}</div>}
+      {(helpText || (isPercent && percentHint)) && (
+        <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+          {isPercent ? (percentHint ?? helpText) : helpText}
+        </div>
+      )}
     </label>
   );
 }
@@ -488,7 +574,15 @@ function ProductEditor({
       <div>
         <SectionLabel>Interest</SectionLabel>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <PercentField label="Interest rate" value={draft.interestRatePercent} onChange={(v) => onDraftChange({ interestRatePercent: v })} helpText="Base rate — used when a tenor has no rate below" />
+          <FeeAmountField
+            label="Interest"
+            value={draft.interestBasis === "FLAT" ? draft.interestFlatNaira : draft.interestRatePercent}
+            basis={draft.interestBasis}
+            onChange={(v) => onDraftChange(draft.interestBasis === "FLAT" ? { interestFlatNaira: v } : { interestRatePercent: v })}
+            onBasisChange={(v) => onDraftChange({ interestBasis: v })}
+            helpText={draft.interestBasis === "FLAT" ? "Fixed naira charged for the whole term" : undefined}
+            percentHint="Base rate — used when a tenor has no rate below"
+          />
           <div>
             <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Interest type</span>
             <SegmentedOptions value={draft.interestType} options={INTEREST_TYPE_OPTIONS.map(({ value, label }) => ({ value, label }))} onChange={(v) => onDraftChange({ interestType: v })} />
@@ -496,6 +590,7 @@ function ProductEditor({
           </div>
         </div>
         {errors.interestRatePercent && <p className="velo-error-text">{errors.interestRatePercent}</p>}
+        {errors.interestFlatNaira && <p className="velo-error-text">{errors.interestFlatNaira}</p>}
       </div>
 
       {/* Per-tenor MONTHLY interest rates + availability */}
@@ -537,6 +632,11 @@ function ProductEditor({
               </button>
             </div>
           </div>
+          {draft.interestBasis === "FLAT" && (
+            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300">
+              Interest is a flat ₦ amount — the per-tenor monthly rates below are not applied while flat interest is active.
+            </div>
+          )}
           <div className="mt-2.5 overflow-x-auto">
             <table className="w-full min-w-[540px] text-left">
               <thead>
@@ -633,16 +733,40 @@ function ProductEditor({
         <SectionLabel>Fees</SectionLabel>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>
-            <PercentField label="Processing fee" value={draft.processingFeePercent} onChange={(v) => onDraftChange({ processingFeePercent: v })} />
+            <FeeAmountField
+              label="Processing fee"
+              value={draft.processingFeeBasis === "FLAT" ? draft.processingFeeFlatNaira : draft.processingFeePercent}
+              basis={draft.processingFeeBasis}
+              onChange={(v) => onDraftChange(draft.processingFeeBasis === "FLAT" ? { processingFeeFlatNaira: v } : { processingFeePercent: v })}
+              onBasisChange={(v) => onDraftChange({ processingFeeBasis: v })}
+              helpText={draft.processingFeeBasis === "FLAT" ? "Fixed naira per loan" : "% of the loan amount"}
+            />
             {errors.processingFeePercent && <p className="velo-error-text">{errors.processingFeePercent}</p>}
+            {errors.processingFeeFlatNaira && <p className="velo-error-text">{errors.processingFeeFlatNaira}</p>}
           </div>
           <div>
-            <PercentField label="Service fee" value={draft.serviceFeePercent} onChange={(v) => onDraftChange({ serviceFeePercent: v })} helpText="One-off admin fee" />
+            <FeeAmountField
+              label="Service fee"
+              value={draft.serviceFeeBasis === "FLAT" ? draft.serviceFeeFlatNaira : draft.serviceFeePercent}
+              basis={draft.serviceFeeBasis}
+              onChange={(v) => onDraftChange(draft.serviceFeeBasis === "FLAT" ? { serviceFeeFlatNaira: v } : { serviceFeePercent: v })}
+              onBasisChange={(v) => onDraftChange({ serviceFeeBasis: v })}
+              helpText={draft.serviceFeeBasis === "FLAT" ? "One-off fixed admin fee" : "One-off admin fee (% of loan)"}
+            />
             {errors.serviceFeePercent && <p className="velo-error-text">{errors.serviceFeePercent}</p>}
+            {errors.serviceFeeFlatNaira && <p className="velo-error-text">{errors.serviceFeeFlatNaira}</p>}
           </div>
           <div>
-            <PercentField label="Late fee" value={draft.lateFeePercent} onChange={(v) => onDraftChange({ lateFeePercent: v })} />
+            <FeeAmountField
+              label="Late fee"
+              value={draft.lateFeeBasis === "FLAT" ? draft.lateFeeFlatNaira : draft.lateFeePercent}
+              basis={draft.lateFeeBasis}
+              onChange={(v) => onDraftChange(draft.lateFeeBasis === "FLAT" ? { lateFeeFlatNaira: v } : { lateFeePercent: v })}
+              onBasisChange={(v) => onDraftChange({ lateFeeBasis: v })}
+              helpText={draft.lateFeeBasis === "FLAT" ? "Fixed naira charged late" : "% of the loan amount"}
+            />
             {errors.lateFeePercent && <p className="velo-error-text">{errors.lateFeePercent}</p>}
+            {errors.lateFeeFlatNaira && <p className="velo-error-text">{errors.lateFeeFlatNaira}</p>}
           </div>
           <div>
             <span className="mb-1.5 block text-[11px] font-semibold text-velo-900 dark:text-white">Late fee type</span>
@@ -923,9 +1047,9 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                   <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
                     <span>Range: <span className="font-semibold text-slate-700 dark:text-slate-200">₦{safeNaira(product.minAmountNaira)} – ₦{safeNaira(product.maxAmountNaira)}</span></span>
                     <span>Default: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.defaultAmountNaira ? `₦${safeNaira(product.defaultAmountNaira)}` : "—"}</span></span>
-                    <span>Interest: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.interestRatePercent}% {String(product.interestType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
+                    <span>Interest: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.interestBasis === "FLAT" ? `₦${safeNaira(product.interestFlatNaira ?? 0)} flat` : `${product.interestRatePercent}%`} {String(product.interestType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
                     <span>Tenures: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.tenureDays?.length ? product.tenureDays.map((d) => `${d}d`).join(" · ") : `${product.defaultTenureDays ?? "—"}d default`}</span></span>
-                    {product.tenorInterestRates && product.tenorInterestRates.length > 0 && (
+                    {product.interestBasis !== "FLAT" && product.tenorInterestRates && product.tenorInterestRates.length > 0 && (
                       <span>
                         Per-tenor monthly:{" "}
                         <span className="font-semibold text-slate-700 dark:text-slate-200">
@@ -939,9 +1063,9 @@ export default function ProductCatalogCard({ refreshSignal = 0, onCatalogChanged
                         </span>
                       </span>
                     )}
-                    <span>Processing: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.processingFeePercent}%</span></span>
-                    <span>Service: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.serviceFeePercent ?? 0}%</span></span>
-                    <span>Late fee: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.lateFeePercent}% {String(product.lateFeeType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
+                    <span>Processing: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.processingFeeBasis === "FLAT" ? `₦${safeNaira(product.processingFeeFlatNaira ?? 0)} flat` : `${product.processingFeePercent}%`}</span></span>
+                    <span>Service: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.serviceFeeBasis === "FLAT" ? `₦${safeNaira(product.serviceFeeFlatNaira ?? 0)} flat` : `${product.serviceFeePercent ?? 0}%`}</span></span>
+                    <span>Late fee: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.lateFeeBasis === "FLAT" ? `₦${safeNaira(product.lateFeeFlatNaira ?? 0)} flat` : `${product.lateFeePercent}%`} {String(product.lateFeeType ?? "").toLowerCase().replace(/_/g, " ")}</span></span>
                     <span>Grace: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.gracePeriodDays ?? "—"}d</span></span>
                     <span>Collateral: <span className="font-semibold text-slate-700 dark:text-slate-200">{product.collateralEnabled === false ? "Off" : product.collateralRequired ? "Required" : "Optional"}</span></span>
                   </div>

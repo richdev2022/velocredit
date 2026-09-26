@@ -274,6 +274,19 @@ export interface AccountChangeRequest {
   updatedAt?: string;
 }
 
+/**
+ * How a configurable money value (fee, rate, earnings) is interpreted.
+ *   PERCENTAGE — the `*Percent`/`*RatePercent` field drives the math (legacy
+ *                behaviour; absent basis always means PERCENTAGE).
+ *   FLAT       — the companion `*FlatNaira` field is a fixed naira amount.
+ */
+export type FeeBasis = "PERCENTAGE" | "FLAT";
+export const FEE_BASES: readonly FeeBasis[] = ["PERCENTAGE", "FLAT"];
+
+export function isFeeBasis(value: unknown): value is FeeBasis {
+  return value === "PERCENTAGE" || value === "FLAT";
+}
+
 export interface InvestmentPlan {
   id: string;
   name: string;
@@ -284,9 +297,19 @@ export interface InvestmentPlan {
   tenureDays: number;
   annualRatePercent: number;
   rateType: "ANNUALIZED" | "FLAT" | "TENURE_SPECIFIC";
+  /** Investor earnings basis — PERCENTAGE uses annualRatePercent, FLAT pays earningsFlatNaira for the whole tenure. */
+  earningsBasis?: FeeBasis;
+  /** Fixed naira earnings for the whole tenure when earningsBasis === "FLAT". */
+  earningsFlatNaira?: number;
   earlyLiquidityAllowed: boolean;
   earlyLiquidityFeePercent: number;
+  earlyLiquidityFeeBasis?: FeeBasis;
+  /** Fixed naira early-liquidity fee when earlyLiquidityFeeBasis === "FLAT". */
+  earlyLiquidityFeeFlatNaira?: number;
   gatewayFeePercent: number;
+  gatewayFeeBasis?: FeeBasis;
+  /** Fixed naira gateway fee when gatewayFeeBasis === "FLAT". */
+  gatewayFeeFlatNaira?: number;
   forfeitInterestOnEarlyExit: boolean;
   capacityNaira?: number;
   isActive: boolean;
@@ -359,9 +382,18 @@ export interface LoanProductSnapshot {
   tenorInterestRates?: TenorInterestRate[];
   interestRatePercent?: number;
   interestType?: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
+  interestBasis?: FeeBasis;
+  /** Fixed naira interest for the whole term when interestBasis === "FLAT". */
+  interestFlatNaira?: number;
   processingFeePercent?: number;
+  processingFeeBasis?: FeeBasis;
+  processingFeeFlatNaira?: number;
   serviceFeePercent?: number;
+  serviceFeeBasis?: FeeBasis;
+  serviceFeeFlatNaira?: number;
   lateFeePercent?: number;
+  lateFeeBasis?: FeeBasis;
+  lateFeeFlatNaira?: number;
   lateFeeType?: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
   gracePeriodDays?: number;
   collateralEnabled?: boolean;
@@ -688,12 +720,35 @@ export interface PlatformBanner {
   updatedAt?: string;
 }
 
+/**
+ * Per-investor bespoke earning terms. A bare number is a LEGACY percent
+ * override (pre-flat era) and is always interpreted as PERCENTAGE.
+ *   PERCENTAGE — value is an annual rate percent (replaces the plan rate).
+ *   FLAT       — value is a fixed naira amount earned over the whole tenure,
+ *                regardless of the amount invested.
+ */
+export interface InvestorEarningOverride {
+  type: FeeBasis;
+  value: number;
+}
+
+export function normalizeInvestorEarningOverride(raw: number | InvestorEarningOverride | undefined): InvestorEarningOverride | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) && raw >= 0 ? { type: "PERCENTAGE", value: raw } : undefined;
+  }
+  const type = isFeeBasis(raw.type) ? raw.type : "PERCENTAGE";
+  const value = Number(raw.value);
+  return Number.isFinite(value) && value >= 0 ? { type, value } : undefined;
+}
+
 export interface PlatformSettings {
   id: string;
   investorWithdrawalFeePercent: number;
   investorWithdrawalFeeFlatMinor: number;
   investorWithdrawalMinAmountNaira: number;
-  investorEarningRateOverrides: Record<string, number>;
+  /** Structured per-investor earning overrides; bare numbers are legacy percents. */
+  investorEarningRateOverrides: Record<string, InvestorEarningOverride | number>;
   defaultInvestmentAnnualRatePercent: number;
   /** When true, non-admin sign-in is blocked with a maintenance modal and every active user is emailed. */
   maintenanceMode?: boolean;
@@ -761,10 +816,20 @@ export interface LoanProduct {
   tenorInterestRates?: TenorInterestRate[];
   interestRatePercent: number;
   interestType: "SIMPLE_FLAT" | "REDUCING_BALANCE" | "ANNUALIZED";
+  /** Interest basis — PERCENTAGE (default) uses interestRatePercent, FLAT charges interestFlatNaira for the whole term. */
+  interestBasis?: FeeBasis;
+  /** Fixed naira interest for the whole term when interestBasis === "FLAT". */
+  interestFlatNaira?: number;
   processingFeePercent: number;
+  processingFeeBasis?: FeeBasis;
+  processingFeeFlatNaira?: number;
   /** One-off administration fee on the loan amount (percent). */
   serviceFeePercent: number;
+  serviceFeeBasis?: FeeBasis;
+  serviceFeeFlatNaira?: number;
   lateFeePercent: number;
+  lateFeeBasis?: FeeBasis;
+  lateFeeFlatNaira?: number;
   lateFeeType: "ONE_TIME" | "COMPOUNDING_DAILY" | "COMPOUNDING_MONTHLY";
   gracePeriodDays: number;
   /** Collateral section shown to applicants of this product. */
@@ -2108,21 +2173,62 @@ export function updatePlatformSettings(updates: Partial<Pick<PlatformSettings, "
   return settings;
 }
 
-export function setInvestorEarningRateOverride(investorId: string, annualRatePercent: number): void {
+export function setInvestorEarningRateOverride(investorId: string, override: InvestorEarningOverride | number): void {
   const settings = getPlatformSettings();
-  const rate = Math.max(0, Math.min(100, Number(annualRatePercent)));
-  if (rate > 0) {
-    settings.investorEarningRateOverrides[investorId] = rate;
+  const normalized = normalizeInvestorEarningOverride(override);
+  if (normalized && normalized.value > 0) {
+    settings.investorEarningRateOverrides[investorId] = normalized;
   } else {
     delete settings.investorEarningRateOverrides[investorId];
   }
   settings.updatedAt = new Date().toISOString();
 }
 
+/**
+ * Structured earning override for one investor (undefined = no override).
+ * Accepts legacy bare-number percent entries transparently.
+ */
+export function getInvestorEarningOverride(investorId: string): InvestorEarningOverride | undefined {
+  const settings = getPlatformSettings();
+  return normalizeInvestorEarningOverride(settings.investorEarningRateOverrides[investorId]);
+}
+
+/**
+ * Resolve the earning terms for a new investment, in priority order:
+ *   1. The investor's bespoke override (PERCENTAGE or FLAT).
+ *   2. The plan's earnings basis (PERCENTAGE rate or FLAT naira).
+ *   3. The platform default rate (always PERCENTAGE).
+ */
+export function resolveInvestorEarnings(
+  investorId: string,
+  plan: Pick<InvestmentPlan, "annualRatePercent" | "earningsBasis" | "earningsFlatNaira"> | null | undefined,
+): InvestorEarningOverride {
+  const override = getInvestorEarningOverride(investorId);
+  if (override) return override;
+  const planBasis = plan && isFeeBasis(plan.earningsBasis) ? plan.earningsBasis : "PERCENTAGE";
+  if (planBasis === "FLAT") {
+    const flat = Math.max(0, Number(plan?.earningsFlatNaira ?? 0));
+    if (flat > 0) return { type: "FLAT", value: flat };
+    return { type: "PERCENTAGE", value: Math.max(0, Number(plan?.annualRatePercent ?? 0)) };
+  }
+  if (plan && Number.isFinite(Number(plan.annualRatePercent))) {
+    return { type: "PERCENTAGE", value: Math.max(0, Number(plan.annualRatePercent)) };
+  }
+  return { type: "PERCENTAGE", value: Math.max(0, Number(getPlatformSettings().defaultInvestmentAnnualRatePercent ?? 0)) };
+}
+
+/**
+ * Effective ANNUAL RATE PERCENT for one investor (legacy shape — used for
+ * display and percent-only callers). FLAT overrides/plans are converted to
+ * the annualized-equivalent percent so every existing consumer keeps working.
+ */
 export function getEffectiveInvestorRate(investorId: string, planRatePercent: number): number {
   const settings = getPlatformSettings();
-  const override = settings.investorEarningRateOverrides[investorId];
-  return override ?? planRatePercent ?? settings.defaultInvestmentAnnualRatePercent;
+  const override = normalizeInvestorEarningOverride(settings.investorEarningRateOverrides[investorId]);
+  if (override && override.type === "PERCENTAGE") return override.value;
+  // FLAT overrides carry no percent meaning here — real money math must use
+  // resolveInvestorEarnings; percent contexts keep the plan/default rate.
+  return planRatePercent ?? settings.defaultInvestmentAnnualRatePercent;
 }
 
 export function seedDefaultCatalog(): void {

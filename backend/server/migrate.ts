@@ -24,6 +24,7 @@ const MIGRATION_FILES = [
   "010_staff_rbac.sql",
   "011_staff_delete_fk_relax.sql",
   "012_activity_notifications.sql",
+  "013_fee_flat_support.sql",
 ];
 
 export async function ensureDatabaseSchema(): Promise<"created" | "skipped"> {

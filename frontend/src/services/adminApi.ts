@@ -239,13 +239,21 @@ export async function adminDeleteStaffRole(id: string) { return request<{ ok: tr
 export async function requestAdminPasswordReset(email: string, channel: AdminOtpChannel) { return request<{ ok: true; message: string } & AdminOtpChallenge>("/api/v1/auth/admin/password-reset/request", { method: "POST", body: JSON.stringify({ email, channel }) }); }
 export async function resetAdminPassword(challengeId: string, otp: string, password: string) { return request<{ ok: true; message: string }>("/api/v1/auth/admin/password-reset/confirm", { method: "POST", body: JSON.stringify({ challengeId, code: otp, newPassword: password }) }); }
 
+export type FeeBasis = "PERCENTAGE" | "FLAT";
+export interface InvestorEarningOverride {
+  type: FeeBasis;
+  /** PERCENTAGE: annual rate percent; FLAT: fixed naira earned over the tenure. */
+  value: number;
+}
+
 export interface PlatformSettingsResponse {
   ok: true;
   settings: {
     id: string;
     investorWithdrawalFeePercent: number;
     investorWithdrawalFeeFlatMinor: number;
-    investorEarningRateOverrides: Record<string, number>;
+    /** Structured per-investor earning overrides; bare numbers are legacy percents. */
+    investorEarningRateOverrides: Record<string, InvestorEarningOverride | number>;
     defaultInvestmentAnnualRatePercent: number;
     maintenanceMode?: boolean;
     maintenanceMessage?: string;
@@ -293,14 +301,21 @@ export async function adminUpdatePlatformSettings(input: {
   return request("/api/v1/admin/settings/platform", { method: "PUT", body: JSON.stringify(input) });
 }
 
-export async function adminSetInvestorEarningRate(investorId: string, annualRatePercent: number): Promise<{
+/**
+ * Set one investor's bespoke earning terms.
+ *   { type: "PERCENTAGE", value: 15 } -> 15% p.a. on the principal
+ *   { type: "FLAT", value: 50000 }    -> fixed ₦50,000 earnings for the tenure
+ * Omitting type keeps the legacy percent behaviour.
+ */
+export async function adminSetInvestorEarningRate(investorId: string, terms: { type: FeeBasis; value: number } | number): Promise<{
   ok: true;
-  investor: { id: string; fullName: string; email: string; earningRatePercent: number };
+  investor: { id: string; fullName: string; email: string; earningRatePercent?: number; earningTerms?: { type: FeeBasis; value: number } };
   settings: PlatformSettingsResponse["settings"];
 }> {
+  const body = typeof terms === "number" ? { annualRatePercent: terms } : { type: terms.type, value: terms.value };
   return request(`/api/v1/admin/investors/${encodeURIComponent(investorId)}/earning-rate`, {
     method: "PUT",
-    body: JSON.stringify({ annualRatePercent }),
+    body: JSON.stringify(body),
   });
 }
 

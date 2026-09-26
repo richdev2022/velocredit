@@ -65,7 +65,14 @@ type KycData = {
   identityPhoto?: string;
   documents?: Array<{ id?: string; documentType?: string; fileName?: string; mimeType?: string; sizeBytes?: number; status?: string; createdAt?: string; uploadedAt?: string; provider?: string; providerFileId?: string; previewUrl?: string; downloadUrl?: string }>;
 };
-type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number };
+type Plan = { id: string; name: string; tenureDays: number; annualRatePercent: number; minAmountNaira: number; maxAmountNaira?: number; earningsBasis?: "PERCENTAGE" | "FLAT"; earningsFlatNaira?: number };
+
+/** Human label for a plan's earning terms — percent plans show "% p.a.", flat plans show the fixed naira amount. */
+function planEarningsLabel(plan: Plan): string {
+  return plan.earningsBasis === "FLAT"
+    ? `₦${Number(plan.earningsFlatNaira ?? 0).toLocaleString()} fixed earnings`
+    : `${plan.annualRatePercent}% p.a.`;
+}
 
 type InvestorView = "overview" | "wallet" | "investments" | "kyc" | "transactions" | "payout" | "profile";
 
@@ -922,7 +929,7 @@ export default function InvestorDashboard() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-lg font-semibold text-velo-900 dark:text-white">Invest in {investModalPlan.name}</h3>
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{investModalPlan.tenureDays} days · {investModalPlan.annualRatePercent}% p.a.</p>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{investModalPlan.tenureDays} days · {planEarningsLabel(investModalPlan)}</p>
               </div>
               <button type="button" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-white" onClick={() => { setInvestModalOpen(false); setInvestModalPlan(null); }} aria-label="Close">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
@@ -1362,7 +1369,7 @@ function InvestorOverview(props: any) {
                   <div key={plan.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-700 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50">
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold text-velo-900 dark:text-white">{plan.name} · {plan.tenureDays} days</div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Min ₦{Number(plan.minAmountNaira).toLocaleString()} · {plan.annualRatePercent}% p.a.</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Min ₦{Number(plan.minAmountNaira).toLocaleString()} · {planEarningsLabel(plan)}</div>
                     </div>
                     <button type="button" className="btn-primary !py-1.5 !px-3 text-xs" onClick={() => openInvestModal(plan)}>Invest</button>
                   </div>
@@ -1385,12 +1392,12 @@ function InvestorOverview(props: any) {
                 <div key={plan.id} className="rounded-2xl border border-slate-100 dark:border-slate-800 p-4 bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-900/50 hover:shadow-lg transition-shadow">
                   <div className="flex items-start justify-between">
                     <div className="text-sm font-semibold text-velo-900 dark:text-white">{plan.name}</div>
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">{plan.annualRatePercent}% p.a.</span>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">{planEarningsLabel(plan)}</span>
                   </div>
                   <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
                     <div><p className="text-slate-500 dark:text-slate-400">Tenor</p><p className="font-semibold dark:text-white">{plan.tenureDays}d</p></div>
                     <div><p className="text-slate-500 dark:text-slate-400">Min</p><p className="font-semibold dark:text-white truncate">₦{(plan.minAmountNaira/1000 >= 1 ? plan.minAmountNaira/1000 + "k" : plan.minAmountNaira)}</p></div>
-                    <div><p className="text-slate-500 dark:text-slate-400">Rate</p><p className="font-semibold text-emerald-600">{plan.annualRatePercent}%</p></div>
+                    <div><p className="text-slate-500 dark:text-slate-400">Earnings</p><p className="font-semibold text-emerald-600">{plan.earningsBasis === "FLAT" ? `₦${Number(plan.earningsFlatNaira ?? 0).toLocaleString()}` : `${plan.annualRatePercent}%`}</p></div>
                   </div>
                   <button type="button" className="mt-4 w-full btn-primary text-xs" onClick={() => openInvestModal(plan)}>Invest now</button>
                 </div>
@@ -1479,7 +1486,7 @@ function InvestorInvestments(props: any) {
                     <div className="text-sm font-semibold text-velo-900 dark:text-white">{plan.name}</div>
                     <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{plan.tenureDays}-day tenor</div>
                   </div>
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">{plan.annualRatePercent}% p.a.</span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">{planEarningsLabel(plan)}</span>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <div><p className="text-slate-500 dark:text-slate-400">Min</p><p className="font-semibold dark:text-white">₦{Number(plan.minAmountNaira).toLocaleString()}</p></div>
