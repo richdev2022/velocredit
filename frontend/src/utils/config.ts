@@ -447,6 +447,16 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
   const serviceFee = Number(product.serviceFeePercent);
   const lateFee = Number(product.lateFeePercent);
   const interestType = product.interestType ?? "SIMPLE_FLAT";
+  // PERCENTAGE (default/legacy) vs FLAT (fixed naira) basis per fee. The basis
+  // and its naira value ride on the product exactly as the admin configured it.
+  const interestBasis = product.interestBasis === "FLAT" ? "FLAT" : "PERCENTAGE";
+  const processingBasis = product.processingFeeBasis === "FLAT" ? "FLAT" : "PERCENTAGE";
+  const serviceBasis = product.serviceFeeBasis === "FLAT" ? "FLAT" : "PERCENTAGE";
+  const lateBasis = product.lateFeeBasis === "FLAT" ? "FLAT" : "PERCENTAGE";
+  const interestFlatNaira = Math.max(0, Number(product.interestFlatNaira ?? 0));
+  const processingFlatNaira = Math.max(0, Number(product.processingFeeFlatNaira ?? 0));
+  const serviceFlatNaira = Math.max(0, Number(product.serviceFeeFlatNaira ?? 0));
+  const lateFlatNaira = Math.max(0, Number(product.lateFeeFlatNaira ?? 0));
   // Per-tenor availability statuses (easimoney AVAILABLE/LOCKED/HOT) keyed by
   // tenor days — missing entry = AVAILABLE.
   const tenorStatusByTenor: Record<number, "AVAILABLE" | "LOCKED" | "HOT"> = {};
@@ -532,9 +542,17 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
       : undefined,
     interestRatePercent: Number.isFinite(interestRate) ? interestRate : 0,
     interestType,
+    interestBasis,
+    interestFlatNaira,
     processingFeePercent: Number.isFinite(processingFee) ? processingFee : 0,
+    processingFeeBasis: processingBasis,
+    processingFeeFlatNaira: processingFlatNaira,
     serviceFeePercent: Number.isFinite(serviceFee) ? serviceFee : 0,
+    serviceFeeBasis: serviceBasis,
+    serviceFeeFlatNaira: serviceFlatNaira,
     lateFeePercent: Number.isFinite(lateFee) ? lateFee : 0,
+    lateFeeBasis: lateBasis,
+    lateFeeFlatNaira: lateFlatNaira,
     lateFeeType: product.lateFeeType,
     gracePeriodDays: product.gracePeriodDays,
     collateralEnabled: product.collateralEnabled ?? true,
@@ -548,25 +566,30 @@ export function applyLoanProduct(product: ApplyLoanProductInput, type: LoanProgr
     tenures: productTenures ?? program.tenures,
     productName: product.name,
     product: appliedInfo,
-    // Per-tenor monthly rates (easimoney style) land here as tenure-scoped
+    // Per-tenor MONTHLY rates (easimoney style) land here as tenure-scoped
     // interest overrides — resolveFeesForTenure merges them at calculation
     // time. Rebuilt from THIS product on every apply so a re-pricing never
-    // leaks the previous product's overrides.
-    tenureFees: tenorFees,
+    // leaks the previous product's overrides. FLAT interest products skip the
+    // percent matrix — a fixed naira interest cannot be expressed per-tenor %.
+    tenureFees: interestBasis === "FLAT" ? {} : tenorFees,
     fees: {
       ...program.fees,
-      interest: {
-        ...program.fees.interest,
-        value: appliedInfo.interestRatePercent,
-        interestType,
-      },
-      serviceFee: {
-        ...program.fees.serviceFee,
-        type: "percentage",
-        value: appliedInfo.serviceFeePercent,
-      },
-      processingFee: { ...program.fees.processingFee, type: "percentage", value: appliedInfo.processingFeePercent },
-      lateFee: { ...program.fees.lateFee, type: "percentage", value: appliedInfo.lateFeePercent },
+      interest: interestBasis === "FLAT"
+        ? { ...program.fees.interest, type: "flat" as const, value: interestFlatNaira, interestType }
+        : {
+          ...program.fees.interest,
+          value: appliedInfo.interestRatePercent,
+          interestType,
+        },
+      serviceFee: serviceBasis === "FLAT"
+        ? { ...program.fees.serviceFee, type: "flat" as const, value: serviceFlatNaira }
+        : { ...program.fees.serviceFee, type: "percentage" as const, value: appliedInfo.serviceFeePercent },
+      processingFee: processingBasis === "FLAT"
+        ? { ...program.fees.processingFee, type: "flat" as const, value: processingFlatNaira }
+        : { ...program.fees.processingFee, type: "percentage" as const, value: appliedInfo.processingFeePercent },
+      lateFee: lateBasis === "FLAT"
+        ? { ...program.fees.lateFee, type: "flat" as const, value: lateFlatNaira }
+        : { ...program.fees.lateFee, type: "percentage" as const, value: appliedInfo.lateFeePercent },
     },
     collateral: {
       enabled: appliedInfo.collateralEnabled ?? program.collateral.enabled,

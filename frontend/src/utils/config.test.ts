@@ -570,6 +570,78 @@ describe("product-driven configuration (catalog = single source of truth)", () =
   });
 });
 
+describe("flat (fixed naira) fee basis — borrower math", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("applyLoanProduct maps FLAT interest/fees to flat FeeConfig values and calculateLoan charges the fixed naira amounts", async () => {
+    refreshTestConfig();
+    const applied = applyLoanProduct({
+      id: "p-flat",
+      name: "Flat Fee Product",
+      programType: "PERSONAL",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 5_000_000,
+      defaultAmountNaira: 1_000_000,
+      defaultTenureDays: 30,
+      tenureDays: [30, 60],
+      interestRatePercent: 18.9,
+      interestType: "SIMPLE_FLAT",
+      interestBasis: "FLAT",
+      interestFlatNaira: 25_000,
+      processingFeePercent: 2,
+      processingFeeBasis: "FLAT",
+      processingFeeFlatNaira: 5_000,
+      serviceFeePercent: 0.5,
+      serviceFeeBasis: "PERCENTAGE",
+      lateFeePercent: 1,
+      lateFeeBasis: "FLAT",
+      lateFeeFlatNaira: 10_000,
+    }, "PERSONAL");
+    expect(applied).toBe(true);
+    const program = config.loanPrograms.PERSONAL;
+    expect(program.fees.interest).toMatchObject({ type: "flat", value: 25_000 });
+    expect(program.fees.processingFee).toMatchObject({ type: "flat", value: 5_000 });
+    expect(program.fees.serviceFee).toMatchObject({ type: "percentage", value: 0.5 });
+    expect(program.fees.lateFee).toMatchObject({ type: "flat", value: 10_000 });
+
+    // The calculation engine charges the fixed naira amounts (and the percent
+    // service fee on the amount). With a ₦1,000,000 loan over 30 days:
+    // interest = ₦25,000 (whole-term flat, NOT prorated), processing = ₦5,000,
+    // service = 0.5% × 1,000,000 = ₦5,000 → total repayment ₦1,035,000.
+    const { calculateLoan } = await import("./loanCalculator");
+    const calc = calculateLoan(1_000_000, 30, { loanType: "PERSONAL" });
+    expect(calc.interest).toBe(25_000);
+    expect(calc.processingFee).toBe(5_000);
+    expect(calc.serviceFee).toBe(5_000);
+    expect(calc.totalRepayment).toBe(1_035_000);
+
+    // Flat interest is tenure-independent: the 60-day loan charges the SAME
+    // ₦25,000 (the fixed amount covers the whole term).
+    const calc60 = calculateLoan(1_000_000, 60, { loanType: "PERSONAL" });
+    expect(calc60.interest).toBe(25_000);
+  });
+
+  it("a product without basis fields keeps pure legacy percentage behaviour", () => {
+    refreshTestConfig();
+    applyLoanProduct({
+      name: "Legacy Product",
+      minAmountNaira: 100_000,
+      maxAmountNaira: 5_000_000,
+      interestRatePercent: 4,
+      interestType: "SIMPLE_FLAT",
+      processingFeePercent: 2,
+      serviceFeePercent: 0,
+      lateFeePercent: 1,
+    }, "PERSONAL");
+    const program = config.loanPrograms.PERSONAL;
+    expect(program.fees.interest.type).toBe("percentage");
+    expect(program.fees.processingFee.type).toBe("percentage");
+    expect(program.fees.lateFee.type).toBe("percentage");
+  });
+});
+
 /** Reset the singleton config to baseline so tests don't leak state. */
 function refreshTestConfig() {
   Object.assign(config, getEffectiveConfig({}));
